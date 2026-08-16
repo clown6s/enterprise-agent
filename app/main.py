@@ -7,8 +7,8 @@ enterprise-agent 入口：FastAPI 应用装配。
     app/llm.py             LLM 客户端（OpenAI 兼容，手写 httpx）
     app/embeddings.py      向量/重排（硅基流动）
     app/milvus_store.py    向量库检索
-    app/mysql_store.py     后台账号（复用 Java 版 sys_user 表）
-    app/guards.py          确定性守卫（防编造/格式修复，Java 版血泪移植）
+    app/mysql_store.py     后台账号（sys_user 表）
+    app/guards.py          确定性守卫（防编造/格式修复）
     app/demo_data.py       员工目录演示数据
     app/oa_client.py       OA 业务系统客户端
     app/service/retrieval.py  检索管线

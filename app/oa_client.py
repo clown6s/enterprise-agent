@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 OA 业务系统 HTTP 客户端（本地 mock 系统，端口 7000）。
-Java 版对应：OaClient。软依赖——OA 挂了只影响数据问答，问答链路不崩。
+软依赖——OA 挂了只影响数据问答，问答链路不崩。
 """
 import httpx
 
@@ -33,7 +33,7 @@ class OaClient:
                 resp = httpx.get(
                     f"{config.OA_BASE_URL}{path}",
                     # OA 侧 JwtAuthenticationFilter 要求 "Bearer <token>" 前缀
-                    # （Java 版 OaClient 同款；不带前缀直接 403）
+                    # （不带前缀直接 403）
                     headers={"Authorization": f"Bearer {self._token}" if self._token else ""},
                     timeout=10,
                 )

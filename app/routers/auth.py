@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-后台登录（与 Java 版同路径同协议，rag-admin 前端零改动复用）：
+后台登录（rag-admin 前端复用）：
 POST /api/rag/admin/auth/login  {"username","password"} → {success, data:{username,token,role}}
 POST /api/rag/admin/auth/logout （前端退出时调用）
 """

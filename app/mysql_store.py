@@ -2,9 +2,9 @@
 """
 MySQL 访问（pymysql）：后台统一身份 + 审计落库。
 
-与 Java 版共用同一张 rag_service.sys_user 表——
-密码算法是 SHA-256(salt + password) 的十六进制，Python 一行 hashlib 就能复现，
-所以现有 admin 账号（admin / Admin@2026）直接可用，管理前端无需改账号。
+沿用既有 rag_service.sys_user 表——密码算法是 SHA-256(salt + password)
+的十六进制，一行 hashlib 就能复现，现有 admin 账号（admin / Admin@2026）
+直接可用，管理前端无需改账号。
 """
 import hashlib
 import uuid
@@ -27,7 +27,7 @@ def _conn() -> pymysql.connections.Connection:
 
 
 def _hash(password: str, salt: str) -> str:
-    """SHA-256(salt + password) —— 与 Java AuthService.hash 完全一致"""
+    """SHA-256(salt + password) 十六进制（沿用既有账号体系）"""
     return hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
 
 

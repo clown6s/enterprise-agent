@@ -2,7 +2,7 @@
 """
 摄入管线：解析 → 切分 → 嵌入 → Milvus 入库（sparse_bm25 由服务端自动生成）。
 
-Java 版对应：IngestionPipeline。Python 版 v1：
+管线 v1：
 - 切分：按段落聚合到 max_chars，长段落按句号断；docx 的「## 标题」行作为块边界前缀
 - 全程落日志 logs/ingestion.jsonl（摄入可观测）
 """

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-编排核心（Java 版 AgentOrchestrator 的 Python 移植）。
+编排核心。
 
 决策顺序（昨晚一晚试错得出的结论）：
 1. 意图规则表（app/intent/rules.py）——确定性意图（员工目录/OA 数据）直答，不让模型掺和
@@ -31,7 +31,7 @@ _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
 
 # ---------------- 系统提示词（防编造规则的 Python 版） ----------------
 
-_SYSTEM_PROMPT = """你是企业内网知识问答助手。请严格按以下规则回答：
+_SYSTEM_PROMPT = """你是企业知识问答助手。请严格按以下规则回答：
 
 1. 只依据【资料】内容回答，逐字核对；资料未涉及的，明确说「根据现有资料，暂无法回答该问题」，不得凭自身知识补充
 2. 禁止编造：具体数字、百分比、日期年份、法规名称与条文、机构名称、人名——除非资料原文有
@@ -64,7 +64,7 @@ _VERIFY_PROMPT = """你是答案事实核查员。对照【资料】逐句核查
 {answer}
 """
 
-# 术语抽取（确定性缺失术语核对，Java 版 findMissingTerms 的移植）：
+# 术语抽取（确定性缺失术语核对）：
 # 校验模型是小模型，术语级漏检率高——哪些术语"资料里没有"是能确定算出来的事
 _TERM_PATTERNS = [
     re.compile(r"[A-Za-z]{2,}(?:[-/][A-Za-z0-9]+){0,3}"),      # 英文缩写/术语（HRBP、BNP）
@@ -105,8 +105,8 @@ def verify_breaker_state() -> dict:
 
 def _verify(answer: str, context: str, graph_only: bool = False) -> str:
     """
-    小模型对照资料核查 → 确定性守卫收尾（Java 版 verify() 链的移植）：
-    缺失术语硬删除 → 鉴伪断言删除 → 空标题清理 → 格式修复。
+    小模型对照资料核查 → 确定性守卫收尾：
+    兜底句式混入清理 → 缺失术语硬删除 → 鉴伪断言删除 → 空标题清理 → 格式修复。
     graph_only：图谱-only 兜底时把收紧规则也注入校验提示词——否则小模型会放过
     图谱之外的内容（"图谱-only 授权过宽"的根因，恒传空串是漏接实况）。
     """
@@ -144,8 +144,9 @@ def _verify(answer: str, context: str, graph_only: bool = False) -> str:
     else:
         _verify_failures = 0
 
-    # 确定性守卫（Java 同款顺序）：缺失术语硬删除 → 鉴伪断言 → 空标题清理 → 格式修复。
-    # missing 用校验前的答案算（Java 同款）：校验器已删掉的术语不误伤，漏删的在此兜底。
+    # 确定性守卫顺序：兜底句式混入清理 → 缺失术语硬删除 → 鉴伪断言 → 空标题清理 → 格式修复。
+    # missing 用校验前的答案算：校验器已删掉的术语不误伤，漏删的在此兜底。
+    answer = guards.strip_no_answer_hedge(answer)
     answer = guards.strip_missing_terms(answer, missing)
     answer = guards.strip_assertions(answer, context)
     answer = guards.collapse_empty_headings(answer)
@@ -189,7 +190,7 @@ def answer(query: str, conversation_id: str = "", file_block: str = "") -> dict:
 
 
 def _record_audit(query: str, result: dict, seconds: float) -> None:
-    """审计落库（audit_event 表，与 Java 版同 schema；软依赖）"""
+    """审计落库（audit_event 表，沿用既有 schema；软依赖）"""
     try:
         import json as _json
         import uuid as _uuid
@@ -280,7 +281,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
 def answer_stream(query: str, conversation_id: str = ""):
     """
     流式回答生成器：yield (event, data) 元组。
-    SSE 事件名与 Java 版完全一致（route/token/sources/chart/done），
+    SSE 事件名保持 route/token/sources/chart/done，
     这样 rag-admin 前端一行都不用改。
     """
     # 意图规则表最优先：命中即确定性直答（路由标记 = KNOWLEDGE_QA）

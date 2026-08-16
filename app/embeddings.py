@@ -4,8 +4,7 @@
 - embed()   文本 → BGE-M3 1024 维向量（检索时用）
 - rerank()  问题 + 候选文档 → 相关性分数（召回后精排）
 
-Java 版对应：ai-sidecar 的 /rerank + Java 侧 embedding 调用。
-Python 里直接 HTTP 调用，不需要独立 sidecar 进程——少一层部署。
+直接 HTTP 调用，不需要独立 sidecar 进程——少一层部署。
 """
 import httpx
 

@@ -2,9 +2,8 @@
 """
 LLM 客户端：手写 OpenAI 兼容接口调用（httpx），不引 SDK。
 好处：代码即文档——你能直接看到 HTTP 请求和流式解析的完整过程；
-坏处：没有 SDK 的重试/连接池，但对内网单机场景足够了。
+坏处：没有 SDK 的重试/连接池，但对单机场景足够了。
 
-Java 版对应：LangChain4j ChatModel / StreamingChatModel。
 本文件两个函数：
 - chat()        一次性对话（校验层/非流式答案用）
 - chat_stream() 生成器，逐段吐出增量文本（SSE 流式用）
@@ -23,7 +22,7 @@ _ROLES = ("system", "user", "assistant")
 
 
 def _messages(system: str, user: str) -> list[dict]:
-    """把系统提示词 + 用户输入拼成 messages（Java 版的 prompt 拼装）"""
+    """把系统提示词 + 用户输入拼成 messages"""
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})

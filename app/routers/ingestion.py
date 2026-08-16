@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""文档上传（知识库管理页对接；路径与 Java 版一致，无鉴权——内网场景）"""
+"""文档上传（知识库管理页对接；无鉴权——单机场景）"""
 from fastapi import APIRouter, File, UploadFile
 
 from ..ingestion import pipeline

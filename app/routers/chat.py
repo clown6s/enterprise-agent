@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-对话端点（与 Java 版 AgentChatController 同路径同协议）：
+对话端点（rag-admin 前端协议）：
 - POST /api/rag/agent/chat        非流式 JSON
 - POST /api/rag/agent/chat/stream SSE 流式（rag-admin 前端直接可用）
 
-SSE 线格式与 Spring SseEmitter 一致：
+SSE 线格式：
     event: token
     data: <内容，可能含换行 → 天然拆成多个 data: 行>
     （空行分隔事件）
@@ -49,7 +49,7 @@ def chat(body: dict, authorization: str | None = Header(default=None)):
 def _sse(events: Iterator[tuple[str, object]]) -> Iterator[str]:
     """(event, data) 流 → SSE 文本流。
 
-    多行数据必须拆成多个 "data: " 行（SSE 规范；Spring SseEmitter 同款行为）——
+    多行数据必须拆成多个 "data: " 行（SSE 规范）——
     否则数据里的空行会打断事件边界，前端只能收到第一行。
     """
     for event, data in events:

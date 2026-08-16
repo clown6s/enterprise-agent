@@ -235,8 +235,8 @@ class FeishuChannel:
 
     @staticmethod
     def build_data_card(answer: str, chart: dict) -> dict:
-        """数据图表卡（schema 2.0）：VChart + 原生表格 + 汇总（与 Java 版同构——
-        表格列名用 c0/c1 索引名、数值列传数字类型、chart_spec 带 title）"""
+        """数据图表卡（schema 2.0）：VChart + 原生表格 + 汇总
+        （表格列名用 c0/c1 索引名、数值列传数字类型、chart_spec 带 title）"""
         head = chart.get("table", [["-"]])[0]
         rows = chart.get("table", [])[1:]
         # 数值列检测：除表头外全部可解析为数字 → number（右对齐+千分位）
@@ -313,7 +313,7 @@ class FeishuChannel:
     def build_answer_card(answer: str, sources: list[str]) -> dict:
         """回答卡片（schema 2.0）：markdown 正文 + 来源 note + 👍👎 反馈按钮"""
         source_note = "、".join(sources) if sources else "无来源"
-        # schema 1.0（Java 版同款）：无 schema 键 = 1.0，elements 在顶层；
+        # schema 1.0：无 schema 键 = 1.0，elements 在顶层；
         # action 按钮/note 组件在 1.0 支持（2.0 会拒 unsupported tag action）
         return {
             "config": {"wide_screen_mode": True},

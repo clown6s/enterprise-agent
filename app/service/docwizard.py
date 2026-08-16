@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-文档生成（一句话直达云文档，Java 版 DocWizardService 的核心路径移植）：
+文档生成（一句话直达云文档）：
 触发词 → 标题推断 → LLM 生成（防编造规则 + 类型标准结构）→ 飞书云文档直出
 （org 可读 + 发起者编辑权）→ 回复文档链接。
-
-未移植（路线图）：多轮修改闭环、表单卡片兜底、docx 文件兜底。
+多轮修改闭环（revise）+ 表单卡片兜底（generate_with_form）已接；
+docx 文件兜底待做（路线图）。
 """
 import json
 import re

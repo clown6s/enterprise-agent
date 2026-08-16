@@ -2,12 +2,12 @@
 """
 Milvus 向量库访问（pymilvus ORM 接口）。
 
-集合 schema（与 Java 版同一套）：
+集合 schema：
     id(PK) / text(中文分词) / sparse_bm25(BM25 函数输出) / dense(1024维) / document_id / title / source
 
 search() 用混合检索：稠密向量（语义召回）+ BM25（关键词召回）RRF 融合。
 纯稠密检索的历史教训：关键词类问法（"今年国庆放几天"）语义向量召不回
-（Java 版 75% 基线 vs 纯稠密 62.5%），BM25 补的就是关键词面。
+（纯稠密 62.5%，加 BM25 混合后关键词面才补上），BM25 补的就是关键词面。
 """
 from pymilvus import AnnSearchRequest, Collection, RRFRanker, connections
 

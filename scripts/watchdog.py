@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-服务看门狗：探活 enterprise-agent(8080, python) 与 oa-approval(7000, java)，
+服务看门狗：探活 enterprise-agent(8080, python) 与 oa-approval(7000, OA 服务)，
 连续 3 次失败 → 杀端口残留 → 自动拉起 → 飞书 webhook 告警。
-（Java 版 watchdog 的移植：8080 的拉起方式从 java -jar 换成 python run.py）
+（8080 用 python run.py 拉起，7000 用 OA 的 jar 命令拉起）
 
 启动：python scripts/watchdog.py（建议 Start-Process 脱离终端）
 日志：logs/watchdog.log
@@ -89,7 +89,7 @@ def kill_port(port):
 
 def start_service(svc):
     # 逐个参数加单引号后逗号连接（"-jar","<jar路径>" 各为独立参数，
-    # 不能拼成一个带引号的整体——java 会把整串当类名）
+    # 不能拼成一个带引号的整体——启动器会把整串当类名）
     cmd = svc["start"]
     args = ",".join("'" + a + "'" for a in cmd[1:])
     ps = ("Start-Process -FilePath '" + cmd[0] + "'"

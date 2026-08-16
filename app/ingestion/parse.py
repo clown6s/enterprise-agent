@@ -2,7 +2,7 @@
 """
 文档解析：文件名 + 字节 → 纯文本（docx 保留标题结构标记）。
 
-Java 版对应：DocumentParser + ai-sidecar /parse。Python 版直接本地解析：
+本地解析：
 - txt/md  文本直读（UTF-8，失败回退 GBK——Windows 环境常见）
 - docx    python-docx：标题段落标成「## 标题」行（标题感知切分用）
 - pdf     pypdf 逐页抽取（扫描件 PDF 抽不出文字 → 空文本，后续可接 OCR，路线图）

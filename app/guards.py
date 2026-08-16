@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-确定性守卫与输出修复（把 Java 版一晚上攒下的血泪教训一次搬过来）：
+确定性守卫与输出修复（一晚上攒下的血泪教训一次沉淀下来）：
 
 1. NO_ANSWER           检索空手时的兜底句式（不信任模型自觉）
 2. fix_output()        输出格式修复：无序列表转编号、图谱回声块剥除、
@@ -8,6 +8,7 @@
 3. strip_assertions()  鉴伪断言确定性删除（"并非××所言/伪名言"必须出自资料）
 4. strip_missing_terms() 含"资料中不存在术语"的句子删除 + 延伸服务套话拦截
 5. collapse_empty_headings() 硬删后空标题清理（"**标题**："下空无一物 → 移除）
+6. strip_no_answer_hedge() 兜底句式混入清理（有实质内容的答案里混进"暂无法回答"半吊子句 → 删该句）
 
 设计原则：模型输出不可靠，能确定性算出来的事绝不再交给模型。
 """
@@ -164,7 +165,7 @@ def strip_assertions(text: str, context: str) -> str:
 
 # ---------------- 3. 缺失术语句删除 ----------------
 
-# 延伸服务/元话语句式（提示词禁但模型偶犯，确定性拦截——Java EXTENSION_OFFER 同款）
+# 延伸服务/元话语句式（提示词禁但模型偶犯，确定性拦截）
 _EXTENSION_OFFER = re.compile(
     r"欢迎随时|欢迎告诉|如需我|需要我帮|我可以为你|我可为您|我可为你|请确认是否"
     r"|随时提出|可立即为你|请告诉我您最关注|您希望优先了解"
@@ -179,7 +180,7 @@ def strip_missing_terms(text: str, missing_terms: list[str]) -> str:
     """
     含"资料中不存在术语"的句子直接移除（校验器软约束漏删时的硬兜底）；
     延伸服务套话（"欢迎随时告诉我…"）同批移除。全部删空返回兜底句式。
-    与 Java 版一致：missing_terms 为空时不触发（此时不存在"必然无依据"的句子）。
+    missing_terms 为空时不触发（此时不存在"必然无依据"的句子）。
     """
     if not missing_terms or not text:
         return text
@@ -202,8 +203,8 @@ def strip_missing_terms(text: str, missing_terms: list[str]) -> str:
 
 _HEADING_LINE = re.compile(r"^[ \t]*(?:✅|📌|⚠️)?[ \t]*\*\*[^*\n]{1,40}\*\*[ \t]*[：:]?[ \t]*$")
 # 判定"标题是空的"只看下一个非空行是不是另一个标题（✅/📌/⚠️/加粗）或文末。
-# Java 正则里还含 \d+[.、]（编号行），但按其后注释"直到下一个标题或文末"的意图，
-# "**标题**：\n1. 内容"是标题带内容的正常结构，不该删——照注释不照正则。
+# 注意别把 \d+[.、]（编号行）加进判定："**标题**：\n1. 内容"是标题带内容的
+# 正常结构，不该删——空标题只存在于"直到下一个标题或文末全为空白"的情形。
 _STRUCT_START = re.compile(r"^[ \t]*(?:✅|📌|⚠️|\*\*)")
 
 
@@ -211,7 +212,7 @@ def collapse_empty_headings(text: str) -> str:
     """
     硬删后清理：内容被删光只剩标题时（"**基础药物治疗**：" 下空无一物），
     移除空标题行。判定：标题行（加粗行，可带 ✅/📌/⚠️ 前缀）之后直到
-    下一个标题或文末全为空白。Java collapseEmptyHeadings 的行式移植。
+    下一个标题或文末全为空白。
     """
     if not text or text == NO_ANSWER:
         return text
@@ -230,6 +231,37 @@ def collapse_empty_headings(text: str) -> str:
         out.append(lines[i])
         i += 1
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+# ---------------- 5. 兜底句式混入清理 ----------------
+
+def strip_no_answer_hedge(text: str) -> str:
+    """
+    模型偶发把"根据现有资料，暂无法回答…"的半吊子兜底句写进有实质内容的答案
+    （实况："…暂无法回答其他注意事项（如生活方式调整、饮食、运动等）"——
+    生成侧按提示词句式自说自话，校验模型有时删有时留，回归时挂时过）。
+    确定性处理：整篇就是兜底句式 → 原样保留（合法全量兜底）；
+    否则删掉含"暂无法回答"的句子，删空回兜底句式。
+    """
+    if not text or "暂无法回答" not in text:
+        return text
+    if _norm(text) == _norm(NO_ANSWER):
+        return text
+    kept = []
+    removed = 0
+    for sentence in re.split(r"(?<=[。！？；\n])", text):
+        if "暂无法回答" in sentence:
+            removed += 1
+        else:
+            kept.append(sentence)
+    if removed == 0:
+        return text
+    result = "".join(kept).strip()
+    # 删完只剩空行/括号注记（"（来源：内科学.pdf）"）等脚手架 → 仍回全量兜底
+    if all(not l.strip() or re.fullmatch(r"[（(].*[）)]", l.strip())
+           for l in result.split("\n")):
+        return NO_ANSWER
+    return result
 
 
 def _norm(s: str) -> str:

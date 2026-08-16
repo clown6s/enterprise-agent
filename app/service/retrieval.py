@@ -2,7 +2,7 @@
 """
 检索管线：query → embedding → Milvus 召回 → rerank 精排 → 上下文拼装。
 
-Java 版对应：RetrievalPipeline。关键移植点：
+关键点：
 - rerank 分数过滤（低于阈值的候选视为不相关，宁可无来源也不让噪音进上下文）
 - 参数自适应：data/tuned_params.json 存在时覆盖默认 top_k/阈值
   （由 app/learn/tune_retrieval.py 网格搜索产生，只接受不劣化变更）
@@ -70,7 +70,7 @@ def retrieve(query: str, *, top_k: int | None = None,
 
 
 def build_context(hits: list[dict], max_chars: int = 6000) -> str:
-    """上下文拼装（Java 版 buildContext 的文档部分；图谱-only 注入留待 Neo4j 接入）"""
+    """上下文拼装（文档部分；图谱-only 上下文由 graph 模块提供）"""
     if not hits:
         return "暂无相关资料。"
     parts = []

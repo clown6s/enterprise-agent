@@ -2,8 +2,7 @@
 """
 全局配置：从项目根目录 .env 加载（python-dotenv），统一以模块级常量使用。
 
-Java 版对应：application.yml + .env。Python 里没有 Spring 的 ${VAR} 注入，
-用 os.getenv 直接读，缺省值写在第二个参数里。
+用 os.getenv 直接读，缺省值写在第二个参数里（不做 ${VAR} 注入）。
 """
 import os
 
@@ -43,7 +42,7 @@ MILVUS_PORT = int(_env("MILVUS_PORT", "19530"))
 MILVUS_DB = _env("MILVUS_DB", "rag_service")
 MILVUS_COLLECTION = "documents"
 
-# ---------------- MySQL（后台统一身份：复用 Java 版同一张表） ----------------
+# ---------------- MySQL（后台统一身份：sys_user 表） ----------------
 MYSQL_HOST = _env("MYSQL_HOST", "10.211.55.5")
 MYSQL_PORT = int(_env("MYSQL_PORT", "3306"))
 MYSQL_PASSWORD = _env("MYSQL_ROOT_PASSWORD")

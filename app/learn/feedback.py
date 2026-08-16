@@ -2,7 +2,7 @@
 """
 反馈环（闭环 A）：👍采纳 → 知识库回流；👎/纠正 → 回归用例沉淀。
 
-- adopt()            采纳问答 → feedback_adopt 表（复用 Java 版表）+ Milvus 入库
+- adopt()            采纳问答 → feedback_adopt 表 + Milvus 入库
                       （embed → insert，立即可被检索）
 - record_unhelpful() 负反馈 → 自动生成回归用例（该问法不得再出兜底句式），
                       带纠正文本的进待审队列（eval/pending_cases.jsonl，人工定断言）

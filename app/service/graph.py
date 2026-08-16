@@ -2,7 +2,7 @@
 """
 Neo4j 知识图谱访问（图谱-only 兜底：文档检索空手时，用图谱关系作答）。
 
-Java 版对应：GraphRetriever + GraphStore。移植要点全部保留：
+要点全部保留：
 - 实体候选从问句切窗口提取，直接 MATCH n.name IN 候选（35k 节点，DB 里匹配才可靠）
 - 关系链按（源实体 → 关系链）分组自然语言化——三元组格式会被模型模仿粘贴（血泪教训）
 - 上限 20 条防灌爆上下文
@@ -47,7 +47,7 @@ def _candidates(query: str) -> list[str]:
 
 
 # 三元组提取提示词（图谱构建用；只提取文本中明确存在的关系）
-# 注意：JSON 大括号在 str.format 里是占位符，必须写双大括号（Java 版 LangChain4j 同款坑）
+# 注意：JSON 大括号在 str.format 里是占位符，必须写双大括号
 _TRIPLE_PROMPT = """从下面的文本中提取实体关系三元组，输出严格 JSON 数组：
 [{{"source": "实体", "relation": "关系", "target": "实体"}}]
 规则：
@@ -121,7 +121,7 @@ def expand(query: str, limit: int = 20) -> str:
         return ""
     if not rows:
         return ""
-    # 按（源，关系链）分组（Java GraphStore.format 的自然语言版）
+    # 按（源，关系链）分组，转自然语言
     grouped: dict[tuple[str, str], set[str]] = {}
     for r in rows:
         chain = " → ".join(r["chain"])
