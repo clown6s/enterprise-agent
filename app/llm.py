@@ -10,11 +10,13 @@ Java 版对应：LangChain4j ChatModel / StreamingChatModel。
 - chat_stream() 生成器，逐段吐出增量文本（SSE 流式用）
 """
 import json
+import time
 from typing import Iterator
 
 import httpx
 
 from . import config
+from .learn import usage
 
 # OpenAI 兼容的对话消息角色名（系统/用户/助手）
 _ROLES = ("system", "user", "assistant")
@@ -35,6 +37,7 @@ def chat(system: str, user: str, *,
          key: str = config.DEEPSEEK_KEY,
          temperature: float = 0.7) -> str:
     """一次性对话，返回完整文本；失败抛异常（调用方决定兜底策略）"""
+    _t0 = time.time()
     resp = httpx.post(
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
@@ -48,7 +51,9 @@ def chat(system: str, user: str, *,
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["choices"][0]["message"]["content"] or ""
+    content = data["choices"][0]["message"]["content"] or ""
+    usage.record(model, len(system) + len(user), len(content), time.time() - _t0)
+    return content
 
 
 def chat_stream(system: str, user: str, *,
@@ -59,6 +64,8 @@ def chat_stream(system: str, user: str, *,
     流式对话生成器：每次 yield 一段增量文本。
     流式协议是 SSE：每行 "data: {json}"，[DONE] 结束。
     """
+    _t0 = time.time()
+    total = 0
     with httpx.stream(
         "POST",
         f"{base}/chat/completions",
@@ -82,7 +89,9 @@ def chat_stream(system: str, user: str, *,
                 chunk = json.loads(payload)
                 delta = chunk["choices"][0]["delta"]
                 if delta.get("content"):
+                    total += len(delta["content"])
                     yield delta["content"]
             except (json.JSONDecodeError, KeyError, IndexError):
                 # 心跳/首帧（role 字段）等非内容帧直接跳过
                 continue
+    usage.record(model, len(system) + len(user), total, time.time() - _t0)

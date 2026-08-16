@@ -17,7 +17,7 @@ enterprise-agent 入口：FastAPI 应用装配。
 """
 from fastapi import FastAPI
 
-from .routers import auth, chat, feedback, health
+from .routers import admin, auth, chat, feedback, health
 
 app = FastAPI(title="enterprise-agent", version="0.1.0")
 
@@ -25,3 +25,4 @@ app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(feedback.router)
+app.include_router(admin.router)

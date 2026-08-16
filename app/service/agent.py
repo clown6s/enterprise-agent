@@ -11,10 +11,12 @@
 原则：能确定性算出来的事绝不再交给模型；新增意图=规则表加一行。
 """
 import re
+import time
 from datetime import datetime
 
 from .. import config, guards, llm
 from ..intent import rules as intent_rules
+from ..learn import gap_discovery
 from . import retrieval
 
 # ---------------- 意图与关键词模式 ----------------
@@ -82,10 +84,25 @@ def _find_missing_terms(answer: str, context: str) -> list[str]:
 
 # ---------------- 答案校验（小模型核查 + 确定性守卫） ----------------
 
+# 校验层自动熔断：qwen-plus 连续失败 3 次 → 停用 5 分钟（防延迟雪崩），
+# 到点自动恢复。校验是增强不是必需——熔断期间答案只过确定性守卫。
+_verify_failures = 0
+_verify_suspended_until = 0.0
+
+
+def verify_breaker_state() -> dict:
+    return {"failures": _verify_failures,
+            "suspended": time.time() < _verify_suspended_until,
+            "suspended_until": _verify_suspended_until}
+
+
 def _verify(answer: str, context: str) -> str:
     """小模型对照资料核查 → 确定性守卫收尾（Java 版 verify() 链的移植）"""
+    global _verify_failures, _verify_suspended_until
     if not config.VERIFY_ENABLED or not answer.strip() or not context.strip():
         return answer
+    if time.time() < _verify_suspended_until:
+        return guards.fix_output(answer) or guards.NO_ANSWER   # 熔断中：只过确定性守卫
     missing = _find_missing_terms(answer, context)
     missing_block = "、".join(missing) if missing else "（无）"
     try:
@@ -102,7 +119,15 @@ def _verify(answer: str, context: str) -> str:
         if checked and not (len(answer) > 200 and len(checked) < len(answer) * 0.5):
             answer = checked
     except Exception:
-        pass   # 校验模型失败 → 原文下发（软依赖），确定性守卫仍会执行
+        # 校验模型失败 → 原文下发（软依赖），确定性守卫仍会执行；连续失败触发熔断
+        _verify_failures += 1
+        if _verify_failures >= 3:
+            _verify_suspended_until = time.time() + 300
+            _verify_failures = 0
+            print(f"[熔断] 校验模型连续失败，verify 停用 5 分钟至 "
+                  f"{datetime.fromtimestamp(_verify_suspended_until):%H:%M:%S}")
+    else:
+        _verify_failures = 0
 
     # 确定性守卫：鉴伪断言 → 格式修复
     answer = guards.strip_assertions(answer, context)
@@ -155,6 +180,7 @@ def answer(query: str, conversation_id: str = "") -> dict:
     # 知识问答：预检索 → 兜底/生成 → 校验
     hits = retrieval.retrieve(query)
     if not hits:
+        gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     context = retrieval.build_context(hits)
     sources = sorted({h["source"] for h in hits if h.get("source")})
@@ -201,6 +227,7 @@ def answer_stream(query: str, conversation_id: str = ""):
     # 知识问答：预检索（空手 → 确定性兜底）
     hits = retrieval.retrieve(query)
     if not hits:
+        gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         yield "token", guards.NO_ANSWER
         yield "sources", []
         yield "done", "[DONE]"
