@@ -47,7 +47,10 @@ def retrieve(query: str, *, top_k: int | None = None,
     min_score = min_score if min_score is not None else params["min_score"]
 
     vec = embeddings.embed(query)
-    hits = milvus_store.search(vec, top_k=top_k)
+    hits = milvus_store.search(vec, query, top_k=top_k)
+    if not hits:
+        # 混合检索失败（如 BM25 字段异常）→ 纯稠密回退，主链路不崩
+        hits = milvus_store.dense_search(vec, top_k)
     if not hits:
         return []
     # rerank 精排（软依赖：rerank 挂了回退原始顺序+分数过滤）
@@ -61,8 +64,9 @@ def retrieve(query: str, *, top_k: int | None = None,
             h = hits[idx]
             kept.append({**h, "score": score})
         return kept
-    # 无 rerank：用 Milvus 距离粗筛（COSINE 距离与相关性同向）
-    return [h for h in hits if h["score"] >= min_score][: config.RERANK_TOP_N]
+    # 无 rerank：不按 min_score 粗筛（RRF 融合分是 0~0.03 量级，与阈值不可比），
+    # 直接取前 RERANK_TOP_N 条
+    return hits[: config.RERANK_TOP_N]
 
 
 def build_context(hits: list[dict], max_chars: int = 6000) -> str:

@@ -11,6 +11,7 @@
 """
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -81,12 +82,18 @@ def run_regression(path: str | None = None) -> dict:
 
 # ---------------- 2. 检索命中 ----------------
 
+def _norm_phrase(s: str) -> str:
+    """命中判定归一化：去标点/空白（"放假调休共7天" vs chunk"放假调休，共7天"是同一命中）"""
+    return re.sub(r"[，。、；：（）()\s]+", "", s)
+
+
 def run_retrieval_case(question: str, ground_truth: str, *,
                        top_k: int, min_score: float) -> dict:
-    """单条检索用例：GT 短语出现在召回文本中即命中；返回 hit + 首个命中名次（MRR 用）"""
+    """单条检索用例：GT 短语出现在召回文本中即命中（标点归一化比较）；返回 hit + 名次"""
     hits = retrieval.retrieve(question, top_k=top_k, min_score=min_score, rerank_top_n=top_k)
+    gt = _norm_phrase(ground_truth)
     for rank, h in enumerate(hits, start=1):
-        if ground_truth in h["text"]:
+        if gt in _norm_phrase(h["text"]):
             return {"hit": True, "rank": rank}
     return {"hit": False, "rank": 0}
 

@@ -53,7 +53,6 @@ def verify_user(username: str, password: str) -> dict | None:
         return None
 
 
-# ---------------- 内存 token 会话（与 Java 版一致的"重启即失效"语义） ----------------
 _sessions: dict[str, dict] = {}
 
 
