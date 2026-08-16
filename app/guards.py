@@ -3,8 +3,8 @@
 确定性守卫与输出修复（一晚上攒下的血泪教训一次沉淀下来）：
 
 1. NO_ANSWER           检索空手时的兜底句式（不信任模型自觉）
-2. fix_output()        输出格式修复：无序列表转编号、图谱回声块剥除、
-                       编号与内容拆行合并、孤立编号行合并、结尾残句清理
+2. fix_output()        输出格式修复：无序列表转编号、图谱回声块剥除、编号与内容
+                       拆行合并、孤立编号行合并、裸标题列表恢复、结尾残句清理
 3. strip_assertions()  鉴伪断言确定性删除（"并非××所言/伪名言"必须出自资料）
 4. strip_missing_terms() 含"资料中不存在术语"的句子删除 + 延伸服务套话拦截
 5. collapse_empty_headings() 硬删后空标题清理（"**标题**："下空无一物 → 移除）
@@ -80,6 +80,36 @@ def fix_output(text: str) -> str:
         else:
             merged.append(l)
     lines = merged
+
+    # 3.5) 裸标题列表恢复：校验层把 "**标题**：\n- 条目" 洗成 "标题：\n裸条目"
+    #      （实况：高血压回答的"血压控制目标值：/用药原则："下全是无前缀裸行）。
+    #      裸标题行（短行以"："结尾、后无内容）下连续 ≥2 行无句末标点的裸片段
+    #      → 标题回填加粗、片段回填 "- " 前缀（交给步骤 4 编号）。
+    #      有句末标点的行视为正文散文，不碰——防止把段落误编成列表。
+    _BARE_HEADING = re.compile(r"^(?:\*\*)?([^\n：|*]{1,24})(?:\*\*)?([：:])$")
+    _FRAGMENT = re.compile(r"^[^。！？；：]{1,200}$")
+    restored_bare: list[str] = []
+    i = 0
+    while i < len(lines):
+        head = lines[i].strip()
+        m = _BARE_HEADING.match(head)
+        if m and not head.startswith(("- ", "* ", "• ")):
+            frags = []
+            j = i + 1
+            while (j < len(lines) and lines[j].strip()
+                   and _FRAGMENT.match(lines[j].strip())
+                   and not lines[j].strip().startswith(("- ", "* ", "• ", "**"))):
+                frags.append(j)
+                j += 1
+            if len(frags) >= 2:
+                restored_bare.append(f"**{m.group(1)}**{m.group(2)}")
+                for k in frags:
+                    restored_bare.append("- " + lines[k].strip())
+                i = j
+                continue
+        restored_bare.append(lines[i])
+        i += 1
+    lines = restored_bare
 
     # 4) 无序列表 → 有序编号（"- 内容" → "1. 内容"；全行加粗的行是标题，不编号并打断计数）
     out = _number_list_lines(lines)
