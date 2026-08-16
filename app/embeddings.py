@@ -24,10 +24,11 @@ def embed(text: str) -> list[float]:
     return data[0]["embedding"]
 
 
-def rerank(query: str, documents: list[str]) -> list[tuple[int, float]]:
+def rerank(query: str, documents: list[str], top_n: int | None = None) -> list[tuple[int, float]]:
     """
     query 与 documents 的重排分数。
     返回 [(原始下标, 相关性分数)]，按分数降序；失败返回空列表（调用方回退原始顺序）。
+    top_n=None 时用配置的 RERANK_TOP_N（参数调优时会传全量 top_k 做网格分析）。
     """
     try:
         resp = httpx.post(
@@ -37,7 +38,7 @@ def rerank(query: str, documents: list[str]) -> list[tuple[int, float]]:
                 "model": config.RERANK_MODEL,
                 "query": query,
                 "documents": documents,
-                "top_n": min(config.RERANK_TOP_N, len(documents)),
+                "top_n": min(top_n or config.RERANK_TOP_N, len(documents)),
             },
             timeout=60,
         )

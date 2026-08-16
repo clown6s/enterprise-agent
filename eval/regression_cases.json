@@ -1,0 +1,94 @@
+[
+  {
+    "id": "guard-001-员工人数",
+    "query": "公司有多少人",
+    "expect": {
+      "route": "KNOWLEDGE_QA",
+      "answer_contain": ["8 位员工"],
+      "answer_not_contain": ["暂无法回答"],
+      "max_seconds": 5
+    }
+  },
+  {
+    "id": "guard-002-员工信息",
+    "query": "王强是什么时候入职的",
+    "expect": {
+      "answer_contain": ["2020-05-20"],
+      "answer_not_contain": ["暂无法回答"],
+      "max_seconds": 5
+    }
+  },
+  {
+    "id": "guard-003-OA报销",
+    "query": "李娜最近7天报销了多少",
+    "expect": {
+      "answer_contain": ["5890", "共 3 笔"],
+      "answer_not_contain": ["暂无法回答"],
+      "chart_present": true,
+      "max_seconds": 5
+    }
+  },
+  {
+    "id": "guard-004-经营数据",
+    "query": "最近7天的经营数据",
+    "expect": {
+      "answer_contain": ["营收合计"],
+      "answer_not_contain": ["暂无法回答"],
+      "chart_present": true,
+      "max_seconds": 5
+    }
+  },
+  {
+    "id": "guard-005-高血压无图谱回声",
+    "query": "高血压应该注意什么",
+    "expect": {
+      "sources_include": ["内科学.pdf"],
+      "answer_contain": ["血压"],
+      "answer_not_contain": ["（属于）：", "伪名言", "暂无法回答"],
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-006-宫崎骏无鉴伪断言",
+    "query": "宫崎骏",
+    "expect": {
+      "sources_include": ["图片识别"],
+      "answer_not_contain": ["伪名言", "并非宫崎骏所言"],
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-007-流程词禁数据工具",
+    "query": "报销流程是什么",
+    "expect": {
+      "answer_not_contain": ["5890", "共 3 笔"],
+      "chart_present": false,
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-008-闲聊路由",
+    "query": "你好",
+    "expect": {
+      "route": "CHAT",
+      "answer_not_contain": ["暂无法回答"],
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-009-检索空兜底",
+    "query": "量子纠缠的数学推导过程",
+    "expect": {
+      "answer_contain": ["暂无法回答"],
+      "max_seconds": 30
+    }
+  },
+  {
+    "id": "guard-010-追问澄清",
+    "query": "怎么办",
+    "expect": {
+      "route": "CLARIFY",
+      "max_seconds": 5
+    }
+  }
+]

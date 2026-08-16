@@ -4,29 +4,65 @@
 
 Java 版对应：RetrievalPipeline。关键移植点：
 - rerank 分数过滤（低于阈值的候选视为不相关，宁可无来源也不让噪音进上下文）
-- 图谱上下文本阶段不接 Neo4j（路线图），先保证文档检索主链路
+- 参数自适应：data/tuned_params.json 存在时覆盖默认 top_k/阈值
+  （由 app/learn/tune_retrieval.py 网格搜索产生，只接受不劣化变更）
 """
+import json
+import os
+
 from .. import config, embeddings, milvus_store
 
+_BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_TUNED_FILE = os.path.join(_BASE, "data", "tuned_params.json")
 
-def retrieve(query: str) -> list[dict]:
-    """返回 [{text, document_id, title, source, score}]，按相关度降序（最多 RERANK_TOP_N 条）"""
+_tuned: dict = {}
+
+
+def _load_tuned() -> dict:
+    global _tuned
+    if not _tuned:
+        try:
+            with open(_TUNED_FILE, encoding="utf-8") as f:
+                _tuned = json.load(f)
+        except (OSError, ValueError):
+            _tuned = {}
+    return _tuned
+
+
+def current_params() -> dict:
+    """当前生效的检索参数（调优结果优先，否则配置默认值）"""
+    t = _load_tuned()
+    return {
+        "top_k": t.get("top_k", config.TOP_K),
+        "min_score": t.get("min_score", config.RERANK_MIN_SCORE),
+    }
+
+
+def retrieve(query: str, *, top_k: int | None = None,
+             min_score: float | None = None,
+             rerank_top_n: int | None = None) -> list[dict]:
+    """返回 [{text, document_id, title, source, score}]，按相关度降序"""
+    params = current_params()
+    top_k = top_k if top_k is not None else params["top_k"]
+    min_score = min_score if min_score is not None else params["min_score"]
+
     vec = embeddings.embed(query)
-    hits = milvus_store.search(vec)
+    hits = milvus_store.search(vec, top_k=top_k)
     if not hits:
         return []
     # rerank 精排（软依赖：rerank 挂了回退原始顺序+分数过滤）
-    reranked = embeddings.rerank(query, [h["text"] for h in hits])
+    reranked = embeddings.rerank(query, [h["text"] for h in hits],
+                                 top_n=rerank_top_n or config.RERANK_TOP_N)
     if reranked:
         kept = []
         for idx, score in sorted(reranked, key=lambda x: -x[1]):
-            if score < config.RERANK_MIN_SCORE:
+            if score < min_score:
                 continue
             h = hits[idx]
             kept.append({**h, "score": score})
         return kept
     # 无 rerank：用 Milvus 距离粗筛（COSINE 距离与相关性同向）
-    return [h for h in hits if h["score"] >= config.RERANK_MIN_SCORE][: config.RERANK_TOP_N]
+    return [h for h in hits if h["score"] >= min_score][: config.RERANK_TOP_N]
 
 
 def build_context(hits: list[dict], max_chars: int = 6000) -> str:
