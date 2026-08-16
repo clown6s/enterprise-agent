@@ -23,11 +23,21 @@ LONG_CUT = 600        # 长段落按句号切割的参考长度
 
 
 def chunk_text(text: str, max_chars: int = MAX_CHARS) -> list[str]:
-    """段落感知切分：短段落聚合、长段落按句号断"""
+    """
+    段落感知切分：短段落聚合、长段落按句号断。
+    「## 标题」行作为块边界：先 flush 当前块，标题作为下一块的开头
+    （标题感知切分的实况修复——早期注释声称有此功能但从未实现，
+    标题一直被当普通段落聚合进上一块）。
+    """
     paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
     chunks: list[str] = []
     buf = ""
     for p in paragraphs:
+        if p.startswith("## "):
+            if buf:
+                chunks.append(buf)
+            buf = p            # 标题成为新块的开头
+            continue
         if len(buf) + len(p) + 1 <= max_chars:
             buf = f"{buf}\n{p}" if buf else p
             continue
