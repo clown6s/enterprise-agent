@@ -103,10 +103,16 @@ def verify_breaker_state() -> dict:
             "suspended_until": _verify_suspended_until}
 
 
-def _verify(answer: str, context: str) -> str:
-    """小模型对照资料核查 → 确定性守卫收尾（Java 版 verify() 链的移植）"""
+def _verify(answer: str, context: str, graph_only: bool = False) -> str:
+    """
+    小模型对照资料核查 → 确定性守卫收尾（Java 版 verify() 链的移植）：
+    缺失术语硬删除 → 鉴伪断言删除 → 空标题清理 → 格式修复。
+    graph_only：图谱-only 兜底时把收紧规则也注入校验提示词——否则小模型会放过
+    图谱之外的内容（"图谱-only 授权过宽"的根因，恒传空串是漏接实况）。
+    """
     global _verify_failures, _verify_suspended_until
-    if not config.VERIFY_ENABLED or not answer.strip() or not context.strip():
+    if (not config.VERIFY_ENABLED or not answer.strip() or not context.strip()
+            or answer.strip() == guards.NO_ANSWER):
         return answer
     if time.time() < _verify_suspended_until:
         return guards.fix_output(answer) or guards.NO_ANSWER   # 熔断中：只过确定性守卫
@@ -114,7 +120,9 @@ def _verify(answer: str, context: str) -> str:
     missing_block = "、".join(missing) if missing else "（无）"
     try:
         checked = llm.chat(
-            "", _VERIFY_PROMPT.format(missing=missing_block, graph_only_rule="", context=context[:6000], answer=answer),
+            "", _VERIFY_PROMPT.format(missing=missing_block,
+                                      graph_only_rule=_GRAPH_ONLY_RULE if graph_only else "",
+                                      context=context[:6000], answer=answer),
             model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE, key=config.DASHSCOPE_KEY,
             temperature=0.2,
         ).strip()
@@ -136,8 +144,11 @@ def _verify(answer: str, context: str) -> str:
     else:
         _verify_failures = 0
 
-    # 确定性守卫：鉴伪断言 → 格式修复
+    # 确定性守卫（Java 同款顺序）：缺失术语硬删除 → 鉴伪断言 → 空标题清理 → 格式修复。
+    # missing 用校验前的答案算（Java 同款）：校验器已删掉的术语不误伤，漏删的在此兜底。
+    answer = guards.strip_missing_terms(answer, missing)
     answer = guards.strip_assertions(answer, context)
+    answer = guards.collapse_empty_headings(answer)
     return guards.fix_output(answer) or guards.NO_ANSWER
 
 
@@ -252,7 +263,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
                 user_prompt = f"【文件上下文】\n{file_block}\n\n" + user_prompt
             raw = llm.chat(_SYSTEM_PROMPT.format(date=_today_line()) + "\n" + _GRAPH_ONLY_RULE,
                            user_prompt)
-            final = _verify(raw, context)
+            final = _verify(raw, context, graph_only=True)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
@@ -335,7 +346,7 @@ def answer_stream(query: str, conversation_id: str = ""):
                     _SYSTEM_PROMPT.format(date=_today_line()) + "\n" + _GRAPH_ONLY_RULE,
                     f"【资料】\n{context}\n\n【用户问题】\n{query}"):
                 parts.append(chunk)
-            yield "token", _verify("".join(parts), context)
+            yield "token", _verify("".join(parts), context, graph_only=True)
             yield "sources", []
             yield "done", "[DONE]"
             return
