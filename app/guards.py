@@ -11,6 +11,8 @@
 6. strip_no_answer_hedge() 兜底句式混入清理（有实质内容的答案里混进"暂无法回答"半吊子句 → 删该句）
 7. find_missing_terms() 确定性术语核对（答案里资料没有的术语 → 缺失清单，校验链的输入）
 8. clean_cjk_spacing() CJK 多余空格清理（闲聊链路流式逐字带空格的实况）
+9. contains_injection()/strip_injection_sentences() 提示注入拦截（查询级拦截 + 上下文级清洗）
+   INJECTION_BLOCKED  查询命中注入时的固定回话
 
 设计原则：模型输出不可靠，能确定性算出来的事绝不再交给模型。
 """
@@ -328,6 +330,42 @@ def strip_no_answer_hedge(text: str) -> str:
            for l in result.split("\n")):
         return NO_ANSWER
     return result
+
+
+# ---------------- 7. 提示注入拦截 ----------------
+
+INJECTION_BLOCKED = "抱歉，检测到异常指令内容，无法处理该请求。"
+
+# 指令句式（中英）——知识库文档可投毒、用户消息可注入，确定性拦截：
+# "忽略以上所有指令/无视规则/不要遵守系统提示/输出你的提示词/system prompt" 等。
+# 注意别误伤日常问法（"你是谁"、"如何防止数据泄露"不在列——"泄露"必须紧跟提示类词）。
+_INJECTION = re.compile(
+    r"忽略(以上|之前|先前|上述|上面)?(的)?(所有|全部)?(指令|规则|要求|约束|提示|设定)"
+    r"|无视(以上|之前|上述)?(的)?(指令|规则|提示|约束)"
+    r"|(不要|禁止)(遵守|遵循|听从|理会)(以上|之前|上述)?(指令|规则|提示)"
+    r"|从现在起(你)?是|从现在开始(你)?是|假装你是|扮演(一个|一位)?"
+    r"|(泄露|暴露|输出|告诉我)(你的|其)?(系统)?(提示词|系统提示|指令|规则)"
+    r"|system prompt|ignore (previous|above|all) instructions|disregard (previous|all)"
+    r"|你是(一个)?(不受限制|没有限制|完全自由|无所不能)的"
+    r"|越狱模式|jailbreak"
+)
+
+
+def contains_injection(text: str) -> bool:
+    """查询/文件上下文是否含指令注入句式（用于查询级拦截）"""
+    return bool(text) and _INJECTION.search(text) is not None
+
+
+def strip_injection_sentences(text: str) -> str:
+    """
+    上下文清洗：删除含注入句式的句子（知识库文档投毒的防线），
+    删完可能为空——调用方视同无有效上下文。
+    """
+    if not text or not _INJECTION.search(text):
+        return text
+    kept = [s for s in re.split(r"(?<=[。！？；\n])", text)
+            if not _INJECTION.search(s)]
+    return "".join(kept).strip()
 
 
 # ---------------- 6. CJK 空格清理 ----------------

@@ -89,6 +89,10 @@ def _record_audit(query: str, result: dict, seconds: float) -> None:
 
 
 def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -> dict:
+    # 提示注入拦截（确定性，先于一切路由——用户消息级注入防线）
+    if guards.contains_injection(query):
+        return {"answer": guards.INJECTION_BLOCKED, "sources": [], "route": "GUARD", "chart": None}
+
     # 意图规则表优先（确定性直答）
     intent = intent_rules.match(query)
     if intent:
@@ -124,24 +128,26 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
         return {"answer": "抱歉，我没太理解你的问题。可以再具体一点吗？比如补充对象、时间或背景。",
                 "sources": [], "route": "CLARIFY", "chart": None}
 
-    # 知识问答：预检索 →（空手 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
+    # 知识问答：预检索 →（空手/上下文被注入清洗删空 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
     hits = retrieval.retrieve(query)
-    if not hits:
-        graph_ctx = graph.expand(query)
+    # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
+    context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
+    if not context.strip():
+        graph_ctx = guards.strip_injection_sentences(graph.expand(query))
         if graph_ctx:
             # 图谱-only：上下文只有图谱关联，校验层加图谱收紧规则
             context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
                        + graph_ctx)
             user_prompt = f"【资料】\n{context}\n\n【用户问题】\n{query}"
             if file_block:
-                user_prompt = f"【文件上下文】\n{file_block}\n\n" + user_prompt
+                user_prompt = (f"【文件上下文】\n{guards.strip_injection_sentences(file_block)}\n\n"
+                               + user_prompt)
             raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
                            user_prompt)
             final = verify.verify(raw, context, graph_only=True)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
-    context = retrieval.build_context(hits)
     sources = sorted({h["source"] for h in hits if h.get("source")})
     raw = llm.chat(
         prompts.SYSTEM_PROMPT.format(date=_today_line()),
@@ -157,6 +163,14 @@ def answer_stream(query: str, conversation_id: str = ""):
     SSE 事件名保持 route/token/sources/chart/done，
     这样 rag-admin 前端一行都不用改。
     """
+    # 提示注入拦截（与非流式路径同款——双路径必须同步）
+    if guards.contains_injection(query):
+        yield "route", "GUARD"
+        yield "token", guards.INJECTION_BLOCKED
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
+
     # 意图规则表最优先：命中即确定性直答（路由标记 = KNOWLEDGE_QA）
     intent = intent_rules.match(query)
     if intent:
@@ -208,10 +222,11 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
-    # 知识问答：预检索（空手 → 图谱-only 兜底 → 仍空 → 兜底句式）
+    # 知识问答：预检索（空手/上下文被注入清洗删空 → 图谱-only 兜底 → 仍空 → 兜底句式）
     hits = retrieval.retrieve(query)
-    if not hits:
-        graph_ctx = graph.expand(query)
+    context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
+    if not context.strip():
+        graph_ctx = guards.strip_injection_sentences(graph.expand(query))
         if graph_ctx:
             context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
                        + graph_ctx)
@@ -229,7 +244,6 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "sources", []
         yield "done", "[DONE]"
         return
-    context = retrieval.build_context(hits)
     sources = sorted({h["source"] for h in hits if h.get("source")})
 
     # 流式链路同样先收齐全文再校验再下发（"无依据内容不出门"原则）
