@@ -235,40 +235,60 @@ class FeishuChannel:
 
     @staticmethod
     def build_data_card(answer: str, chart: dict) -> dict:
-        """数据图表卡（schema 2.0）：VChart 折线/柱状 + 原生表格 + 汇总 + 来源说明"""
-        def _cell_type(v: str) -> str:
-            try:
-                float(v)
-                return "number"
-            except (TypeError, ValueError):
-                return "text"
+        """数据图表卡（schema 2.0）：VChart + 原生表格 + 汇总（与 Java 版同构——
+        表格列名用 c0/c1 索引名、数值列传数字类型、chart_spec 带 title）"""
         head = chart.get("table", [["-"]])[0]
         rows = chart.get("table", [])[1:]
-        columns = [{"name": h, "display_name": h,
-                    "data_type": _cell_type(rows[0][i]) if rows else "text"}
-                   for i, h in enumerate(head)]
+        # 数值列检测：除表头外全部可解析为数字 → number（右对齐+千分位）
+        numeric = []
+        for c in range(len(head)):
+            all_num = True
+            for row in rows:
+                try:
+                    float(str(row[c]))
+                except (ValueError, IndexError, TypeError):
+                    all_num = False
+                    break
+            numeric.append(all_num)
+        columns = [{"name": "c%d" % c, "display_name": head[c],
+                    "data_type": "number" if numeric[c] else "text"}
+                   for c in range(len(head))]
+        row_maps = []
+        for row in rows:
+            m = {}
+            for c in range(len(head)):
+                cell = str(row[c]) if c < len(row) else ""
+                if numeric[c]:
+                    try:
+                        m["c%d" % c] = float(cell)
+                    except ValueError:
+                        m["c%d" % c] = cell
+                else:
+                    m["c%d" % c] = cell
+            row_maps.append(m)
         vchart = {
             "type": chart.get("chartType", "line"),
             "data": {"values": chart.get("values", [])},
             "xField": chart.get("xField", "date"),
             "yField": chart.get("yField", "value"),
             "seriesField": chart.get("seriesField", "series"),
-            "height": 280,
+            "title": {"text": chart.get("title", "数据")},
         }
+        elements = [{"tag": "markdown", "content": answer[:2000]}]
+        elements.append({"tag": "chart", "chart_spec": vchart})   # snake_case（camelCase 会被拒 400）
+        if rows:
+            elements.append({"tag": "table", "page_size": 10,
+                             "columns": columns, "rows": row_maps})
+            if chart.get("summary"):
+                elements.append({"tag": "markdown", "content": "**" + chart["summary"] + "**"})
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "note", "elements": [{"tag": "plain_text",
+                                                      "content": "数据来源：OA 业务系统 · 图表由 VChart 渲染"}]})
         return {
             "schema": "2.0",
             "header": {"title": {"tag": "plain_text", "content": chart.get("title", "数据看板")},
                        "template": "blue"},
-            "body": {"elements": [
-                {"tag": "markdown", "content": answer[:2000]},
-                {"tag": "chart", "chart_spec": vchart},
-                {"tag": "table", "columns": columns,
-                 "rows": [dict(zip(head, row)) for row in rows]},
-                {"tag": "markdown", "content": "**" + (chart.get("summary") or "") + "**"},
-                {"tag": "hr"},
-                {"tag": "note", "elements": [{"tag": "plain_text",
-                                              "content": "数据来源：OA 业务系统 · 图表由 VChart 渲染"}]},
-            ]},
+            "body": {"elements": elements},
         }
 
     @staticmethod
