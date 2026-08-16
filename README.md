@@ -1,7 +1,7 @@
 # enterprise-agent
 
 企业 AI 问答/执行智能体（数字员工 + 知识库 + 技能体系 + 管理后台）。FastAPI 实现，模型链路直连
-OpenAI 兼容 API（DeepSeek 主力 + qwen-plus 校验层），向量检索走 Milvus（dense + BM25 混合，RRF）。
+OpenAI 兼容 API（qwen3-max 主力 + qwen-plus 校验层），向量检索走 Milvus（dense + BM25 混合，RRF）。
 
 ## 运行
 

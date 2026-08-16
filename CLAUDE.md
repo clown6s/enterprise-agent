@@ -9,7 +9,7 @@
 run.py                  # 启动入口：python run.py（--reload 热重载）→ 8080
 app/
   config.py             # .env 加载（根目录 .env，不是 app/.env）
-  llm.py                # DeepSeek 主力 + qwen-plus 校验层（手写 httpx OpenAI 兼容客户端）
+  llm.py                # qwen3-max 主力 + qwen-plus 校验层（手写 httpx OpenAI 兼容客户端）
   prompts.py            # 提示词集中管理（系统/校验/图谱收紧规则；改提示词必须跑回归）
   embeddings.py         # BGE-M3 嵌入 + SiliconFlow bge-reranker-v2-m3 重排
   milvus_store.py       # 混合检索（dense + sparse_bm25，RRF）

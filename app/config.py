@@ -18,10 +18,11 @@ def _env(key: str, default: str = "") -> str:
 
 
 # ---------------- LLM ----------------
-# DeepSeek 主力模型（OpenAI 兼容接口）：对话 + 流式
-DEEPSEEK_KEY = _env("DEEPSEEK_API_KEY")
-DEEPSEEK_BASE = "https://api.deepseek.com"
-DEEPSEEK_MODEL = "deepseek-chat"
+# 主力模型 qwen3-max（百炼旗舰，OpenAI 兼容接口）：对话 + 流式
+# （2026-08-17 用户指定：主力生成换更强千问，替代 deepseek-chat）
+MAIN_KEY = _env("DASHSCOPE_API_KEY")
+MAIN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+MAIN_MODEL = "qwen3-max"
 # 阿里云百炼 qwen-plus：答案校验小模型（省成本）
 DASHSCOPE_KEY = _env("DASHSCOPE_API_KEY")
 DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"

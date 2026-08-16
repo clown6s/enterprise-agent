@@ -31,9 +31,9 @@ def _messages(system: str, user: str) -> list[dict]:
 
 
 def chat(system: str, user: str, *,
-         model: str = config.DEEPSEEK_MODEL,
-         base: str = config.DEEPSEEK_BASE,
-         key: str = config.DEEPSEEK_KEY,
+         model: str = config.MAIN_MODEL,
+         base: str = config.MAIN_BASE,
+         key: str = config.MAIN_KEY,
          temperature: float = 0.7) -> str:
     """一次性对话，返回完整文本；失败抛异常（调用方决定兜底策略）"""
     _t0 = time.time()
@@ -56,9 +56,9 @@ def chat(system: str, user: str, *,
 
 
 def chat_stream(system: str, user: str, *,
-                model: str = config.DEEPSEEK_MODEL,
-                base: str = config.DEEPSEEK_BASE,
-                key: str = config.DEEPSEEK_KEY) -> Iterator[str]:
+                model: str = config.MAIN_MODEL,
+                base: str = config.MAIN_BASE,
+                key: str = config.MAIN_KEY) -> Iterator[str]:
     """
     流式对话生成器：每次 yield 一段增量文本。
     流式协议是 SSE：每行 "data: {json}"，[DONE] 结束。

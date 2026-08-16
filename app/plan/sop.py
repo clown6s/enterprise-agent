@@ -186,8 +186,8 @@ def _execute_leave(query: str) -> dict:
         f"时间：{params['startTime']} 至 {params['endTime']}；"
         f"事由：{params['reason'].strip()}。\n"
         "只输出这句话，不要编造其他信息（如审批人、预计通过时间）。")
-    receipt = llm.chat("", receipt_prompt, model=config.DEEPSEEK_MODEL,
-                       base=config.DEEPSEEK_BASE, key=config.DEEPSEEK_KEY)
+    receipt = llm.chat("", receipt_prompt, model=config.MAIN_MODEL,
+                       base=config.MAIN_BASE, key=config.MAIN_KEY)
     return {"answer": receipt.strip(), "route": "SOP"}
 
 
