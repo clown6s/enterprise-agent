@@ -6,6 +6,8 @@
                       （embed → insert，立即可被检索）
 - record_unhelpful() 负反馈 → 自动生成回归用例（该问法不得再出兜底句式），
                       带纠正文本的进待审队列（eval/pending_cases.jsonl，人工定断言）
+- enqueue_review()   低把握答案（兜底句式/图谱-only）自动进 answer_review 审核队列
+                      （此前该表只有列表/批准/驳回接口、无入队逻辑，队列空转）
 """
 import hashlib
 import json
@@ -17,7 +19,9 @@ from datetime import datetime
 import pymysql
 
 from .. import config, embeddings, milvus_store
-from .eval_engine import _EVAL_DIR
+
+# 本地计算 eval 目录（勿从 eval_engine 导入——agent→feedback→eval_engine→agent 循环导入）
+_EVAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "eval")
 
 _PENDING_FILE = os.path.join(_EVAL_DIR, "pending_cases.jsonl")
 _REGRESSION_FILE = os.path.join(_EVAL_DIR, "regression_cases.json")
@@ -33,6 +37,26 @@ def _conn() -> pymysql.connections.Connection:
 
 def _hash_query(query: str) -> str:
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:64]
+
+
+def enqueue_review(query: str, answer: str, sources: str = "") -> bool:
+    """
+    审核入队：低把握答案（兜底句式触发 / 图谱-only 兜底）自动进人工审核队列，
+    管理后台"答案审核"页审批。软依赖——入队失败只记日志不影响回答。
+    """
+    try:
+        conn = _conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO answer_review (query, answer, sources, employee_id, user, status) "
+                "VALUES (%s, %s, %s, 0, 'system', 'PENDING')",
+                (query[:500], answer[:2000], sources[:1000]))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[review] 审核入队失败: {e!r}")
+        return False
 
 
 # ---------------- 1. 采纳 → 知识库回流 ----------------

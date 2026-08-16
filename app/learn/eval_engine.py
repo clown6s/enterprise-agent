@@ -23,11 +23,17 @@ _EVAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 # ---------------- 1. 问答回归 ----------------
 
 def run_answer_case(case: dict) -> dict:
-    """执行一条断言用例，返回 {id, query, passed, checks, seconds}"""
+    """执行一条断言用例，返回 {id, query, passed, checks, seconds}。
+    每用例独立会话（多轮历史/待确认单不串用例）；followup 字段支持二轮断言
+    （如请假流程先回确认提示、再答"确认"后断言提交回执）。"""
     query = case["query"]
     expect = case.get("expect", {})
+    conversation_id = f"eval-{case.get('id', 'case')}"
     start = time.time()
-    result = agent.answer(query, "eval")
+    result = agent.answer(query, conversation_id)
+    followup = case.get("followup")
+    if followup:
+        result = agent.answer(followup, conversation_id)
     seconds = time.time() - start
 
     checks: list[tuple[str, bool, str]] = []

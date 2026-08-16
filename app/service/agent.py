@@ -18,7 +18,7 @@ from datetime import datetime
 
 from .. import guards, llm, prompts
 from ..intent import rules as intent_rules
-from ..learn import gap_discovery
+from ..learn import feedback, gap_discovery
 from ..plan import sop as sop_engine
 from . import docwizard, graph, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
@@ -48,6 +48,13 @@ def _today_line() -> str:
     now = datetime.now()
     week = "一二三四五六日"[now.weekday()]
     return f"今天是 {now.strftime('%Y-%m-%d')} 星期{week}"
+
+
+def _maybe_enqueue_review(conversation_id: str, query: str, answer: str) -> None:
+    """低把握答案进人工审核队列；评测会话跳过（防回归跑分污染审核队列）"""
+    if conversation_id.startswith("eval"):
+        return
+    feedback.enqueue_review(query, answer)
 
 
 # ---------------- 主入口 ----------------
@@ -112,10 +119,16 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
                     "sources": [], "route": "DOC_WIZARD", "chart": None}
         return {"answer": doc["answer"], "sources": [], "route": "DOC_WIZARD", "chart": None}
 
-    # SOP 状态机（执行准确层：请假四步走确定性流程）
+    # 待确认单的确认/取消（人机协同闸门——先于 SOP 匹配，"确认"不会误入其他路由）
+    pending = sop_engine.try_confirm_or_cancel(conversation_id, query)
+    if pending:
+        return {"answer": guards.fix_output(pending["answer"]), "sources": [],
+                "route": "SOP", "chart": None}
+
+    # SOP 状态机（执行准确层：请假四步走确定性流程 + 提交前确认）
     sop = sop_engine.match(query)
     if sop:
-        result = sop_engine.execute(sop, query)
+        result = sop_engine.execute(sop, query, conversation_id)
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
                 "route": "SOP", "chart": None}
 
@@ -145,8 +158,10 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
             raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
                            user_prompt)
             final = verify.verify(raw, context, graph_only=True)
+            _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
+        _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     sources = sorted({h["source"] for h in hits if h.get("source")})
     raw = llm.chat(
@@ -198,10 +213,18 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
+    pending = sop_engine.try_confirm_or_cancel(conversation_id, query)
+    if pending:
+        yield "route", "SOP"
+        yield "token", guards.fix_output(pending["answer"])
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
+
     sop = sop_engine.match(query)
     if sop:
         yield "route", "SOP"
-        result = sop_engine.execute(sop, query)
+        result = sop_engine.execute(sop, query, conversation_id)
         yield "token", guards.fix_output(result["answer"])
         yield "sources", []
         yield "done", "[DONE]"
@@ -235,11 +258,14 @@ def answer_stream(query: str, conversation_id: str = ""):
                     prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
                     f"【资料】\n{context}\n\n【用户问题】\n{query}"):
                 parts.append(chunk)
-            yield "token", verify.verify("".join(parts), context, graph_only=True)
+            final = verify.verify("".join(parts), context, graph_only=True)
+            _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
+            yield "token", final
             yield "sources", []
             yield "done", "[DONE]"
             return
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
+        _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         yield "token", guards.NO_ANSWER
         yield "sources", []
         yield "done", "[DONE]"

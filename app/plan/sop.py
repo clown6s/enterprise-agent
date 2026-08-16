@@ -124,8 +124,84 @@ def _validate_leave(params: dict, employees: list[dict]) -> str | None:
     return None
 
 
-def _execute_leave(query: str) -> dict:
-    """请假 SOP 主流程：返回 {answer, route}"""
+# ---------------- 提交前确认（人机协同闸门） ----------------
+# 校验通过后先落"待确认单"，用户回复"确认"才提交 OA——高危写操作不再无人把关。
+# MySQL 不可用时降级为直接提交（功能不因存储抖动而断）。
+
+_CONFIRM_WORDS = {"确认", "确定", "好的", "可以", "提交", "是的", "确认提交", "确定提交"}
+_CANCEL_WORDS = {"取消", "算了", "不用了", "不请了"}
+
+
+def _pending_conn():
+    import pymysql
+    return pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
+                           password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
+                           charset="utf8mb4", connect_timeout=3)
+
+
+def save_pending(chat_id: str, params: dict, emp: dict) -> bool:
+    """保存待确认请假单；失败返回 False（调用方降级直接提交）"""
+    try:
+        conn = _pending_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS sop_pending ("
+                "chat_id VARCHAR(64) PRIMARY KEY, params TEXT NOT NULL, emp TEXT NOT NULL,"
+                "created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+            cur.execute(
+                "REPLACE INTO sop_pending (chat_id, params, emp, created_at) VALUES (%s,%s,%s,NOW())",
+                (chat_id, json.dumps(params, ensure_ascii=False), json.dumps(emp, ensure_ascii=False)))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[sop] 待确认单保存失败（降级直接提交）: {e!r}")
+        return False
+
+
+def load_pending(chat_id: str) -> dict | None:
+    try:
+        conn = _pending_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT params, emp FROM sop_pending WHERE chat_id=%s", (chat_id,))
+            row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {"params": json.loads(row[0]), "emp": json.loads(row[1])}
+    except Exception:
+        return None
+
+
+def clear_pending(chat_id: str) -> None:
+    try:
+        conn = _pending_conn()
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sop_pending WHERE chat_id=%s", (chat_id,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def try_confirm_or_cancel(chat_id: str, query: str) -> dict | None:
+    """待确认单的确认/取消入口：命中返回 {answer, route}，否则 None。
+    "确认"这类词只在有待确认单时生效，无单时落回闲聊等正常路由。"""
+    q = (query or "").strip()
+    if not chat_id or q not in _CONFIRM_WORDS | _CANCEL_WORDS:
+        return None
+    pending = load_pending(chat_id)
+    if not pending:
+        return None
+    clear_pending(chat_id)
+    if q in _CONFIRM_WORDS:
+        _audit("leave_action", "user_confirmed", pending["params"], pending["emp"].get("realName", ""), 0.0)
+        return _submit_leave(pending["params"], pending["emp"])
+    return {"answer": "已取消，未提交请假申请。", "route": "SOP"}
+
+
+def _execute_leave(query: str, chat_id: str = "") -> dict:
+    """请假 SOP 主流程：查名册 → 提取 → 校验 →（提交前确认）→ 提交 → 回执"""
     start_ts = time.time()
     # 步骤1：查员工名册
     employees = oa.employees() or []
@@ -158,8 +234,21 @@ def _execute_leave(query: str) -> dict:
         # 防"编造成功"：校验失败信息确定性直出，模型没有机会改写成"已提交"
         return {"answer": error, "route": "SOP"}
 
-    # 步骤4：提交 OA
     emp = next(e for e in employees if e.get("realName") == params["userName"].strip())
+
+    # 提交前确认（人机协同闸门）：落待确认单，等用户"确认"；
+    # 存储失败降级为直接提交——功能不因 MySQL 抖动而断
+    if chat_id and save_pending(chat_id, params, emp):
+        _audit("leave_action", "pending_confirm", params, emp.get("realName", ""), 0.0)
+        return {"answer": (f"请确认请假申请：{emp.get('realName')}，"
+                           f"{params['startTime']} 至 {params['endTime']}，"
+                           f"事由：{params['reason'].strip()}。\n"
+                           f"回复「确认」提交，回复「取消」放弃。"), "route": "SOP"}
+    return _submit_leave(params, emp)
+
+
+def _submit_leave(params: dict, emp: dict) -> dict:
+    """步骤4-5：提交 OA + 回执（参数已通过确定性校验；确认闸门之后或降级直提）"""
     start_date = datetime.fromisoformat(params["startTime"])
     end_date = datetime.fromisoformat(params["endTime"])
     payload = {
@@ -179,7 +268,7 @@ def _execute_leave(query: str) -> dict:
         return {"answer": "请假提交失败：OA 系统未受理，请稍后再试。", "route": "SOP"}
     apply_no = resp.get("data") or ""
 
-    # 步骤5：回执（数据全来自 OA 返回，模型只做措辞包装）
+    # 回执（数据全来自 OA 返回，模型只做措辞包装）
     receipt_prompt = (
         "用户已成功提交请假申请。请用一句话回复用户，必须包含以下信息：\n"
         f"申请单号：{apply_no}；姓名：{emp.get('realName')}；"
@@ -191,7 +280,7 @@ def _execute_leave(query: str) -> dict:
     return {"answer": receipt.strip(), "route": "SOP"}
 
 
-def execute(sop: SopDefinition, query: str) -> dict:
+def execute(sop: SopDefinition, query: str, chat_id: str = "") -> dict:
     if sop.code == "leave_action":
-        return _execute_leave(query)
+        return _execute_leave(query, chat_id)
     return {"answer": "该流程暂未实现。", "route": "SOP"}
