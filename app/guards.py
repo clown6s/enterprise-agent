@@ -85,11 +85,15 @@ def fix_output(text: str) -> str:
 
     # 3.5) 裸标题列表恢复：校验层把 "**标题**：\n- 条目" 洗成 "标题：\n裸条目"
     #      （实况：高血压回答的"血压控制目标值：/用药原则："下全是无前缀裸行）。
-    #      裸标题行（短行以"："结尾、后无内容）下连续 ≥2 行无句末标点的裸片段
-    #      → 标题回填加粗、片段回填 "- " 前缀（交给步骤 4 编号）。
-    #      有句末标点的行视为正文散文，不碰——防止把段落误编成列表。
+    #      裸标题行（短行以"："结尾、后无内容）下连续 ≥2 行条目状裸行
+    #      → 标题回填加粗、条目回填 "- " 前缀（交给步骤 4 编号）。
+    #      条目判定：无内部句末标点、行尾至多一个句末标点、≤60 字——校验层还会
+    #      给条目补句号的实况后放宽过（曾用"无句号"判条目，结果全被放过）。
+    #      散文防线是"行内多句/长行"，不是"有句号"。
+    #      已有编号的行排除（防双重编号，01a1cb9 同款根因）。
     _BARE_HEADING = re.compile(r"^(?:\*\*)?([^\n：|*]{1,24})(?:\*\*)?([：:])$")
-    _FRAGMENT = re.compile(r"^[^。！？；：]{1,200}$")
+    _FRAGMENT = re.compile(r"^[^。！？；：]{1,59}[。！？]?$")
+    _NUMBERED = re.compile(r"^\d+[.、]\s*")
     restored_bare: list[str] = []
     i = 0
     while i < len(lines):
@@ -100,6 +104,7 @@ def fix_output(text: str) -> str:
             j = i + 1
             while (j < len(lines) and lines[j].strip()
                    and _FRAGMENT.match(lines[j].strip())
+                   and not _NUMBERED.match(lines[j].strip())
                    and not lines[j].strip().startswith(("- ", "* ", "• ", "**"))):
                 frags.append(j)
                 j += 1

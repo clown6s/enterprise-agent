@@ -57,7 +57,7 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 - 飞书卡片 schema 分裂：answer 卡用 1.0 信封（顶层 elements，note+action 有效）；data 卡用 2.0（VChart+表格，不支持 note/action，note 用 markdown）
 - docx 块 API 必须带 `document_revision_id=-1`
 - guards.py 格式恢复规则要加负向 lookahead 防双重编号（"1. 感知工具：" 被重复编号的实况）
-- 校验层会洗掉列表前缀（"**标题**："下的"- 条目"变裸行）：guards 3.5 步确定性恢复，散文行以句末标点做防线不误编
+- 校验层会洗掉列表前缀（"**标题**："下的"- 条目"变裸行）还会给条目补句号：guards 3.5 步确定性恢复，条目判定=无内部句末标点+行尾至多一个句号+≤60字；散文防线是"行内多句/长行"不是"有句号"（曾误用句号当防线导致实况漏过）
 - collapse_empty_headings 判定空标题别把 `\d+[.、]` 编号行加进去（"**标题**：\n1. 内容"是正常结构）
 - 凭据（MySQL root 密码含特殊字符）：走文件传递，**绝不内联到 shell 命令**
 - 不要用"政务/纪检/信访"类措辞，用"合规/企业"等中性词
