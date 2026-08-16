@@ -313,15 +313,17 @@ class FeishuChannel:
     def build_answer_card(answer: str, sources: list[str]) -> dict:
         """回答卡片（schema 2.0）：markdown 正文 + 来源 note + 👍👎 反馈按钮"""
         source_note = "、".join(sources) if sources else "无来源"
+        # schema 1.0（Java 版同款）：无 schema 键 = 1.0，elements 在顶层；
+        # action 按钮/note 组件在 1.0 支持（2.0 会拒 unsupported tag action）
         return {
-            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
             "header": {"title": {"tag": "plain_text", "content": "🤖 数字员工回答"},
                        "template": "blue"},
-            "body": {"elements": [
+            "elements": [
                 {"tag": "markdown", "content": answer[:6000]},
                 {"tag": "hr"},
-                # schema 2.0 不支持 note 组件（unsupported tag note）→ 来源注记用 markdown
-                {"tag": "markdown", "content": "📄 来源：" + source_note},
+                {"tag": "note", "elements": [
+                    {"tag": "plain_text", "content": "📄 来源：" + source_note}]},
                 {"tag": "action", "actions": [
                     {"tag": "button",
                      "text": {"tag": "plain_text", "content": "👍 有帮助"},
@@ -330,7 +332,7 @@ class FeishuChannel:
                      "text": {"tag": "plain_text", "content": "👎 无帮助"},
                      "type": "default", "value": {"action": "unhelpful"}},
                 ]},
-            ]},
+            ],
         }
 
     def _reply_card(self, message_id: str, card: dict) -> bool:
