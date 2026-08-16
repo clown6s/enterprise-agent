@@ -3,8 +3,8 @@
 确定性守卫与输出修复（一晚上攒下的血泪教训一次沉淀下来）：
 
 1. NO_ANSWER           检索空手时的兜底句式（不信任模型自觉）
-2. fix_output()        输出格式修复：无序列表转编号、图谱回声块剥除、编号与内容
-                       拆行合并、孤立编号行合并、裸标题列表恢复、结尾残句清理
+2. fix_output()        输出格式修复：列表统一 '-' 条目（编号/无序都归一）、图谱回声块
+                       剥除、编号与内容拆行合并、孤立编号行合并、裸标题列表恢复、结尾残句清理
 3. strip_assertions()  鉴伪断言确定性删除（"并非××所言/伪名言"必须出自资料）
 4. strip_missing_terms() 含"资料中不存在术语"的句子删除 + 延伸服务套话拦截
 5. collapse_empty_headings() 硬删后空标题清理（"**标题**："下空无一物 → 移除）
@@ -30,21 +30,25 @@ _GRAPH_LINE = re.compile(r"^[^\n：（）]{1,40}（[^\n）]{1,40}）：[^\n。�
 _LONE_NUMBER = re.compile(r"^(\d+)\.\s*$")
 
 
-def _number_list_lines(lines: list[str]) -> list[str]:
-    """'- /*/• 开头 → 有序编号；全行加粗的行视为标题（不编号并打断计数）"""
+def _dash_list_lines(lines: list[str]) -> list[str]:
+    """列表统一为 '- ' 条目（'1. 内容'/'1、内容'/'- 内容'/'* 内容' → '- 内容'）；
+    加粗标题行（**标题**，可带冒号结尾）去编号/符号，保持纯标题。
+    编号正则带负向 lookahead：'1.5倍'、'2024.01.01' 这类数字开头的行不动。
+    （用户风格决策：条目不要数字编号——飞书卡片会把多级编号渲染成连续 1-10。）"""
     out: list[str] = []
-    counter = 0
     for l in lines:
         s = l.strip()
-        if s.startswith("- **") and s.endswith("**"):
-            counter = 0
-            out.append(s[2:].strip())
+        rest = None
+        m = re.match(r"^(?!\d+\.\d)(\d+)[.、]\s*(.*)$", s)
+        if m:
+            rest = m.group(2)
         elif s.startswith(("- ", "* ", "• ")):
-            counter += 1
-            out.append(f"{counter}. {s[2:]}")
-        elif s:
-            counter = 0
-            out.append(l)
+            rest = s[2:]
+        if rest is not None:
+            if rest.startswith("**") and rest.rstrip("：:").endswith("**"):
+                out.append(rest)               # 标题行：去编号/符号，保留加粗
+            else:
+                out.append("- " + rest)        # 条目：统一 '- '
         else:
             out.append(l)
     return out
@@ -86,7 +90,7 @@ def fix_output(text: str) -> str:
     # 3.5) 裸标题列表恢复：校验层把 "**标题**：\n- 条目" 洗成 "标题：\n裸条目"
     #      （实况：高血压回答的"血压控制目标值：/用药原则："下全是无前缀裸行）。
     #      裸标题行（短行以"："结尾、后无内容）下连续 ≥2 行条目状裸行
-    #      → 标题回填加粗、条目回填 "- " 前缀（交给步骤 4 编号）。
+    #      → 标题回填加粗、条目回填 "- " 前缀（交给步骤 4 归一）。
     #      条目判定：无内部句末标点、行尾至多一个句末标点、≤60 字——校验层还会
     #      给条目补句号的实况后放宽过（曾用"无句号"判条目，结果全被放过）。
     #      散文防线是"行内多句/长行"，不是"有句号"。
@@ -118,8 +122,8 @@ def fix_output(text: str) -> str:
         i += 1
     lines = restored_bare
 
-    # 4) 无序列表 → 有序编号（"- 内容" → "1. 内容"；全行加粗的行是标题，不编号并打断计数）
-    out = _number_list_lines(lines)
+    # 4) 列表统一 '- ' 条目（编号/无序都归一；加粗标题去符号）
+    out = _dash_list_lines(lines)
 
     # 4.5) 定义行列表恢复：校验层常把编号列表洗成裸行（"感知工具：让 Agent 访问信息"）
     #      连续 ≥3 行 → 整段恢复为 " - " 列表（含段内前几行，回填前缀）
@@ -144,8 +148,8 @@ def fix_output(text: str) -> str:
             restored[j] = "- " + restored[j].strip()
     out = restored
 
-    # 4.6) 恢复出的列表统一转有序编号（4.5 在 4 之后补的 "- " 前缀，这里再跑一次编号）
-    out = _number_list_lines(out)
+    # 4.6) 4.5 回填 "- " 前缀后统一过一遍 dash 归一（幂等；顺带归一 * / •）
+    out = _dash_list_lines(out)
 
     # 5) CJK 与拉丁字符之间补空格（"通过Agent 状态栏" → "通过 Agent 状态栏"）
     out = [re.sub(r"(?<=[一-龥])(?=[A-Za-z])", " ", l) for l in out]
