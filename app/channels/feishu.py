@@ -20,6 +20,8 @@ try:
     import lark_oapi
     from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+    from lark_oapi.event.callback.model.p2_card_action_trigger import (
+        P2CardActionTrigger, P2CardActionTriggerResponse, CallBackToast)
     from lark_oapi.ws import Client as WsClient
     SDK_AVAILABLE = True
 except ImportError:
@@ -36,6 +38,8 @@ class FeishuChannel:
         self._ws = None
         # 按群的图片 OCR 文件上下文（chat_id → 文本）
         self._file_contexts: dict[str, str] = {}
+        # 按群的最近一次问答（卡片 👍👎 回调用，值只带 action 不带全文）
+        self._last_answers: dict[str, dict] = {}
         self._seen: set[str] = set()
 
     # ---------------- 生命周期 ----------------
@@ -48,6 +52,7 @@ class FeishuChannel:
             return
         dispatcher = (EventDispatcherHandler.builder(self.app_id, self.app_secret)
                       .register_p2_im_message_receive_v1(self._on_message)
+                      .register_p2_card_action_trigger(self._on_card_action)
                       .build())
         self._ws = WsClient(self.app_id, self.app_secret,
                             log_level=lark_oapi.LogLevel.ERROR,
@@ -129,11 +134,17 @@ class FeishuChannel:
                 return
             self._ingest_ocr_text(ocr_text, message_id)
             return
-        # 常规问答（带文件上下文）
+        # 常规问答（带文件上下文）→ 卡片回复（带 👍👎 反馈按钮）
         file_block = self._file_contexts.get(chat_id)
         from ..service import agent
         result = agent.answer(text, chat_id, file_block=file_block)
-        self._reply(message_id, result["answer"])
+        self._last_answers[chat_id] = {
+            "query": text, "answer": result["answer"],
+            "source": (result["sources"] or [None])[0] or "",
+        }
+        if not self._reply_card(message_id, self.build_answer_card(
+                result["answer"], result["sources"])):
+            self._reply(message_id, result["answer"])   # 卡片失败回退纯文本
 
     # ---------------- 图片 OCR ----------------
 
@@ -208,6 +219,82 @@ class FeishuChannel:
         self._reply(message_id,
                     "已入库《图片识别_%s》，现在知识库检索可以找到它了。" % qh[:8]
                     if ok else "入库失败，请稍后再试。")
+
+    # ---------------- 卡片 ----------------
+
+    @staticmethod
+    def build_answer_card(answer: str, sources: list[str]) -> dict:
+        """回答卡片（schema 2.0）：markdown 正文 + 来源 note + 👍👎 反馈按钮"""
+        source_note = "、".join(sources) if sources else "无来源"
+        return {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": "🤖 数字员工回答"},
+                       "template": "blue"},
+            "body": {"elements": [
+                {"tag": "markdown", "content": answer[:6000]},
+                {"tag": "hr"},
+                {"tag": "note", "elements": [
+                    {"tag": "plain_text", "content": "📄 来源：" + source_note}]},
+                {"tag": "action", "actions": [
+                    {"tag": "button",
+                     "text": {"tag": "plain_text", "content": "👍 有帮助"},
+                     "type": "primary", "value": {"action": "helpful"}},
+                    {"tag": "button",
+                     "text": {"tag": "plain_text", "content": "👎 无帮助"},
+                     "type": "default", "value": {"action": "unhelpful"}},
+                ]},
+            ]},
+        }
+
+    def _reply_card(self, message_id: str, card: dict) -> bool:
+        token = self._app_access_token()
+        if not token:
+            return False
+        try:
+            resp = httpx.post(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply"
+                f"?receive_id_type=chat_id",
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"},
+                json={"msg_type": "interactive",
+                      "content": json.dumps(card, ensure_ascii=False)},
+                timeout=15,
+            )
+            return resp.status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    def _on_card_action(self, trigger: P2CardActionTrigger) -> P2CardActionTriggerResponse:
+        """卡片按钮回调 → 反馈闭环（👍 采纳回流 / 👎 自动锁用例）"""
+        from ..learn import feedback
+        resp = P2CardActionTriggerResponse()
+        toast = CallBackToast()
+        toast.type = "info"
+        try:
+            action = (trigger.event.action.value or {}).get("action", "")
+            ctx = trigger.event.context
+            chat_id = (getattr(ctx, "open_chat_id", None)
+                       or getattr(ctx, "chat_id", None) or "")
+            last = self._last_answers.get(chat_id)
+            if not last:
+                toast.content = "未找到对应问答记录（可能已过期）"
+                resp.toast = toast
+                return resp
+            if action == "helpful":
+                feedback.adopt(last["query"], last["answer"], last["source"])
+                toast.content = "已采纳，该问答已回流知识库"
+            elif action == "unhelpful":
+                result = feedback.record_unhelpful(last["query"], last["answer"])
+                toast.content = ("已记录并生成回归用例，我会改进"
+                                 if result.get("status") == "case_created"
+                                 else "已记录，我会改进")
+            else:
+                toast.content = "未知操作"
+        except Exception as e:
+            toast.content = "反馈处理异常"
+            print(f"[飞书] 卡片回调异常: {e}")
+        resp.toast = toast
+        return resp
 
     # ---------------- 回复 ----------------
 

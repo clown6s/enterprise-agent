@@ -18,7 +18,7 @@ from .. import config, guards, llm
 from ..intent import rules as intent_rules
 from ..learn import gap_discovery
 from ..plan import sop as sop_engine
-from . import graph, retrieval
+from . import docwizard, graph, retrieval
 
 # ---------------- 意图与关键词模式 ----------------
 
@@ -174,6 +174,11 @@ def answer(query: str, conversation_id: str = "", file_block: str = "") -> dict:
         return {"answer": guards.fix_output(intent["answer"]), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
 
+    # 文档生成（一句话直达云文档）
+    doc = docwizard.try_generate(query)
+    if doc:
+        return {"answer": doc["answer"], "sources": [], "route": "DOC_WIZARD", "chart": None}
+
     # SOP 状态机（执行准确层：请假四步走确定性流程）
     sop = sop_engine.match(query)
     if sop:
@@ -230,6 +235,14 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "token", guards.fix_output(intent["answer"])
         if intent.get("chart"):
             yield "chart", intent["chart"]
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
+
+    doc = docwizard.try_generate(query)
+    if doc:
+        yield "route", "DOC_WIZARD"
+        yield "token", doc["answer"]
         yield "sources", []
         yield "done", "[DONE]"
         return
