@@ -88,10 +88,15 @@ def kill_port(port):
 
 
 def start_service(svc):
-    ps = ("Start-Process -FilePath " + repr(svc["start"][0])
-          + " -ArgumentList " + repr(",".join("'" + a + "'" for a in svc["start"][1:]))
-          + f" -WorkingDirectory '{svc['workdir']}' -WindowStyle Hidden"
-          + f" -RedirectStandardOutput '{svc['log']}' -RedirectStandardError '{svc['err']}'")
+    # 逐个参数加单引号后逗号连接（"-jar","<jar路径>" 各为独立参数，
+    # 不能拼成一个带引号的整体——java 会把整串当类名）
+    cmd = svc["start"]
+    args = ",".join("'" + a + "'" for a in cmd[1:])
+    ps = ("Start-Process -FilePath '" + cmd[0] + "'"
+          + (" -ArgumentList " + args if args else "")
+          + " -WorkingDirectory '" + svc["workdir"] + "' -WindowStyle Hidden"
+          + " -RedirectStandardOutput '" + svc["log"]
+          + "' -RedirectStandardError '" + svc["err"] + "'")
     subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                    capture_output=True, text=True, timeout=60)
 
