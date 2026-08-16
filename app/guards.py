@@ -78,7 +78,8 @@ def fix_output(text: str) -> str:
 
     # 4.5) 定义行列表恢复：校验层常把编号列表洗成裸行（"感知工具：让 Agent 访问信息"）
     #      连续 ≥3 行 → 整段恢复为 " - " 列表（含段内前几行，回填前缀）
-    _DEF_LINE = re.compile(r"^[^\n：|]{1,24}：[^\n]{1,200}$")
+    # 排除已有编号/列表符的行（"1. 感知工具：…" 不再重复编号 → 双重编号"1. 1."的根因）
+    _DEF_LINE = re.compile(r"^(?!\d+[.、]\s*)(?![*-]\s)[^\n：|]{1,24}：[^\n]{1,200}$")
     restored = []
     run_start = -1
     for idx, l in enumerate(out):
