@@ -76,7 +76,49 @@ def fix_output(text: str) -> str:
         else:
             out.append(l)
 
-    # 5) 压缩连续空行 + 结尾冒号残句（模型收尾被截断的典型形态）
+    # 4.5) 定义行列表恢复：校验层常把编号列表洗成裸行（"感知工具：让 Agent 访问信息"）
+    #      连续 ≥3 行 → 整段恢复为 " - " 列表（含段内前几行，回填前缀）
+    _DEF_LINE = re.compile(r"^[^\n：|]{1,24}：[^\n]{1,200}$")
+    restored = []
+    run_start = -1
+    for idx, l in enumerate(out):
+        if _DEF_LINE.match(l.strip()):
+            if run_start < 0:
+                run_start = idx
+        else:
+            if run_start >= 0 and idx - run_start >= 3:
+                for j in range(run_start, idx):
+                    restored[j] = "- " + restored[j].strip()
+            run_start = -1
+        restored.append(l.strip() if l.strip() else l)
+    if run_start >= 0 and len(out) - run_start >= 3:
+        for j in range(run_start, len(out)):
+            restored[j] = "- " + restored[j].strip()
+    out = restored
+
+    # 4.6) 恢复出的列表统一转有序编号（4.5 在 4 之后补的 "- " 前缀，这里再跑一次编号）
+    numbered: list[str] = []
+    counter = 0
+    for l in out:
+        s = l.strip()
+        if s.startswith("- **") and s.endswith("**"):
+            counter = 0
+            numbered.append(s[2:].strip())
+        elif s.startswith(("- ", "* ", "• ")):
+            counter += 1
+            numbered.append(f"{counter}. {s[2:]}")
+        elif s:
+            counter = 0
+            numbered.append(l)
+        else:
+            numbered.append(l)
+    out = numbered
+
+    # 5) CJK 与拉丁字符之间补空格（"通过Agent 状态栏" → "通过 Agent 状态栏"）
+    out = [re.sub(r"(?<=[一-龥])(?=[A-Za-z])", " ", l) for l in out]
+    out = [re.sub(r"(?<=[A-Za-z])(?=[一-龥])", " ", l) for l in out]
+
+    # 6) 压缩连续空行 + 结尾冒号残句（模型收尾被截断的典型形态）
     result = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
     if result.endswith("："):
         lines = result.split("\n")
