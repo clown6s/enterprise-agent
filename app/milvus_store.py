@@ -67,6 +67,36 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K) -> l
         return []
 
 
+def insert_document(text: str, vector: list[float], document_id: str,
+                    title: str, source: str) -> bool:
+    """
+    单 chunk 文档入库（反馈采纳回流用）。sparse_bm25 是函数输出字段，
+    插入时只给 text，服务端自动算 BM25。
+    返回是否成功；失败不抛异常（软依赖）。
+    """
+    try:
+        _col().insert([{
+            "text": text,
+            "dense": vector,
+            "document_id": document_id,
+            "title": title,
+            "source": source,
+        }])
+        _col().flush()
+        return True
+    except Exception:
+        return False
+
+
+def delete_by_document_id(document_id: str) -> int:
+    """按 document_id 删除全部 chunk（知识库删文档用）"""
+    try:
+        res = _col().delete(expr=f'document_id == "{document_id}"')
+        return int(getattr(res, "delete_count", 0))
+    except Exception:
+        return 0
+
+
 def dense_search(vector: list[float], top_k: int) -> list[dict]:
     """纯稠密检索（混合检索异常时的回退）"""
     try:
