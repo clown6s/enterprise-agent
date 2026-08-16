@@ -168,15 +168,57 @@ def _today_line() -> str:
 def answer(query: str, conversation_id: str = "", file_block: str = "") -> dict:
     """非流式回答（Web /chat 端点；飞书桥复用）。
     file_block：会话文件上下文（图片 OCR 文本等），问答时作为首要依据注入。"""
+    import time as _t
+    _t0 = _t.time()
+    result = _answer_inner(query, conversation_id, file_block)
+    _record_audit(query, result, _t.time() - _t0)
+    return result
+
+
+def _record_audit(query: str, result: dict, seconds: float) -> None:
+    """审计落库（audit_event 表，与 Java 版同 schema；软依赖）"""
+    try:
+        import json as _json
+        import uuid as _uuid
+        import pymysql as _pm
+        from .. import config as _cfg
+        conn = _pm.connect(host=_cfg.MYSQL_HOST, port=_cfg.MYSQL_PORT, user="root",
+                           password=_cfg.MYSQL_PASSWORD, database=_cfg.MYSQL_DB,
+                           charset="utf8mb4", connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO audit_event (trace_id, timestamp, user, ip, endpoint, category, query, "
+                "history_count, sources, retrieval_ms, rerank_degraded, graph_context_chars, "
+                "answer_preview, answer_length, total_ms, status, error) "
+                "VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (_uuid.uuid4().hex[:16], "admin", "", "agent/chat", result.get("route", "KNOWLEDGE_QA"),
+                 query, 0, _json.dumps(result.get("sources") or [], ensure_ascii=False),
+                 0, 0, 0, (result.get("answer") or "")[:500],
+                 len(result.get("answer") or ""), round(seconds * 1000), "SUCCESS", ""))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -> dict:
     # 意图规则表优先（确定性直答）
     intent = intent_rules.match(query)
     if intent:
         return {"answer": guards.fix_output(intent["answer"]), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
 
-    # 文档生成（一句话直达云文档）
-    doc = docwizard.try_generate(query)
+    # 文档多轮修改（会话有进行中文档 + 修改指令 → 回写同一份云文档）
+    revised = docwizard.revise(conversation_id, query)
+    if revised:
+        return {"answer": "已更新到云文档（在线可编辑）：\n" + revised,
+                "sources": [], "route": "DOC_WIZARD", "chart": None}
+    # 文档生成（一句话直达云文档；无标题时 Web 端给提示，飞书渠道弹表单卡片）
+    doc = docwizard.try_generate(query, "", conversation_id)
     if doc:
+        if doc.get("needs_form"):
+            return {"answer": "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。",
+                    "sources": [], "route": "DOC_WIZARD", "chart": None}
         return {"answer": doc["answer"], "sources": [], "route": "DOC_WIZARD", "chart": None}
 
     # SOP 状态机（执行准确层：请假四步走确定性流程）
@@ -239,10 +281,18 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
-    doc = docwizard.try_generate(query)
+    revised = docwizard.revise(conversation_id, query)
+    if revised:
+        yield "route", "DOC_WIZARD"
+        yield "token", "已更新到云文档（在线可编辑）：\n" + revised
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
+    doc = docwizard.try_generate(query, "", conversation_id)
     if doc:
         yield "route", "DOC_WIZARD"
-        yield "token", doc["answer"]
+        yield "token", (doc["answer"] if not doc.get("needs_form")
+                        else "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。")
         yield "sources", []
         yield "done", "[DONE]"
         return

@@ -134,6 +134,12 @@ class FeishuChannel:
                 return
             self._ingest_ocr_text(ocr_text, message_id)
             return
+        # 文档生成：触发词命中但标题不可推断 → 弹表单卡片兜底
+        from ..service import docwizard
+        if docwizard.matches(text) and not docwizard.guess_title(text):
+            if not self._reply_card(message_id, self.build_doc_form_card()):
+                self._reply(message_id, "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。")
+            return
         # 常规问答（带文件上下文）→ 卡片回复（带 👍👎 反馈按钮）
         file_block = self._file_contexts.get(chat_id)
         from ..service import agent
@@ -142,7 +148,12 @@ class FeishuChannel:
             "query": text, "answer": result["answer"],
             "source": (result["sources"] or [None])[0] or "",
         }
-        if not self._reply_card(message_id, self.build_answer_card(
+        if result.get("chart"):
+            # 数据类回答 → 图表卡（VChart + 原生表格 + 汇总）
+            if not self._reply_card(message_id, self.build_data_card(
+                    result["answer"], result["chart"])):
+                self._reply(message_id, result["answer"])
+        elif not self._reply_card(message_id, self.build_answer_card(
                 result["answer"], result["sources"])):
             self._reply(message_id, result["answer"])   # 卡片失败回退纯文本
 
@@ -223,6 +234,61 @@ class FeishuChannel:
     # ---------------- 卡片 ----------------
 
     @staticmethod
+    def build_data_card(answer: str, chart: dict) -> dict:
+        """数据图表卡（schema 2.0）：VChart 折线/柱状 + 原生表格 + 汇总 + 来源说明"""
+        def _cell_type(v: str) -> str:
+            try:
+                float(v)
+                return "number"
+            except (TypeError, ValueError):
+                return "text"
+        head = chart.get("table", [["-"]])[0]
+        rows = chart.get("table", [])[1:]
+        columns = [{"name": h, "display_name": h,
+                    "data_type": _cell_type(rows[0][i]) if rows else "text"}
+                   for i, h in enumerate(head)]
+        vchart = {
+            "type": chart.get("chartType", "line"),
+            "data": {"values": chart.get("values", [])},
+            "xField": chart.get("xField", "date"),
+            "yField": chart.get("yField", "value"),
+            "seriesField": chart.get("seriesField", "series"),
+            "height": 280,
+        }
+        return {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": chart.get("title", "数据看板")},
+                       "template": "blue"},
+            "body": {"elements": [
+                {"tag": "markdown", "content": answer[:2000]},
+                {"tag": "chart", "chart_spec": vchart},
+                {"tag": "table", "columns": columns,
+                 "rows": [dict(zip(head, row)) for row in rows]},
+                {"tag": "markdown", "content": "**" + (chart.get("summary") or "") + "**"},
+                {"tag": "hr"},
+                {"tag": "note", "elements": [{"tag": "plain_text",
+                                              "content": "数据来源：OA 业务系统 · 图表由 VChart 渲染"}]},
+            ]},
+        }
+
+    @staticmethod
+    def build_doc_form_card() -> dict:
+        """文档生成表单卡片（schema 2.0 表单容器：标题 + 内容要点）"""
+        return {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": "📝 文档生成"},
+                       "template": "blue"},
+            "body": {"elements": [
+                {"tag": "input", "name": "title", "input_type": "text",
+                 "label": {"tag": "plain_text", "content": "文档标题（必填）"},
+                 "placeholder": {"tag": "plain_text", "content": "如：关于五一的放假通知"}},
+                {"tag": "input", "name": "points", "input_type": "multiline_text",
+                 "label": {"tag": "plain_text", "content": "内容要点（可选）"},
+                 "placeholder": {"tag": "plain_text", "content": "如：放假时间、调休安排、注意事项"}},
+            ], "form_action_type": "submit"},
+        }
+
+    @staticmethod
     def build_answer_card(answer: str, sources: list[str]) -> dict:
         """回答卡片（schema 2.0）：markdown 正文 + 来源 note + 👍👎 反馈按钮"""
         source_note = "、".join(sources) if sources else "无来源"
@@ -280,7 +346,21 @@ class FeishuChannel:
                 toast.content = "未找到对应问答记录（可能已过期）"
                 resp.toast = toast
                 return resp
-            if action == "helpful":
+            if action == "doc_form_submit":
+                from ..service import docwizard
+                form = (trigger.event.action.form_value or {})
+                title = (form.get("title") or "").strip()
+                result = docwizard.generate_with_form(chat_id, title, form.get("points") or "",
+                                                      getattr(trigger.event.operator, "open_id", "") or "")
+                if result:
+                    from ..service import docwizard as _dw
+                    url = docwizard._active_docs.get(chat_id, {}).get("doc_id", "")
+                    if url:
+                        msg_id = getattr(trigger.event.context, "open_message_id", None) or ""
+                        self._reply(msg_id, "已生成《" + title + "》云文档（在线可编辑）：" + chr(10)
+                                    + "https://feishu.cn/docx/" + doc_id)
+                toast.content = "已生成，请查看消息回复"
+            elif action == "helpful":
                 feedback.adopt(last["query"], last["answer"], last["source"])
                 toast.content = "已采纳，该问答已回流知识库"
             elif action == "unhelpful":

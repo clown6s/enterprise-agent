@@ -97,11 +97,14 @@ def oa_expenses(query: str) -> Result:
     if name and same_dept and dept:
         text += f"\n全部报销均归属{dept}。"
     table = [["日期", "类型", "金额", "备注"]]
+    values = []
     for it in d["items"]:
         table.append([it.get("d"), it.get("expenseType"), str(it.get("amount")), it.get("remark", "")])
+        values.append({"date": it.get("d"), "series": it.get("expenseType"), "value": float(it.get("amount") or 0)})
     chart = {
         "kind": "expenses",
         "chartType": "bar",
+        "values": values,
         "title": f"{(name or '全员')}近{d['count']}笔报销（元）",
         "table": table,
         "summary": f"合计 {d.get('total')} 元，共 {d.get('count')} 笔",
@@ -124,11 +127,15 @@ def oa_metrics(query: str) -> Result:
             f"营收合计 {_fmt(s.get('revenue'))} 元，成本 {_fmt(s.get('cost'))} 元，"
             f"利润 {_fmt(s.get('profit'))} 元。每日明细见下表。")
     table = [["日期", "营收", "成本", "利润"]]
+    values = []
     for i, date in enumerate(dates):
         table.append([date, str(d["revenue"][i]), str(d["cost"][i]), str(d["profit"][i])])
+        for name, key in (("营收", "revenue"), ("成本", "cost"), ("利润", "profit")):
+            values.append({"date": date, "series": name, "value": float(d[key][i])})
     chart = {
         "kind": "metrics",
         "chartType": "line",
+        "values": values,
         "title": f"近{len(dates)}天经营数据（元）",
         "table": table,
         "summary": f"合计：营收 {s.get('revenue')}，成本 {s.get('cost')}，利润 {s.get('profit')}",

@@ -73,13 +73,54 @@ def matches(query: str) -> bool:
     return _TRIGGER.search(query) is not None
 
 
-def try_generate(query: str, editor_open_id: str = "") -> dict | None:
+# 按会话的进行中文档（chat_id → {title, doc_id, content}），群聊修改指令回写同一份
+_active_docs: dict = {}
+_REVISE_WORDS = re.compile(r"修改|改一下|精简|调整|更新|补充|删除|删掉|压缩|润色|第二段|第三段|第一段")
+
+
+def revise(chat_id: str, query: str) -> str | None:
+    """多轮修改闭环：会话有进行中文档且问法是修改指令 → LLM 改写 → 回写云文档。
+    返回更新后的云文档链接；未命中/失败返回 None。"""
+    doc = _active_docs.get(chat_id)
+    if not doc or not _REVISE_WORDS.search(query):
+        return None
+    try:
+        new_content = llm.chat(
+            "", "你是文档编辑。按用户指令修改原文，直接输出修改后的完整正文，不要解释。\n\n"
+                "【原文】\n" + doc["content"] + "\n\n【修改指令】\n" + query,
+        ).strip()
+    except Exception:
+        return None
+    if not new_content or new_content == doc["content"]:
+        return None
+    doc["content"] = new_content
+    if doc["doc_id"] and rewrite_cloud_doc(doc["doc_id"], new_content):
+        return f"https://feishu.cn/docx/{doc['doc_id']}"
+    return None
+
+
+def try_generate(query: str, editor_open_id: str = "", chat_id: str = "") -> dict | None:
     """
-    一句话直达：命中返回 {answer(含文档链接), route:"DOC_WIZARD"}，未命中/失败返回 None。
+    一句话直达：命中返回 {answer(含文档链接), route:"DOC_WIZARD"}；
+    触发词命中但标题不可推断 → {needs_form: True}（渠道弹表单卡片兜底）；
+    未命中/失败返回 None。
     """
     title = guess_title(query)
-    if not title or not matches(query):
+    if not matches(query):
         return None
+    if not title:
+        return {"needs_form": True}
+    return _generate(title, query, editor_open_id, chat_id)
+
+
+def generate_with_form(chat_id: str, title: str, points: str, editor_open_id: str = "") -> dict | None:
+    """表单卡片兜底：用户填了标题 → 与一句话直达同流程生成"""
+    if not title or not title.strip():
+        return None
+    return _generate(title.strip(), points or title, editor_open_id, chat_id)
+
+
+def _generate(title: str, query: str, editor_open_id: str, chat_id: str) -> dict | None:
     doc_type = ("通知" if title.endswith("通知")
                 else "攻略" if title.endswith("攻略")
                 else "报告" if title.endswith("报告")
@@ -99,11 +140,55 @@ def try_generate(query: str, editor_open_id: str = "") -> dict | None:
     if not content:
         return None
     url = publish_cloud_doc(title, content, editor_open_id)
+    doc_id = url.rsplit("/", 1)[-1] if url else ""
+    if chat_id:
+        _active_docs[chat_id] = {"title": title, "doc_id": doc_id, "content": content}
     if url:
-        return {"answer": f"已生成《{title}》云文档（在线可编辑）：\n{url}",
+        return {"answer": f"已生成《{title}》云文档（在线可编辑）：\n{url}\n"
+                          "后续可直接在群聊回复修改要求（如「第二段精简」），我会同步更新。",
                 "route": "DOC_WIZARD"}
     # 云文档不可用 → 正文直接回复（降级）
     return {"answer": f"《{title}》\n\n{content[:4000]}", "route": "DOC_WIZARD"}
+
+
+def rewrite_cloud_doc(doc_id: str, content: str) -> bool:
+    """云文档回写：清空全部 children → 重写（多轮修改闭环用）"""
+    token = feishu_channel._app_access_token()
+    if not token:
+        return False
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        # 1. 收集现有 block id（分页）
+        page_token = None
+        ids = []
+        while True:
+            url = (f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks"
+                   f"?page_size=500&document_revision_id=-1"
+                   + (f"&page_token={page_token}" if page_token else ""))
+            resp = httpx.get(url, headers=headers, timeout=15).json()
+            for b in (resp.get("data", {}).get("items") or []):
+                if b.get("parent_id") == doc_id:
+                    ids.append(b["block_id"])
+            if not resp.get("data", {}).get("has_more"):
+                break
+            page_token = resp.get("data", {}).get("page_token")
+        # 2. 删除全部子块（逐个 DELETE；飞书无批量删接口）
+        for bid in ids:
+            httpx.delete(
+                f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}/blocks/{bid}"
+                f"?document_revision_id=-1",
+                headers=headers, timeout=15)
+        # 3. 重写（反向 index-0 插入保持顺序）
+        blocks = _md_to_blocks(content)
+        for i in range((len(blocks) - 1) // 50, -1, -1):
+            httpx.post(
+                f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}"
+                f"/blocks/{doc_id}/children?document_revision_id=-1",
+                headers=headers, json={"children": blocks[i * 50: (i + 1) * 50],
+                                       "index": 0}, timeout=30)
+        return True
+    except (httpx.HTTPError, KeyError):
+        return False
 
 
 # ---------------- 云文档发布 ----------------
@@ -128,7 +213,7 @@ def publish_cloud_doc(title: str, content: str, editor_open_id: str = "") -> str
             batch = blocks[i * 50: (i + 1) * 50]
             httpx.post(
                 f"https://open.feishu.cn/open-apis/docx/v1/documents/{doc_id}"
-                f"/blocks/{doc_id}/children",
+                f"/blocks/{doc_id}/children?document_revision_id=-1",
                 headers=headers, json={"children": batch, "index": 0}, timeout=30)
         # 3. 权限：org 可读 + 发起者编辑
         httpx.patch(
