@@ -282,11 +282,12 @@ class FeishuChannel:
             if chart.get("summary"):
                 elements.append({"tag": "markdown", "content": "**" + chart["summary"] + "**"})
         elements.append({"tag": "hr"})
-        elements.append({"tag": "note", "elements": [{"tag": "plain_text",
-                                                      "content": "数据来源：OA 业务系统 · 图表由 VChart 渲染"}]})
+        elements.append({"tag": "markdown",
+                         "content": "数据来源：OA 业务系统 · 图表由 VChart 渲染"})
         return {
             "schema": "2.0",
-            "header": {"title": {"tag": "plain_text", "content": chart.get("title", "数据看板")},
+            "config": {"update_multi": True},
+            "header": {"title": {"tag": "plain_text", "content": "数字员工数据看板"},
                        "template": "blue"},
             "body": {"elements": elements},
         }
@@ -319,8 +320,8 @@ class FeishuChannel:
             "body": {"elements": [
                 {"tag": "markdown", "content": answer[:6000]},
                 {"tag": "hr"},
-                {"tag": "note", "elements": [
-                    {"tag": "plain_text", "content": "📄 来源：" + source_note}]},
+                # schema 2.0 不支持 note 组件（unsupported tag note）→ 来源注记用 markdown
+                {"tag": "markdown", "content": "📄 来源：" + source_note},
                 {"tag": "action", "actions": [
                     {"tag": "button",
                      "text": {"tag": "plain_text", "content": "👍 有帮助"},
@@ -346,7 +347,14 @@ class FeishuChannel:
                       "content": json.dumps(card, ensure_ascii=False)},
                 timeout=15,
             )
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                print(f"[飞书] 卡片发送失败 http={resp.status_code} body={resp.text[:300]}")
+                return False
+            if resp.json().get("code") != 0:
+                print(f"[飞书] 卡片业务拒绝 code={resp.json().get('code')} "
+                      f"msg={resp.json().get('msg')} body={resp.text[:300]}")
+                return False
+            return True
         except httpx.HTTPError:
             return False
 
