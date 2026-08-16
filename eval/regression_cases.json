@@ -174,5 +174,19 @@
       ],
       "max_seconds": 60
     }
+  },
+  {
+    "id": "guard-014-图谱兜底",
+    "query": "奔马律是什么",
+    "expect": {
+      "answer_contain": [
+        "奔马律"
+      ],
+      "answer_not_contain": [
+        "暂无法回答",
+        "（属于）："
+      ],
+      "max_seconds": 60
+    }
   }
 ]

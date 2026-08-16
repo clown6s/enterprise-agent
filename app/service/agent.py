@@ -18,7 +18,7 @@ from .. import config, guards, llm
 from ..intent import rules as intent_rules
 from ..learn import gap_discovery
 from ..plan import sop as sop_engine
-from . import retrieval
+from . import graph, retrieval
 
 # ---------------- 意图与关键词模式 ----------------
 
@@ -41,6 +41,9 @@ _SYSTEM_PROMPT = """你是企业内网知识问答助手。请严格按以下规
 6. 今天是{date}，涉及相对日期（明天/下周）时以今天为锚点计算
 """
 
+_GRAPH_ONLY_RULE = ("【重点】本次检索无文档片段命中，仅提供知识图谱关联。"
+                   "回答中超出图谱关系本身的内容（症状、数值、检查项目、药物、诊断标准、建议等）全部删除。")
+
 _VERIFY_PROMPT = """你是答案事实核查员。对照【资料】逐句核查【答案】：
 1. 删除答案中凭空出现的具体事实（数字、百分比、日期、法规名称、人名、机构、条款）——除非资料原文有
 2. 【已知缺失术语】列出的术语在资料中不存在，含它们的句子必须删除或改写
@@ -51,6 +54,7 @@ _VERIFY_PROMPT = """你是答案事实核查员。对照【资料】逐句核查
 【已知缺失术语】
 {missing}
 
+{graph_only_rule}
 【资料】
 {context}
 
@@ -108,7 +112,7 @@ def _verify(answer: str, context: str) -> str:
     missing_block = "、".join(missing) if missing else "（无）"
     try:
         checked = llm.chat(
-            "", _VERIFY_PROMPT.format(missing=missing_block, context=context[:6000], answer=answer),
+            "", _VERIFY_PROMPT.format(missing=missing_block, graph_only_rule="", context=context[:6000], answer=answer),
             model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE, key=config.DASHSCOPE_KEY,
             temperature=0.2,
         ).strip()
@@ -186,9 +190,21 @@ def answer(query: str, conversation_id: str = "", file_block: str = "") -> dict:
         return {"answer": "抱歉，我没太理解你的问题。可以再具体一点吗？比如补充对象、时间或背景。",
                 "sources": [], "route": "CLARIFY", "chart": None}
 
-    # 知识问答：预检索 → 兜底/生成 → 校验
+    # 知识问答：预检索 →（空手 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
     hits = retrieval.retrieve(query)
     if not hits:
+        graph_ctx = graph.expand(query)
+        if graph_ctx:
+            # 图谱-only：上下文只有图谱关联，校验层加图谱收紧规则
+            context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
+                       + graph_ctx)
+            user_prompt = f"【资料】\n{context}\n\n【用户问题】\n{query}"
+            if file_block:
+                user_prompt = f"【文件上下文】\n{file_block}\n\n" + user_prompt
+            raw = llm.chat(_SYSTEM_PROMPT.format(date=_today_line()) + "\n" + _GRAPH_ONLY_RULE,
+                           user_prompt)
+            final = _verify(raw, context)
+            return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     context = retrieval.build_context(hits)
@@ -242,9 +258,22 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
-    # 知识问答：预检索（空手 → 确定性兜底）
+    # 知识问答：预检索（空手 → 图谱-only 兜底 → 仍空 → 兜底句式）
     hits = retrieval.retrieve(query)
     if not hits:
+        graph_ctx = graph.expand(query)
+        if graph_ctx:
+            context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
+                       + graph_ctx)
+            parts = []
+            for chunk in llm.chat_stream(
+                    _SYSTEM_PROMPT.format(date=_today_line()) + "\n" + _GRAPH_ONLY_RULE,
+                    f"【资料】\n{context}\n\n【用户问题】\n{query}"):
+                parts.append(chunk)
+            yield "token", _verify("".join(parts), context)
+            yield "sources", []
+            yield "done", "[DONE]"
+            return
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         yield "token", guards.NO_ANSWER
         yield "sources", []
