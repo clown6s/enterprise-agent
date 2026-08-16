@@ -42,7 +42,7 @@ def _tokens(query: str) -> set[str]:
     # 中文无空格，先按疑问词/虚词切分，再提 2-6 字实词
     q = re.sub(r"(是多少|有哪些|是什么|是什么|多少|如何|怎么|什么|吗|呢|请问|帮我|一下|的|了|是|有)",
                " ", query)
-    return {t for t in _TOKEN.findall(q) if t not in _STOPWORDS and len(t) <= 6}
+    return {t for t in _TOKEN.findall(q) if t not in _STOPWORDS and len(t) <= 10}
 
 
 def _jaccard(a: set, b: set) -> float:
@@ -52,9 +52,19 @@ def _jaccard(a: set, b: set) -> float:
 
 
 def report() -> dict:
-    """缺口报告：单遍聚类（同问法聚合）+ 补库建议"""
+    """缺口报告：单遍聚类（同问法聚合）+ 补库建议。
+    进程内聚合 + JSONL 历史合并（服务重启后历史缺口不丢）。"""
     with _lock:
         gaps = list(_gaps)
+    try:
+        with open(_FILE, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    gaps.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
     clusters: list[dict] = []
     for g in gaps:
         toks = _tokens(g["query"])
@@ -70,7 +80,7 @@ def report() -> dict:
             clusters.append({"tokens": set(toks), "count": 1, "samples": [g["query"]]})
     items = []
     for c in sorted(clusters, key=lambda x: -x["count"]):
-        topic = "、".join(sorted(c["tokens"])[:5]) or "未识别主题"
+        topic = "、".join(sorted(c["tokens"])[:5]) or c["samples"][0]
         items.append({
             "topic": topic,
             "count": c["count"],
