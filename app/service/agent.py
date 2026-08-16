@@ -17,6 +17,7 @@ from datetime import datetime
 from .. import config, guards, llm
 from ..intent import rules as intent_rules
 from ..learn import gap_discovery
+from ..plan import sop as sop_engine
 from . import retrieval
 
 # ---------------- 意图与关键词模式 ----------------
@@ -168,6 +169,13 @@ def answer(query: str, conversation_id: str = "") -> dict:
         return {"answer": guards.fix_output(intent["answer"]), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
 
+    # SOP 状态机（执行准确层：请假四步走确定性流程）
+    sop = sop_engine.match(query)
+    if sop:
+        result = sop_engine.execute(sop, query)
+        return {"answer": guards.fix_output(result["answer"]), "sources": [],
+                "route": "SOP", "chart": None}
+
     r = route(query)
     if r == "CHAT":
         return {"answer": _clean_cjk_spacing(
@@ -205,6 +213,15 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "token", guards.fix_output(intent["answer"])
         if intent.get("chart"):
             yield "chart", intent["chart"]
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
+
+    sop = sop_engine.match(query)
+    if sop:
+        yield "route", "SOP"
+        result = sop_engine.execute(sop, query)
+        yield "token", guards.fix_output(result["answer"])
         yield "sources", []
         yield "done", "[DONE]"
         return

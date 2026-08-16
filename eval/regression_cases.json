@@ -137,5 +137,42 @@
       ],
       "max_seconds": 60
     }
+  },
+  {
+    "id": "guard-011-请假成功",
+    "query": "帮我请假，李四明天请一天事假，家里有事",
+    "expect": {
+      "route": "SOP",
+      "answer_contain": [
+        "LEAVE"
+      ],
+      "answer_not_contain": [
+        "校验未通过",
+        "暂无法回答"
+      ],
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-012-请假人名不在册",
+    "query": "帮我请假，王小明明天请一天事假",
+    "expect": {
+      "route": "SOP",
+      "answer_contain": [
+        "校验未通过"
+      ],
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-013-请假天数超限",
+    "query": "帮我请假，张三请60天事假",
+    "expect": {
+      "route": "SOP",
+      "answer_contain": [
+        "校验未通过"
+      ],
+      "max_seconds": 60
+    }
   }
 ]

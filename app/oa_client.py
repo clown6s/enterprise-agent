@@ -46,6 +46,33 @@ class OaClient:
                 return None
         return None
 
+    def post(self, path: str, body: dict) -> dict | None:
+        """POST 请求（登录重试同 call）"""
+        for _ in range(2):
+            try:
+                resp = httpx.post(
+                    f"{config.OA_BASE_URL}{path}",
+                    headers={"Authorization": f"Bearer {self._token}" if self._token else ""},
+                    json=body,
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                self._token = None
+                self._login()
+            except httpx.HTTPError:
+                return None
+        return None
+
+    def employees(self) -> list[dict] | None:
+        """员工列表：id/realName/deptId（请假 SOP 校验与映射用）"""
+        d = self.call("/api/employee/list")
+        return (d or {}).get("data") if d else None
+
+    def leave_submit(self, payload: dict) -> dict | None:
+        """提交请假申请 → {code, message, data: applyNo}"""
+        return self.post("/api/leave/submit", payload)
+
     def metrics(self, days: int) -> dict | None:
         """经营数据：dates/revenue/cost/profit/summary"""
         return self.call(f"/api/biz/metrics?days={max(1, days)}")
