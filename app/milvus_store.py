@@ -88,6 +88,42 @@ def insert_document(text: str, vector: list[float], document_id: str,
         return False
 
 
+def insert_documents(rows: list[dict]) -> bool:
+    """批量 chunk 入库（摄入管线用）；返回是否成功"""
+    try:
+        _col().insert(rows)
+        _col().flush()
+        return True
+    except Exception:
+        return False
+
+
+def list_documents() -> list[dict]:
+    """文档列表（按 document_id 去重）：[{docId, title, chunks}]"""
+    docs: dict[str, dict] = {}
+    try:
+        offset = 0
+        while offset < 100_000:
+            res = _col().query(
+                expr="id >= 0", output_fields=["document_id", "title"],
+                offset=offset, limit=1000,
+            )
+            if not res:
+                break
+            for r in res:
+                doc_id = r.get("document_id", "")
+                if not doc_id or doc_id in docs:
+                    docs[doc_id]["chunks"] += 1
+                    continue
+                docs[doc_id] = {"docId": doc_id, "title": r.get("title", ""), "chunks": 1}
+            if len(res) < 1000:
+                break
+            offset += 1000
+    except Exception:
+        pass
+    return list(docs.values())
+
+
 def delete_by_document_id(document_id: str) -> int:
     """按 document_id 删除全部 chunk（知识库删文档用）"""
     try:

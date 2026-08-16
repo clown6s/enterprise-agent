@@ -8,7 +8,7 @@ GET /api/rag/admin/health/verify   校验层熔断状态
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
-from .. import mysql_store
+from .. import milvus_store, mysql_store
 from ..learn import gap_discovery, usage
 from ..service import agent
 
@@ -39,6 +39,32 @@ def gaps_view(authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
     return {"success": True, "message": None, "data": gap_discovery.report()}
+
+
+@router.get("/api/rag/admin/documents")
+def documents_view(authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    return {"success": True, "message": None, "data": milvus_store.list_documents()}
+
+
+@router.get("/api/rag/admin/documents/details")
+def documents_details(authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    docs = milvus_store.list_documents()
+    return {"success": True, "message": None,
+            "data": [{"docId": d["docId"], "title": d["title"], "chunks": d["chunks"],
+                      "status": "STORED"} for d in docs]}
+
+
+@router.delete("/api/rag/admin/documents/{doc_id}")
+def delete_document(doc_id: str, authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    removed = milvus_store.delete_by_document_id(doc_id)
+    return {"success": True, "message": None,
+            "data": {"docId": doc_id, "chunksRemoved": removed}}
 
 
 @router.get("/api/rag/admin/health/verify")
