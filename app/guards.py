@@ -9,6 +9,8 @@
 4. strip_missing_terms() 含"资料中不存在术语"的句子删除 + 延伸服务套话拦截
 5. collapse_empty_headings() 硬删后空标题清理（"**标题**："下空无一物 → 移除）
 6. strip_no_answer_hedge() 兜底句式混入清理（有实质内容的答案里混进"暂无法回答"半吊子句 → 删该句）
+7. find_missing_terms() 确定性术语核对（答案里资料没有的术语 → 缺失清单，校验链的输入）
+8. clean_cjk_spacing() CJK 多余空格清理（闲聊链路流式逐字带空格的实况）
 
 设计原则：模型输出不可靠，能确定性算出来的事绝不再交给模型。
 """
@@ -195,6 +197,31 @@ def strip_assertions(text: str, context: str) -> str:
 
 # ---------------- 3. 缺失术语句删除 ----------------
 
+# 术语抽取（确定性缺失术语核对）：
+# 校验模型是小模型，术语级漏检率高——哪些术语"资料里没有"是能确定算出来的事
+_TERM_PATTERNS = [
+    re.compile(r"[A-Za-z]{2,}(?:[-/][A-Za-z0-9]+){0,3}"),      # 英文缩写/术语（HRBP、BNP）
+    re.compile(r"\d+(?:\.\d+)?\s*(?:%|mmHg|mg|ml|g|kg|次|天|年|月|日|周|元)"),  # 数值+单位
+    re.compile(r"[《「]([^》」]{2,40})[》」]"),                   # 书名号里的法规/文件名
+]
+
+
+def find_missing_terms(answer: str, context: str) -> list[str]:
+    """答案里的术语，凡资料（归一化后）中不出现的 → 缺失清单"""
+    ctx = re.sub(r"\s+", "", context).lower()
+    missing = []
+    seen = set()
+    for pattern in _TERM_PATTERNS:
+        for m in pattern.finditer(answer):
+            term = m.group()
+            if term in seen:
+                continue
+            seen.add(term)
+            if term.lower() not in ctx:
+                missing.append(term)
+    return missing[:12]
+
+
 # 延伸服务/元话语句式（提示词禁但模型偶犯，确定性拦截）
 _EXTENSION_OFFER = re.compile(
     r"欢迎随时|欢迎告诉|如需我|需要我帮|我可以为你|我可为您|我可为你|请确认是否"
@@ -292,6 +319,16 @@ def strip_no_answer_hedge(text: str) -> str:
            for l in result.split("\n")):
         return NO_ANSWER
     return result
+
+
+# ---------------- 6. CJK 空格清理 ----------------
+
+def clean_cjk_spacing(text: str) -> str:
+    """CJK 字符间/标点前的多余空格清理（"你好 ！ 请问 有什么" → "你好！请问有什么"）。
+    闲聊链路用：流式中文偶发逐字带空格 → 收齐后清理再整体下发。"""
+    text = re.sub(r"(?<=[一-龥])\s+(?=[一-龥])", "", text)
+    text = re.sub(r"\s+([。！？，；：、）】》])", r"\1", text)
+    return text
 
 
 def _norm(s: str) -> str:

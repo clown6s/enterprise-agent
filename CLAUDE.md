@@ -10,14 +10,16 @@ run.py                  # 启动入口：python run.py（--reload 热重载）�
 app/
   config.py             # .env 加载（根目录 .env，不是 app/.env）
   llm.py                # DeepSeek 主力 + qwen-plus 校验层（手写 httpx OpenAI 兼容客户端）
+  prompts.py            # 提示词集中管理（系统/校验/图谱收紧规则；改提示词必须跑回归）
   embeddings.py         # BGE-M3 嵌入 + SiliconFlow bge-reranker-v2-m3 重排
   milvus_store.py       # 混合检索（dense + sparse_bm25，RRF）
-  guards.py             # 确定性守卫：NO_ANSWER 兜底 / 格式修复 / 缺失术语删除 + 套话拦截 /
-                        # 鉴伪断言删除 / 空标题清理
+  guards.py             # 确定性守卫：NO_ANSWER 兜底 / 格式修复 / 术语核对 / 缺失术语删除 +
+                        # 套话拦截 / 鉴伪断言删除 / 空标题清理 / CJK 清理
   demo_data.py          # 员工目录演示数据（8 人）
   oa_client.py          # OA 数据源客户端（报销/经营数据；必须 Bearer 前缀）
   intent/rules.py       # 意图规则表：新增确定性意图 = 加一行 IntentRule
-  service/agent.py      # 编排核心：answer() + answer_stream() 双路径 + _verify 校验链
+  service/agent.py      # 编排核心：answer() + answer_stream() 双路径（只做路由，不做校验）
+  service/verify.py     # 答案校验链：小模型核查 + 熔断 + 确定性守卫顺序（勿调换）
   service/retrieval.py  # 预检索 + 上下文构建
   service/graph.py      # Neo4j 图谱-only 兜底（无向两跳遍历）
   service/docwizard.py  # 文档生成：触发词→标题→LLM→飞书云文档直出 + 多轮修改回写
