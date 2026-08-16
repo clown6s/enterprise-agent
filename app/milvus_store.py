@@ -63,7 +63,9 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K) -> l
             }
             for h in hits[0]
         ]
-    except Exception:
+    except Exception as e:
+        # 失败可见：挂了 vs 没命中必须可区分（此前静默返回空，诊断无从下手）
+        print(f"[milvus] 混合检索失败: {e!r}")
         return []
 
 
@@ -153,5 +155,6 @@ def dense_search(vector: list[float], top_k: int) -> list[dict]:
             }
             for h in hits[0]
         ]
-    except Exception:
+    except Exception as e:
+        print(f"[milvus] 纯稠密检索失败: {e!r}")
         return []
