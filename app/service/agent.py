@@ -161,8 +161,9 @@ def _today_line() -> str:
 
 # ---------------- 主入口 ----------------
 
-def answer(query: str, conversation_id: str = "") -> dict:
-    """非流式回答（Web /chat 端点；飞书桥复用）"""
+def answer(query: str, conversation_id: str = "", file_block: str = "") -> dict:
+    """非流式回答（Web /chat 端点；飞书桥复用）。
+    file_block：会话文件上下文（图片 OCR 文本等），问答时作为首要依据注入。"""
     # 意图规则表优先（确定性直答）
     intent = intent_rules.match(query)
     if intent:

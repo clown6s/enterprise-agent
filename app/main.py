@@ -15,11 +15,23 @@ enterprise-agent 入口：FastAPI 应用装配。
     app/service/agent.py      编排核心（路由/守卫/校验/流式）
     app/routers/*           HTTP 端点（与 rag-admin 前端协议兼容）
 """
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from .channels.feishu import channel as feishu_channel
 from .routers import admin, auth, chat, feedback, health
 
-app = FastAPI(title="enterprise-agent", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 飞书长连接（软依赖：未配置 app_id 或 SDK 缺失时静默跳过，主链路不受影响）
+    if feishu_channel.enabled():
+        feishu_channel.start()
+    yield
+
+
+app = FastAPI(title="enterprise-agent", version="0.2.0", lifespan=lifespan)
 
 app.include_router(health.router)
 app.include_router(auth.router)
