@@ -1,1 +1,10 @@
-.venv
+# 密钥与本地环境
+.env
+# Python
+__pycache__/
+*.pyc
+.venv/
+# IDE
+.idea/
+# 日志
+logs/
