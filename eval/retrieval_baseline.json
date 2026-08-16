@@ -1,30 +1,39 @@
 {
-  "id" : "b42c35e1",
-  "name" : "检索基线-知识库8题",
-  "createdAt" : "2026-08-16T19:52:50",
-  "items" : [ {
-    "question" : "今年国庆放几天",
-    "groundTruth" : "放假调休共7天"
-  }, {
-    "question" : "五一劳动节放假几天",
-    "groundTruth" : "放假调休共5天"
-  }, {
-    "question" : "治安管理处罚法里寻衅滋事怎么处罚",
-    "groundTruth" : "寻衅滋事"
-  }, {
-    "question" : "治安管理处罚法对打架斗殴如何处罚",
-    "groundTruth" : "结伙斗殴"
-  }, {
-    "question" : "刑法对盗窃如何规定",
-    "groundTruth" : "盗窃公私财物"
-  }, {
-    "question" : "家庭教育促进法的立法目的",
-    "groundTruth" : "家庭教育"
-  }, {
-    "question" : "内科学里肺心病的临床表现",
-    "groundTruth" : "肺心病"
-  }, {
-    "question" : "AI-Agents这本书讲了什么",
-    "groundTruth" : "深入理解AIAgent"
-  } ]
+  "id": "b42c35e1",
+  "name": "检索基线-知识库8题",
+  "createdAt": "2026-08-16T19:52:50",
+  "items": [
+    {
+      "question": "今年国庆放几天",
+      "groundTruth": "放假调休共7天"
+    },
+    {
+      "question": "五一劳动节放假几天",
+      "groundTruth": "放假调休共5天"
+    },
+    {
+      "question": "治安管理处罚法里寻衅滋事怎么处罚",
+      "groundTruth": "寻衅滋事"
+    },
+    {
+      "question": "治安管理处罚法对打架斗殴如何处罚",
+      "groundTruth": "结伙斗殴"
+    },
+    {
+      "question": "刑法对盗窃如何规定",
+      "groundTruth": "盗窃公私财物"
+    },
+    {
+      "question": "家庭教育促进法的立法目的",
+      "groundTruth": "家庭教育"
+    },
+    {
+      "question": "内科学里肺心病的临床表现",
+      "groundTruth": "肺心病"
+    },
+    {
+      "question": "AI-Agents这本书讲了什么",
+      "groundTruth": "深入探讨AI Agent"
+    }
+  ]
 }

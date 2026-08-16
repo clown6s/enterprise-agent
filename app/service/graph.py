@@ -7,6 +7,7 @@ Java 版对应：GraphRetriever + GraphStore。移植要点全部保留：
 - 关系链按（源实体 → 关系链）分组自然语言化——三元组格式会被模型模仿粘贴（血泪教训）
 - 上限 20 条防灌爆上下文
 """
+import json
 import re
 
 from dotenv import dotenv_values
@@ -43,6 +44,62 @@ def _candidates(query: str) -> list[str]:
         if t not in _STOP and len(t) <= 8:
             out.append(t)
     return out[:8]
+
+
+# 三元组提取提示词（图谱构建用；只提取文本中明确存在的关系）
+# 注意：JSON 大括号在 str.format 里是占位符，必须写双大括号（Java 版 LangChain4j 同款坑）
+_TRIPLE_PROMPT = """从下面的文本中提取实体关系三元组，输出严格 JSON 数组：
+[{{"source": "实体", "relation": "关系", "target": "实体"}}]
+规则：
+1. 只提取文本中明确陈述的关系，不得臆测
+2. 实体用简洁名词（2-8 字），关系用简短动词短语（2-6 字）
+3. 最多 10 条；文本没有明确关系就输出 []
+
+文本：
+{text}
+"""
+
+_MAX_BUILD_CHUNKS = 20   # 单文档建图上限（控制 LLM 调用量）
+
+
+def build_from_chunks(chunks: list[str], doc_id: str = "") -> int:
+    """
+    摄入时图谱构建：逐 chunk LLM 提取三元组 → MERGE 进 Neo4j。
+    返回构建的关系条数；软依赖——任何失败只记日志不阻断摄入。
+    """
+    from .. import llm
+
+    triples: list[dict] = []
+    for c in chunks[:_MAX_BUILD_CHUNKS]:
+        try:
+            raw = llm.chat(
+                "", _TRIPLE_PROMPT.format(text=c[:2000]),
+                model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
+                key=config.DASHSCOPE_KEY, temperature=0.1,
+            )
+            m = re.search(r"\[.*\]", raw, re.S)
+            if not m:
+                continue
+            for t in json.loads(m.group()):
+                if (isinstance(t, dict) and t.get("source") and t.get("target")
+                        and t.get("relation")):
+                    triples.append(t)
+        except Exception:
+            continue
+    if not triples:
+        return 0
+    try:
+        with _db().session() as s:
+            s.run(
+                "UNWIND $triples AS t "
+                "MERGE (a:Entity {name: t.source}) "
+                "MERGE (b:Entity {name: t.target}) "
+                "MERGE (a)-[:RELATES {type: t.relation}]->(b)",
+                triples=triples,
+            )
+        return len(triples)
+    except Exception:
+        return 0
 
 
 def expand(query: str, limit: int = 20) -> str:

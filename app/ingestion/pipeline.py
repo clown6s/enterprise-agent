@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 
 from .. import config, embeddings, milvus_store
+from ..service import graph
 from . import parse
 
 _LOG = os.path.join(config.LOG_DIR, "ingestion.jsonl")
@@ -72,7 +73,10 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         "source": doc_title,
     } for c in chunks]
     ok = milvus_store.insert_documents(rows)
-    _log("ingested", file=filename, doc_id=doc_id, chunks=len(chunks), ok=ok)
+    # 图谱构建（软依赖：失败/超量只记日志，不阻断摄入）
+    rels = graph.build_from_chunks(chunks, doc_id) if ok else 0
+    _log("ingested", file=filename, doc_id=doc_id, chunks=len(chunks), ok=ok,
+         graph_rels=rels)
     if not ok:
         return {"error": f"《{filename}》向量库写入失败。"}
     return {"documentId": doc_id, "fileName": filename, "chunks": len(chunks)}
