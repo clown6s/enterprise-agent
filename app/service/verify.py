@@ -68,11 +68,15 @@ def _relevance_score(query: str, answer: str) -> int | None:
 
 def _relevance_gate(query: str, answer: str) -> str:
     """
-    相关性闸门（用户明确要求的最后兜底）：问题+答案多轮评分，
-    最低分 < 4 → 直接过掉，回兜底句式——只答相邻内容/答非所问的答案不出门。
-    评审模型失败时放行（软依赖；系统性故障由校验熔断机制兜底）。
+    相关性闸门（用户明确要求的最后兜底）：问题+答案多轮评分（并行，
+    延迟≈单轮），最低分 < 4 → 直接过掉，回兜底句式——只答相邻内容/
+    答非所问的答案不出门。评审模型失败时放行（软依赖；系统性故障
+    由校验熔断机制兜底）。
     """
-    scores = [_relevance_score(query, answer) for _ in range(_RELEVANCE_ROUNDS)]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=_RELEVANCE_ROUNDS) as pool:
+        scores = list(pool.map(lambda _: _relevance_score(query, answer),
+                               range(_RELEVANCE_ROUNDS)))
     valid = [s for s in scores if s is not None]
     if not valid:
         return answer

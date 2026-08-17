@@ -107,8 +107,8 @@ def _anchor_short_query(query: str, answer: str, source: str) -> str:
 
 
 def _maybe_enqueue_review(conversation_id: str, query: str, answer: str) -> None:
-    """低把握答案进人工审核队列；评测会话跳过（防回归跑分污染审核队列）"""
-    if conversation_id.startswith("eval"):
+    """低把握答案进人工审核队列；评测/扫描会话跳过（防跑分污染审核队列）"""
+    if history.is_test_conversation(conversation_id):
         return
     feedback.enqueue_review(query, answer)
 
@@ -123,15 +123,19 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
     import time as _t
     _t0 = _t.time()
     result = _answer_inner(query, conversation_id, file_block, user)
-    _record_audit(query, result, _t.time() - _t0, user)
+    turns = history.recent_turns(conversation_id)
+    _record_audit(query, result, _t.time() - _t0, user, len(turns))
     # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流；
-    # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定）
-    if result.get("route") != "GUARD" and result.get("answer") != guards.NO_ANSWER:
+    # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定；
+    # 评测/扫描会话不落——防跑分污染历史表）
+    if (result.get("route") != "GUARD" and result.get("answer") != guards.NO_ANSWER
+            and not history.is_test_conversation(conversation_id)):
         history.save_turn(conversation_id, query, guards.strip_leading_anchor(result["answer"]))
     return result
 
 
-def _record_audit(query: str, result: dict, seconds: float, user: str = "admin") -> None:
+def _record_audit(query: str, result: dict, seconds: float, user: str = "admin",
+                  history_count: int = 0) -> None:
     """审计落库（audit_event 表，沿用既有 schema；软依赖）"""
     try:
         import json as _json
@@ -148,7 +152,7 @@ def _record_audit(query: str, result: dict, seconds: float, user: str = "admin")
                 "answer_preview, answer_length, total_ms, status, error) "
                 "VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (_uuid.uuid4().hex[:16], user or "admin", "", "agent/chat", result.get("route", "KNOWLEDGE_QA"),
-                 query, 0, _json.dumps(result.get("sources") or [], ensure_ascii=False),
+                 query, history_count, _json.dumps(result.get("sources") or [], ensure_ascii=False),
                  0, 0, 0, (result.get("answer") or "")[:500],
                  len(result.get("answer") or ""), round(seconds * 1000), "SUCCESS", ""))
         conn.commit()
@@ -212,12 +216,14 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
+    fb = guards.strip_injection_sentences(file_block) if file_block else ""
     if not context.strip():
         if hblock:
             # 检索空手但有对话历史：历史消解指代/延续话题（校验依据=历史本身）
-            raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()),
-                           f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
-            final = verify.verify(raw, hblock, query=query)
+            user_prompt = (f"【资料】\n{hblock}\n\n【文件上下文】\n{fb}\n\n【用户问题】\n{query}"
+                           if fb else f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
+            raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), user_prompt)
+            final = verify.verify(raw, f"{hblock}\n{fb}" if fb else hblock, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         graph_ctx = guards.strip_injection_sentences(graph.expand(query))
@@ -245,18 +251,28 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         gap_discovery.record_gap(query)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
-    gen_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
-                  else f"【资料】\n{context}\n\n【用户问题】\n{query}")
+    # 文件上下文（图片 OCR 等）作为首要依据注入——此前只在图谱兜底分支注入，
+    # 检索命中时被静默忽略（实况：发图后问"图里说什么"，答案只字不提图片）
+    prefix = f"【资料】\n{context}"
+    if fb:
+        prefix += f"\n\n【文件上下文】\n{fb}"
+    gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                  else f"{prefix}\n\n【用户问题】\n{query}")
     raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
-    # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
-    final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context, query=query)
+    # 校验依据含文件上下文与历史：引用图片/上一轮事实时不被误判为"资料外"
+    vctx = context
+    if fb:
+        vctx = f"{vctx}\n{fb}"
+    if hblock:
+        vctx = f"{vctx}\n{hblock}"
+    final = verify.verify(raw, vctx, query=query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
 
-def answer_stream(query: str, conversation_id: str = "", user: str = ""):
+def answer_stream(query: str, conversation_id: str = "", user: str = "", file_block: str = ""):
     """
     流式回答生成器：yield (event, data) 元组。
     SSE 事件名保持 route/token/sources/chart/done，
@@ -337,14 +353,17 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
     hits = retrieval.retrieve(query, user=user)
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
+    fb = guards.strip_injection_sentences(file_block) if file_block else ""
     if not context.strip():
         if hblock:
             # 检索空手但有对话历史：历史消解指代/延续话题（校验依据=历史本身）
+            user_prompt = (f"【资料】\n{hblock}\n\n【文件上下文】\n{fb}\n\n【用户问题】\n{query}"
+                           if fb else f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
             parts = []
             for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
-                                          f"【资料】\n{hblock}\n\n【用户问题】\n{query}"):
+                                          user_prompt):
                 parts.append(chunk)
-            final = verify.verify("".join(parts), hblock, query=query)
+            final = verify.verify("".join(parts), f"{hblock}\n{fb}" if fb else hblock, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             yield "token", final
             yield "sources", []
@@ -386,13 +405,21 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
         return
 
     # 流式链路同样先收齐全文再校验再下发（"无依据内容不出门"原则）
-    gen_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
-                  else f"【资料】\n{context}\n\n【用户问题】\n{query}")
+    prefix = f"【资料】\n{context}"
+    if fb:
+        prefix += f"\n\n【文件上下文】\n{fb}"
+    gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                  else f"{prefix}\n\n【用户问题】\n{query}")
     parts = []
     for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt):
         parts.append(chunk)
-    # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
-    final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context, query=query)
+    # 校验依据含文件上下文与历史：引用图片/上一轮事实时不被误判为"资料外"
+    vctx = context
+    if fb:
+        vctx = f"{vctx}\n{fb}"
+    if hblock:
+        vctx = f"{vctx}\n{hblock}"
+    final = verify.verify("".join(parts), vctx, query=query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
     yield "token", _anchor_short_query(query, final, hits[0].get("source", ""))

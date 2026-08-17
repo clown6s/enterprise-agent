@@ -18,6 +18,11 @@ _TOTAL_CAP = 1200        # 注入总量上限
 _ensured = False
 
 
+def is_test_conversation(conversation_id: str) -> bool:
+    """评测/扫描会话判定——这些会话不落历史、不进审核队列（防跑分污染）"""
+    return (conversation_id or "").startswith(("eval", "sweep"))
+
+
 def _conn():
     import pymysql
     return pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
