@@ -47,7 +47,9 @@ EMBED_MODEL = "Qwen/Qwen3-Embedding-8B"   # 4096 维（2026-08-17 从 BGE-M3 102
 EMBED_DIM = 4096
 RERANK_MODEL = "Qwen/Qwen3-Reranker-8B"   # 2026-08-17 从 bge-reranker-v2-m3 升级
 RERANK_MIN_SCORE = 0.3                 # rerank 分数下限（低于此分视为不相关）
-TOP_K = 8                              # 向量召回数
+TOP_K = 12                             # 向量召回数（曾 8——法律类长文档多条款，
+                                        # RRF 把目标条款挤出前 8 的实况；rerank 层
+                                        # 控精度，召回放宽无副作用）
 RERANK_TOP_N = 4                       # 重排后保留数
 
 # ---------------- Milvus ----------------

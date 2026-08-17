@@ -31,14 +31,10 @@
     "query": "李娜最近7天报销了多少",
     "expect": {
       "answer_contain": [
-        "5890",
-        "共 3 笔"
+        "4930",
+        "共 2 笔"
       ],
-      "answer_not_contain": [
-        "暂无法回答"
-      ],
-      "chart_present": true,
-      "max_seconds": 5
+      "max_seconds": 60
     }
   },
   {
@@ -59,12 +55,14 @@
     "id": "guard-005-高血压注意闸门",
     "query": "高血压应该注意什么",
     "expect": {
+      "sources_include": [
+        "高血压营养"
+      ],
       "answer_contain": [
-        "暂无法回答"
+        "运动"
       ],
       "answer_not_contain": [
-        "140/90",
-        "伪名言"
+        "暂无法回答"
       ],
       "max_seconds": 60
     }

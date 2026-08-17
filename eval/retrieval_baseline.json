@@ -4,14 +4,6 @@
   "createdAt": "2026-08-16T19:52:50",
   "items": [
     {
-      "question": "今年国庆放几天",
-      "groundTruth": "放假调休共7天"
-    },
-    {
-      "question": "五一劳动节放假几天",
-      "groundTruth": "放假调休共5天"
-    },
-    {
       "question": "治安管理处罚法里寻衅滋事怎么处罚",
       "groundTruth": "寻衅滋事"
     },
@@ -33,7 +25,11 @@
     },
     {
       "question": "AI-Agents这本书讲了什么",
-      "groundTruth": "深入探讨AI Agent"
+      "groundTruth": "AI Agent 实战营"
     }
+  ],
+  "removedPendingDoc": [
+    "今年国庆放几天",
+    "五一劳动节放假几天"
   ]
 }
