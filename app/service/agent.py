@@ -57,21 +57,35 @@ def _today_line() -> str:
 
 _ATTENTION_QUERY = re.compile(r"注意")
 _LIFESTYLE_TERMS = re.compile(r"饮食|运动|锻炼|戒烟|限酒|饮酒|体重|睡眠|情绪|复查|监测|低盐|低脂")
-_DIM_TERMS = re.compile(r"用药|服药|吃药|饮食|运动|锻炼|睡眠|监测|复查|戒烟|限酒|饮酒|体重|低盐|低脂")
+# 维度词检查：问句中出现的维度，资料里必须有对应内容（问什么答什么，没有就答没有）
+_DIM_CHECKS = [
+    (re.compile(r"用药|服药|吃药|药物"), re.compile(r"用药|药物|制剂|剂量|药")),
+    (re.compile(r"饮食|怎么吃|吃什么|低盐|低脂"), re.compile(r"饮食|低盐|低脂|盐")),
+    (re.compile(r"运动|锻炼"), re.compile(r"运动|锻炼")),
+    (re.compile(r"睡眠|失眠"), re.compile(r"睡眠|失眠")),
+    (re.compile(r"监测|复查"), re.compile(r"监测|复查|测量")),
+    (re.compile(r"戒烟|吸烟"), re.compile(r"戒烟|吸烟|烟")),
+    (re.compile(r"限酒|饮酒|喝酒"), re.compile(r"酒")),
+    (re.compile(r"体重|减肥|肥胖"), re.compile(r"体重|肥胖")),
+]
 
 
 def _attention_gap(query: str, context: str) -> bool:
     """
-    "注意事项"提问的资料覆盖闸门（用户明确的设计原则）：
-    问什么答什么——问"注意事项"，资料里没有生活方式/所问维度的内容，
-    直接答没有，**不得拿诊断、治疗等相邻内容凑数**（凑数=乱扯的实况）。
-    问具体维度（如"用药注意事项"）时只查该维度词是否在资料中。"""
-    if not _ATTENTION_QUERY.search(query or "") or not context:
+    资料覆盖闸门（用户明确的设计原则）：问什么答什么——
+    ① 问句中出现的维度词（用药/饮食/运动/监测…）资料里没有 → 直接答没有
+    ② "注意事项"泛指提问且资料无生活方式内容 → 直接答没有
+    不得拿诊断、治疗等相邻内容凑数（凑数=乱扯的实况）。
+    确定性拦截（不依赖模型评审）；模型层还有相关性闸门兜底。"""
+    q, ctx = query or "", context or ""
+    if not q or not ctx:
         return False
-    m = _DIM_TERMS.search(query)
-    if m:
-        return re.search(m.group(), context) is None
-    return _LIFESTYLE_TERMS.search(context) is None
+    for q_pat, c_pat in _DIM_CHECKS:
+        if q_pat.search(q):
+            return c_pat.search(ctx) is None
+    if _ATTENTION_QUERY.search(q):
+        return _LIFESTYLE_TERMS.search(ctx) is None
+    return False
 
 
 def _anchor_short_query(query: str, answer: str, source: str) -> str:
@@ -203,7 +217,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             # 检索空手但有对话历史：历史消解指代/延续话题（校验依据=历史本身）
             raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()),
                            f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
-            final = verify.verify(raw, hblock)
+            final = verify.verify(raw, hblock, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         graph_ctx = guards.strip_injection_sentences(graph.expand(query))
@@ -218,7 +232,8 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                                + user_prompt)
             raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
                            user_prompt)
-            final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context, graph_only=True)
+            final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context,
+                                  graph_only=True, query=query)
             _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
@@ -234,7 +249,9 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                   else f"【资料】\n{context}\n\n【用户问题】\n{query}")
     raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
-    final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context)
+    final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context, query=query)
+    if final == guards.NO_ANSWER:
+        _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
@@ -327,7 +344,7 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
             for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
                                           f"【资料】\n{hblock}\n\n【用户问题】\n{query}"):
                 parts.append(chunk)
-            final = verify.verify("".join(parts), hblock)
+            final = verify.verify("".join(parts), hblock, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             yield "token", final
             yield "sources", []
@@ -345,7 +362,7 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
                     user_prompt):
                 parts.append(chunk)
             final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context,
-                                  graph_only=True)
+                                  graph_only=True, query=query)
             _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
             yield "token", final
             yield "sources", []
@@ -375,7 +392,9 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
     for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt):
         parts.append(chunk)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
-    final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context)
+    final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context, query=query)
+    if final == guards.NO_ANSWER:
+        _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
     yield "token", _anchor_short_query(query, final, hits[0].get("source", ""))
     yield "sources", sources
     yield "done", "[DONE]"

@@ -29,6 +29,53 @@ def verify_breaker_state() -> dict:
 
 _NUM_UNIT = re.compile(r"\d+(?:\.\d+)?\s*(?:%|mmHg|mg|ml|g|kg|次|天|年|月|日|周|元)")
 
+# ---------------- 相关性闸门（问题 vs 答案 多轮评分，低分直接过掉） ----------------
+
+_SCORE_PROMPT = """你是答案相关性评审员。判断【答案】是否**正面回应了问题想问的点**：
+5 = 正面且充分地回应了问题想问的点
+4 = 正面回应了问题想问的点（部分细节未覆盖可接受）
+3 = 只答了相邻内容，没有正面回应问题 → 不合格
+1 = 答非所问或对用户无用
+只输出一个 1-5 的整数。
+
+【问题】
+{query}
+
+【答案】
+{answer}
+"""
+
+_RELEVANCE_MIN = 4   # 3 分（相邻内容）即不合格——问什么答什么，用户明确
+_RELEVANCE_ROUNDS = 2
+
+
+def _relevance_score(query: str, answer: str) -> int | None:
+    """单轮相关性评分（小模型评审）；失败返回 None"""
+    try:
+        raw = llm.chat("", _SCORE_PROMPT.format(query=query[:200], answer=answer[:2000]),
+                       model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
+                       key=config.DASHSCOPE_KEY, temperature=0.1).strip()
+        m = re.search(r"[1-5]", raw)
+        return int(m.group()) if m else None
+    except Exception:
+        return None
+
+
+def _relevance_gate(query: str, answer: str) -> str:
+    """
+    相关性闸门（用户明确要求的最后兜底）：问题+答案多轮评分，
+    最低分 < 4 → 直接过掉，回兜底句式——只答相邻内容/答非所问的答案不出门。
+    评审模型失败时放行（软依赖；系统性故障由校验熔断机制兜底）。
+    """
+    scores = [_relevance_score(query, answer) for _ in range(_RELEVANCE_ROUNDS)]
+    valid = [s for s in scores if s is not None]
+    if not valid:
+        return answer
+    if min(valid) < _RELEVANCE_MIN:
+        print(f"[verify] 相关性闸门拒绝（分数 {valid}）：{query[:40]}")
+        return guards.NO_ANSWER
+    return answer
+
 
 def _grounded_number_retention(raw: str, checked: str, context: str) -> float:
     """
@@ -46,11 +93,12 @@ def _grounded_number_retention(raw: str, checked: str, context: str) -> float:
     return kept / len(grounded)
 
 
-def verify(answer: str, context: str, graph_only: bool = False) -> str:
+def verify(answer: str, context: str, graph_only: bool = False, query: str = "") -> str:
     """
-    小模型对照资料核查 → 确定性守卫收尾。
+    小模型对照资料核查 → 确定性守卫收尾 → 相关性闸门。
     graph_only：图谱-only 兜底时把收紧规则也注入校验提示词——否则小模型会放过
     图谱之外的内容（"图谱-only 授权过宽"的根因，恒传空串是漏接实况）。
+    query：用户问题——相关性闸门的输入（问题 vs 最终答案多轮评分，低分回兜底）。
     """
     global _verify_failures, _verify_suspended_until
     if (not config.VERIFY_ENABLED or not answer.strip() or not context.strip()
@@ -97,4 +145,10 @@ def verify(answer: str, context: str, graph_only: bool = False) -> str:
     answer = guards.strip_missing_terms(answer, missing)
     answer = guards.strip_assertions(answer, context)
     answer = guards.collapse_empty_headings(answer)
-    return guards.fix_output(answer) or guards.NO_ANSWER
+    answer = guards.fix_output(answer) or guards.NO_ANSWER
+    # 相关性闸门（最后一道）：问题 vs 答案多轮评分，低分直接过掉。
+    # 超短词查询（≤2 字，如"离别"）豁免——名词查找类问题，锚定的资料内容
+    # 就是答案（实况："告别"被评 3 分拒绝，与"告别不得回兜底"的棘轮用例冲突）
+    if query and answer and answer != guards.NO_ANSWER and len(re.sub(r"\s+", "", query)) > 2:
+        answer = _relevance_gate(query, answer)
+    return answer
