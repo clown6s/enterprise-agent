@@ -54,6 +54,35 @@ LEAVE_SOP = SopDefinition(code="leave_action", name="请假申请", keywords=_LE
 
 SOP_REGISTRY = [LEAVE_SOP]
 
+# ---------------- 管理后台开关接线 ----------------
+# sop 表 enabled 开关（TTL 60s 缓存；曾只存储不消费——后台禁用请假 SOP，
+# 运行时照常触发）。keywords 运行时仍用代码内触发词（改动是危险操作，
+# 后台 keywords 字段为展示用途）。
+
+_enabled_cache: dict = {"ts": 0.0, "val": True}
+_ENABLED_TTL = 60
+
+
+def is_enabled() -> bool:
+    """sop 表 enabled 开关（无记录=启用，表不可用=启用——软依赖）"""
+    global _enabled_cache
+    now = time.time()
+    if now - _enabled_cache["ts"] > _ENABLED_TTL:
+        try:
+            import pymysql
+            conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
+                                   password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
+                                   charset="utf8mb4", connect_timeout=3)
+            with conn.cursor() as cur:
+                cur.execute("SELECT enabled FROM sop WHERE code='leave_action'")
+                row = cur.fetchone()
+            conn.close()
+            _enabled_cache["val"] = row is None or bool(row[0])
+        except Exception:
+            _enabled_cache["val"] = True
+        _enabled_cache["ts"] = now
+    return _enabled_cache["val"]
+
 
 def match(query: str) -> SopDefinition | None:
     for sop in SOP_REGISTRY:

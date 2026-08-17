@@ -68,8 +68,9 @@ def _exec(sql: str, args: tuple = ()) -> None:
             cur.execute(sql, args)
         conn.commit()
         conn.close()
-    except pymysql.MySQLError:
-        pass
+    except pymysql.MySQLError as e:
+        # 管理操作失败必须可见（曾静默吞错——前端看到成功但实际没执行）
+        print(f"[admin] 写操作失败: {e!r} | {sql[:60]}")
 
 
 # ---------------- 账号 ----------------
@@ -289,25 +290,28 @@ def eval_set_delete(set_id: str, authorization: str | None = Header(default=None
 def _run_eval_task(task_id: str, set_id: str) -> None:
     from ..learn import eval_engine
     from ..service.retrieval import current_params
-    params = current_params()
-    items = _load_set_items(set_id)
-    results = [eval_engine.run_retrieval_case(i["question"], i["groundTruth"],
-                                              top_k=params["top_k"], min_score=params["min_score"])
-               for i in items]
-    hits = sum(1 for r in results if r["hit"])
-    mrr = sum(1.0 / r["rank"] for r in results if r["hit"]) / len(results) if results else 0.0
-    with _eval_lock:
-        _eval_tasks[task_id] = {
-            "status": "SUCCESS",
-            "result": {
-                "setId": set_id, "total": len(results), "evaluated": len(results),
-                "hitRate": round(hits / len(results), 4) if results else 0.0,
-                "mrr": round(mrr, 4), "ragasTaskId": None,
-                "items": [{"question": i["question"], "hit": r["hit"],
-                           "mrr": 1.0 / r["rank"] if r["hit"] else 0.0, "topSource": ""}
-                          for i, r in zip(items, results)],
-            },
+    try:
+        params = current_params()
+        items = _load_set_items(set_id)
+        results = [eval_engine.run_retrieval_case(i["question"], i["groundTruth"],
+                                                  top_k=params["top_k"], min_score=params["min_score"])
+                   for i in items]
+        hits = sum(1 for r in results if r["hit"])
+        mrr = sum(1.0 / r["rank"] for r in results if r["hit"]) / len(results) if results else 0.0
+        status, payload = "SUCCESS", {
+            "setId": set_id, "total": len(results), "evaluated": len(results),
+            "hitRate": round(hits / len(results), 4) if results else 0.0,
+            "mrr": round(mrr, 4), "ragasTaskId": None,
+            "items": [{"question": i["question"], "hit": r["hit"],
+                       "mrr": 1.0 / r["rank"] if r["hit"] else 0.0, "topSource": ""}
+                      for i, r in zip(items, results)],
         }
+    except Exception as e:
+        # 评测任务异常必须可见可查（曾线程内裸崩——task 永远 RUNNING，前端死等）
+        print(f"[admin] 评测任务失败: {e!r}")
+        status, payload = "FAILED", {"setId": set_id, "error": str(e)[:200]}
+    with _eval_lock:
+        _eval_tasks[task_id] = {"status": status, "result": payload}
 
 
 @router.post("/api/rag/admin/eval/sets/{set_id}/run")
@@ -327,7 +331,8 @@ def eval_run_status(task_id: str, authorization: str | None = Header(default=Non
         return _unauthorized()
     with _eval_lock:
         t = _eval_tasks.get(task_id)
-    return _ok(t or {"status": "RUNNING", "result": None})
+    # 未知 task 明确 UNKNOWN（曾返回 RUNNING——前端永远轮询不结束）
+    return _ok(t or {"status": "UNKNOWN", "result": None})
 
 
 # ---------------- SOP ----------------
@@ -364,10 +369,13 @@ def list_sops(authorization: str | None = Header(default=None)):
 def save_sop(body: dict, authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
+    keywords = body.get("keywords")
+    if isinstance(keywords, list):
+        keywords = ",".join(str(k).strip() for k in keywords if str(k).strip())
     _exec("INSERT INTO sop (code, name, keywords, steps_json, enabled, builtin) "
           "VALUES (%s,%s,%s,%s,%s,0) ON DUPLICATE KEY UPDATE name=VALUES(name), "
           "keywords=VALUES(keywords), steps_json=VALUES(steps_json), enabled=VALUES(enabled)",
-          (body.get("code"), body.get("name"), body.get("keywords"),
+          (body.get("code"), body.get("name"), keywords or "",
            json.dumps(body.get("steps") or [], ensure_ascii=False),
            1 if body.get("enabled") else 0))
     return _ok(True)

@@ -248,7 +248,9 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                 "route": "SOP", "chart": None}
 
     # SOP 状态机（执行准确层：请假四步走确定性流程 + 提交前确认）
-    sop = sop_engine.match(query) if tools.is_enabled("leave_action") else None
+    # 双重开关：skill 表（工具级） + sop 表（管理后台 SOP 页开关）
+    sop = (sop_engine.match(query)
+           if (tools.is_enabled("leave_action") and sop_engine.is_enabled()) else None)
     if sop:
         result = sop_engine.execute(sop, query, conversation_id)
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
@@ -388,7 +390,8 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
         yield "done", "[DONE]"
         return
 
-    sop = sop_engine.match(query) if tools.is_enabled("leave_action") else None
+    sop = (sop_engine.match(query)
+           if (tools.is_enabled("leave_action") and sop_engine.is_enabled()) else None)
     if sop:
         yield "route", "SOP"
         result = sop_engine.execute(sop, query, conversation_id)
