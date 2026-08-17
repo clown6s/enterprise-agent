@@ -185,13 +185,14 @@ def _ocr_image(image: bytes) -> str:
 
 def _with_title_marks(line_sizes: list[tuple[str, float]]) -> list[str]:
     """版面识别-标题判定（确定性）：行字号 >= 页中位数×1.25 且短行 → 「## 」。
-    标题感知切分由此获得（曾 PDF 无标题边界，chunk 块边界靠猜）。"""
+    标题感知切分由此获得（曾 PDF 无标题边界，chunk 块边界靠猜）。
+    排除纯数字行（页脚页码/编号——曾会把"3"标成标题，chunk 边界割裂）。"""
     if not line_sizes:
         return []
     med = statistics.median(s for _, s in line_sizes)
     out = []
     for text, size in line_sizes:
-        if med and size >= med * 1.25 and len(text) <= 40:
+        if med and size >= med * 1.25 and 2 <= len(text) <= 40 and not text.isdigit():
             text = f"## {text}"
         out.append(text)
     return out
@@ -210,17 +211,21 @@ def _parse_pdf(data: bytes) -> str:
         parts = []
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             for i, page in enumerate(pdf.pages, 1):
-                line_sizes = []
-                for ln in (page.extract_text_lines(layout=True, return_chars=True) or []):
-                    t = (ln.get("text") or "").strip()
-                    if not t:
-                        continue
-                    chars = ln.get("chars") or []
-                    mean = statistics.mean(c["size"] for c in chars) if chars else 0.0
-                    line_sizes.append((t, mean))
-                out_lines = _with_title_marks(line_sizes)
-                if out_lines:
-                    parts.append(f"[[page:{i}]]\n" + "\n".join(out_lines))
+                try:
+                    line_sizes = []
+                    for ln in (page.extract_text_lines(layout=True, return_chars=True) or []):
+                        t = (ln.get("text") or "").strip()
+                        if not t:
+                            continue
+                        chars = ln.get("chars") or []
+                        mean = statistics.mean(c["size"] for c in chars) if chars else 0.0
+                        line_sizes.append((t, mean))
+                    out_lines = _with_title_marks(line_sizes)
+                    if out_lines:
+                        parts.append(f"[[page:{i}]]\n" + "\n".join(out_lines))
+                except Exception:
+                    # 单页异常隔离：一页坏不拖垮整份文档（曾整本 PDF 一起失败）
+                    continue
         full = "\n".join(parts)
         if full and _is_garbled(full):
             print("[parse] PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
@@ -244,6 +249,10 @@ def _parse_pdf(data: bytes) -> str:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
         pages = [(page.extract_text() or "") for page in reader.pages]
-        return "\n".join(pages)
+        full = "\n".join(pages)
+        if _is_garbled(full):
+            print("[parse] PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
+            return ""
+        return full
     except Exception:
         return ""
