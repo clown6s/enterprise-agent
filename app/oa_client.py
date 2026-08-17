@@ -42,7 +42,8 @@ class OaClient:
                 # token 过期 → 重新登录再试一次
                 self._token = None
                 self._login()
-            except httpx.HTTPError:
+            except (httpx.HTTPError, ValueError):
+                # ValueError：OA 返回非 JSON（网关 500 页）时 .json() 抛——曾炸穿 500
                 return None
         return None
 
@@ -60,7 +61,8 @@ class OaClient:
                     return resp.json()
                 self._token = None
                 self._login()
-            except httpx.HTTPError:
+            except (httpx.HTTPError, ValueError):
+                # ValueError：OA 返回非 JSON（网关 500 页）时 .json() 抛——曾炸穿 500
                 return None
         return None
 

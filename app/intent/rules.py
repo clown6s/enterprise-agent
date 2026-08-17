@@ -49,6 +49,14 @@ def _fmt(v) -> str:
     return str(int(f)) if f == int(f) else str(f)
 
 
+def _fnum(v) -> float:
+    """安全转浮点（金额/数值可能带千分位等格式——转失败按 0，不让图表卡炸 500）"""
+    try:
+        return float(str(v or 0).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def headcount(query: str) -> Result:
     """人数统计（含部门级："研发部有几个人"）"""
     dept = next((d for d in demo_data.DEPTS if d in query), None)
@@ -75,9 +83,9 @@ def oa_expenses(query: str) -> Result:
     days = _days_of(query)
     name = next((n for n in demo_data.names() if n in query), None)
     data = oa.expenses(days, name)
-    if not data or not data.get("data", {}).get("items"):
+    d = (data or {}).get("data") or {}
+    if not isinstance(d, dict) or not d.get("items"):
         return None
-    d = data["data"]
     who = name or "全员"
     head = f"{who}最近 {days} 天共报销 {_fmt(d.get('total', 0))} 元，共 {d.get('count', 0)} 笔，明细如下：\n"
     lines, dept, same_dept = [], None, True
@@ -101,7 +109,7 @@ def oa_expenses(query: str) -> Result:
     values = []
     for it in d["items"]:
         table.append([it.get("d"), it.get("expenseType"), str(it.get("amount")), it.get("remark", "")])
-        values.append({"date": it.get("d"), "series": it.get("expenseType"), "value": float(it.get("amount") or 0)})
+        values.append({"date": it.get("d"), "series": it.get("expenseType"), "value": _fnum(it.get("amount"))})
     chart = {
         "kind": "expenses",
         "chartType": "bar",
@@ -119,9 +127,9 @@ def oa_metrics(query: str) -> Result:
         return None
     days = _days_of(query)
     data = oa.metrics(days)
-    if not data or not data.get("data", {}).get("dates"):
+    d = (data or {}).get("data") or {}
+    if not isinstance(d, dict) or not d.get("dates"):
         return None
-    d = data["data"]
     dates = d["dates"]
     s = d.get("summary", {})
     text = (f"近 {days} 天（{dates[0]} 至 {dates[-1]}）经营数据，"
@@ -129,10 +137,14 @@ def oa_metrics(query: str) -> Result:
             f"利润 {_fmt(s.get('profit'))} 元。每日明细见下表。")
     table = [["日期", "营收", "成本", "利润"]]
     values = []
-    for i, date in enumerate(dates):
+    # 按最短数组对齐（OA 返回的 dates 与数值数组长度不一致时曾 IndexError 炸 500）
+    n = min(len(dates), len(d.get("revenue") or []), len(d.get("cost") or []),
+            len(d.get("profit") or []))
+    for i in range(n):
+        date = dates[i]
         table.append([date, str(d["revenue"][i]), str(d["cost"][i]), str(d["profit"][i])])
         for name, key in (("营收", "revenue"), ("成本", "cost"), ("利润", "profit")):
-            values.append({"date": date, "series": name, "value": float(d[key][i])})
+            values.append({"date": date, "series": name, "value": _fnum(d[key][i])})
     chart = {
         "kind": "metrics",
         "chartType": "line",
