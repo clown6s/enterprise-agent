@@ -200,5 +200,15 @@
       ],
       "max_seconds": 5
     }
+  },
+  {
+    "id": "auto-unhelpful-f1f73f365a",
+    "query": "离别",
+    "expect": {
+      "answer_not_contain": [
+        "暂无法回答"
+      ],
+      "max_seconds": 60
+    }
   }
 ]
