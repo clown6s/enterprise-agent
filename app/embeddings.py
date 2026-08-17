@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 向量与重排（硅基流动 SiliconFlow，OpenAI 兼容接口）：
-- embed()   文本 → BGE-M3 1024 维向量（检索时用）
+- embed()   文本 → Qwen3-Embedding-8B 4096 维向量（检索时用）
 - rerank()  问题 + 候选文档 → 相关性分数（召回后精排）
 
 直接 HTTP 调用，不需要独立 sidecar 进程——少一层部署。
@@ -44,5 +44,7 @@ def rerank(query: str, documents: list[str], top_n: int | None = None) -> list[t
         )
         resp.raise_for_status()
         return [(r["index"], r["relevance_score"]) for r in resp.json()["results"]]
-    except (httpx.HTTPError, KeyError):
+    except Exception:
+        # 软依赖：HTTP 错/JSON 解析错/结构不符都回退原始顺序
+        # （曾只捕 HTTPError+KeyError，JSON 解析失败会炸穿到 500）
         return []

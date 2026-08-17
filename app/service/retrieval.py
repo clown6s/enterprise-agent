@@ -50,7 +50,12 @@ def retrieve(query: str, *, top_k: int | None = None,
 
     from . import acl
     expr = acl.allowed_expr(user)
-    vec = embeddings.embed(query)
+    try:
+        vec = embeddings.embed(query)
+    except Exception as e:
+        # 软依赖：嵌入服务抖动时检索整体降级为空（问答走兜底），不炸 500
+        print(f"[retrieval] 嵌入失败: {e!r}")
+        return []
     hits = milvus_store.search(vec, query, top_k=top_k, expr=expr)
     if not hits:
         # 混合检索失败（如 BM25 字段异常）→ 纯稠密回退，主链路不崩
