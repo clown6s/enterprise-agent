@@ -15,7 +15,7 @@ from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
 from .. import config, milvus_store, mysql_store
-from ..learn import gap_discovery, usage
+from ..learn import feedback, gap_discovery, usage
 from ..service import agent
 
 router = APIRouter()
@@ -596,6 +596,14 @@ def verify_health(authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
     return _ok(agent.verify_breaker_state())
+
+
+@router.post("/api/rag/admin/pending/promote")
+def promote_pending_cases(authorization: str | None = Header(default=None)):
+    """待审用例一键转正：👎带纠正的队列 → 正式回归用例（棘轮只增不减）"""
+    if not _auth(authorization):
+        return _unauthorized()
+    return _ok(feedback.promote_pending())
 
 
 @router.get("/api/rag/admin/documents")

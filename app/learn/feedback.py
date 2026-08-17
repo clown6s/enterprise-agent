@@ -39,6 +39,43 @@ def _hash_query(query: str) -> str:
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:64]
 
 
+def promote_pending() -> dict:
+    """
+    待审用例一键转正（👎 带纠正的队列）→ 正式回归用例：
+    纠正文本作为 answer_contain 断言，无纠正的锁"不得再兜底"。
+    同问法已有用例跳过；转正后清空待审文件。返回 {promoted, remaining}。
+    """
+    if not os.path.exists(_PENDING_FILE):
+        return {"promoted": 0, "remaining": 0}
+    entries = []
+    with open(_PENDING_FILE, encoding="utf-8") as f:
+        for line in f:
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    with open(_REGRESSION_FILE, encoding="utf-8") as f:
+        cases = json.load(f)
+    promoted = 0
+    for e in entries:
+        q = (e.get("query") or "").strip()
+        if not q or any(c.get("query") == q for c in cases):
+            continue
+        correction = (e.get("correction") or "").strip()
+        expect = {"max_seconds": 60}
+        if correction:
+            expect["answer_contain"] = [correction[:60]]
+        else:
+            expect["answer_not_contain"] = ["暂无法回答"]
+        cases.append({"id": f"pending-{_hash_query(q)[:10]}", "query": q, "expect": expect})
+        promoted += 1
+    if promoted:
+        with open(_REGRESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump(cases, f, ensure_ascii=False, indent=2)
+        os.remove(_PENDING_FILE)
+    return {"promoted": promoted, "remaining": len(entries) - promoted}
+
+
 def enqueue_review(query: str, answer: str, sources: str = "") -> bool:
     """
     审核入队：低把握答案（兜底句式触发 / 图谱-only 兜底）自动进人工审核队列，

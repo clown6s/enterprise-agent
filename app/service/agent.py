@@ -49,6 +49,20 @@ def route(query: str, has_history: bool = False) -> str:
     return "KNOWLEDGE_QA"
 
 
+def _rewrite_query(query: str) -> str:
+    """
+    口语化问句改写（检索空手时的冷路径兜底）：'血压高怎么降' → 规范问法，
+    补全简称与口语。只输出改写后的问句；失败返回空串。"""
+    try:
+        return (llm.chat(
+            "", "把下面的口语化问句改写为规范的检索问句（补全简称与口语，"
+                "如'血压高'→'高血压'、'放假几天'→'节假日安排'）。"
+                "只输出改写后的问句，不要解释：\n" + query,
+            temperature=0.2, extra={"enable_thinking": False}).strip() or "")
+    except Exception:
+        return ""
+
+
 def _resolve_referent(query: str, turns: list[dict]) -> str:
     """
     指代消解 v2：'那它的控制目标呢' 结合对话历史改写成完整问题（补上指代对象），
@@ -234,6 +248,13 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     # 指代消解 v2：指代词 + 有历史 → 先改写为完整问题再检索（有真实来源）
     search_query = _resolve_referent(query, turns) if (turns and _REFERENTS.search(query)) else query
     hits = retrieval.retrieve(search_query, user=user)
+    # 口语化改写重试：检索空手且问句值得改写（>4 字）→ 规范问法再试一次
+    if not hits and len(re.sub(r"\s+", "", query)) > 4:
+        rewritten = _rewrite_query(query)
+        if rewritten and rewritten != query:
+            hits = retrieval.retrieve(rewritten, user=user)
+            if hits:
+                search_query = rewritten
     # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
@@ -376,6 +397,13 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
     # 知识问答：预检索（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）
     search_query = _resolve_referent(query, turns) if (turns and _REFERENTS.search(query)) else query
     hits = retrieval.retrieve(search_query, user=user)
+    # 口语化改写重试：检索空手且问句值得改写（>4 字）→ 规范问法再试一次
+    if not hits and len(re.sub(r"\s+", "", query)) > 4:
+        rewritten = _rewrite_query(query)
+        if rewritten and rewritten != query:
+            hits = retrieval.retrieve(rewritten, user=user)
+            if hits:
+                search_query = rewritten
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
     fb = guards.strip_injection_sentences(file_block) if file_block else ""
