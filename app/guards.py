@@ -124,6 +124,16 @@ def fix_output(text: str) -> str:
         i += 1
     lines = restored_bare
 
+    # 3.7) 阅读理解题题干句式首行剥除："描写告别的方法"这类独立首行是模型
+    #      从阅读理解类资料抄来的题干（实况：OCR 入库的问答素材，用户问"离别"，
+    #      答案却以题干句式开头——题干是给题目的，不是给用户的）
+    _COMPREHENSION_HEADER = re.compile(
+        r"^(描写|介绍|说明|阐述|讲述|如何|怎样)[^\n。！？]{1,20}"
+        r"(的方法|的方式|的写法|的手法|的途径|的内容|的表达)$")
+    head_idx = next((i for i, l in enumerate(lines) if l.strip()), None)
+    if head_idx is not None and _COMPREHENSION_HEADER.match(lines[head_idx].strip()):
+        del lines[head_idx]
+
     # 4) 列表统一 '- ' 条目（编号/无序都归一；加粗标题去符号）
     out = _dash_list_lines(lines)
 
