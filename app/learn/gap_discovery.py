@@ -36,6 +36,7 @@ def record_gap(query: str) -> None:
         pass
     with _lock:
         _gaps.append(entry)
+        del _gaps[:-500]   # 内存聚合限长（JSONL 全量在盘上，进程内只留最近 500 条防膨胀）
 
 
 def _tokens(query: str) -> set[str]:
