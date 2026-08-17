@@ -34,18 +34,23 @@ def chat(system: str, user: str, *,
          model: str = config.MAIN_MODEL,
          base: str = config.MAIN_BASE,
          key: str = config.MAIN_KEY,
-         temperature: float = 0.7) -> str:
-    """一次性对话，返回完整文本；失败抛异常（调用方决定兜底策略）"""
+         temperature: float = 0.7,
+         extra: dict | None = None) -> str:
+    """一次性对话，返回完整文本；失败抛异常（调用方决定兜底策略）。
+    extra：附加请求参数（如 {"enable_thinking": False} 关闭思考模式省延迟）。"""
     _t0 = time.time()
+    payload = {
+        "model": model,
+        "messages": _messages(system, user),
+        "temperature": temperature,
+        "stream": False,
+    }
+    if extra:
+        payload.update(extra)
     resp = httpx.post(
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
-        json={
-            "model": model,
-            "messages": _messages(system, user),
-            "temperature": temperature,
-            "stream": False,
-        },
+        json=payload,
         timeout=120,
     )
     resp.raise_for_status()

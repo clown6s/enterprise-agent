@@ -76,6 +76,7 @@ def build_from_chunks(chunks: list[str], doc_id: str = "") -> int:
                 "", _TRIPLE_PROMPT.format(text=c[:2000]),
                 model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
                 key=config.DASHSCOPE_KEY, temperature=0.1,
+                extra={"enable_thinking": False},
             )
             m = re.search(r"\[.*\]", raw, re.S)
             if not m:

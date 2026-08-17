@@ -23,10 +23,11 @@ def _env(key: str, default: str = "") -> str:
 MAIN_KEY = _env("DASHSCOPE_API_KEY")
 MAIN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 MAIN_MODEL = "qwen3-max"
-# 阿里云百炼 qwen-plus：答案校验小模型（省成本）
+# 阿里云百炼 qwen3-max：答案校验 + 相关性评审（2026-08-17 从 qwen-plus 升级——
+# 弱模型当裁判是半数守卫补丁的根源：洗格式/剥数字/误判相关，擦屁股没完）
 DASHSCOPE_KEY = _env("DASHSCOPE_API_KEY")
 DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-VERIFY_MODEL = "qwen-plus"
+VERIFY_MODEL = "qwen3-max"
 
 # ---------------- 向量检索 ----------------
 SILICONFLOW_KEY = _env("SILICONFLOW_API_KEY")

@@ -47,6 +47,10 @@ _SCORE_PROMPT = """你是答案相关性评审员。判断【答案】是否**�
 
 _RELEVANCE_MIN = 4   # 3 分（相邻内容）即不合格——问什么答什么，用户明确
 _RELEVANCE_ROUNDS = 2
+# 问句意图词：含任一 → 有明确诉求，进严格闸门；不含 → 名词查找类，豁免
+_QUESTION_INTENT = re.compile(
+    r"什么|怎么|如何|为什么|为何|注意|建议|推荐|哪些|几个|多少|哪年|哪一|吗|呢"
+    r"|区别|流程|方法|方式|能否|可以|会不会|能不能|是不是|原因|时候|时间|多久")
 
 
 def _relevance_score(query: str, answer: str) -> int | None:
@@ -54,7 +58,8 @@ def _relevance_score(query: str, answer: str) -> int | None:
     try:
         raw = llm.chat("", _SCORE_PROMPT.format(query=query[:200], answer=answer[:2000]),
                        model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
-                       key=config.DASHSCOPE_KEY, temperature=0.1).strip()
+                       key=config.DASHSCOPE_KEY, temperature=0.1,
+                       extra={"enable_thinking": False}).strip()
         m = re.search(r"[1-5]", raw)
         return int(m.group()) if m else None
     except Exception:
@@ -114,7 +119,7 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
                                              graph_only_rule=prompts.GRAPH_ONLY_RULE if graph_only else "",
                                              context=context[:6000], answer=answer),
             model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE, key=config.DASHSCOPE_KEY,
-            temperature=0.2,
+            temperature=0.2, extra={"enable_thinking": False},
         ).strip()
         if checked.startswith("```"):
             checked = re.sub(r"^```\w*\s*", "", checked)
@@ -147,8 +152,11 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
     answer = guards.collapse_empty_headings(answer)
     answer = guards.fix_output(answer) or guards.NO_ANSWER
     # 相关性闸门（最后一道）：问题 vs 答案多轮评分，低分直接过掉。
-    # 超短词查询（≤2 字，如"离别"）豁免——名词查找类问题，锚定的资料内容
-    # 就是答案（实况："告别"被评 3 分拒绝，与"告别不得回兜底"的棘轮用例冲突）
-    if query and answer and answer != guards.NO_ANSWER and len(re.sub(r"\s+", "", query)) > 2:
-        answer = _relevance_gate(query, answer)
+    # 名词查找类豁免：≤2 字（"离别"）或无问句意图词（"高血压"——检索锚定的
+    # 资料内容就是答案）不进严格闸门；闸门管的是"注意/怎么/建议"这类
+    # 有明确诉求的提问（实况：强裁判把裸词'高血压'评 3 分拒绝，误伤）
+    if query and answer and answer != guards.NO_ANSWER:
+        q = re.sub(r"\s+", "", query)
+        if len(q) > 2 and _QUESTION_INTENT.search(q):
+            answer = _relevance_gate(query, answer)
     return answer
