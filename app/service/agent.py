@@ -55,15 +55,16 @@ def _today_line() -> str:
     return f"今天是 {now.strftime('%Y-%m-%d')} 星期{week}"
 
 
-def _anchor_short_query(query: str, answer: str, sources: list[str]) -> str:
+def _anchor_short_query(query: str, answer: str, source: str) -> str:
     """超短实体查询（≤2 字）的答案补来源锚定句——实况：用户问"离别"，
     模型把资料的阅读理解答案直接当回答（"描写告别的方法"），像自问自答。
-    锚定后用户一眼知道在答哪份资料。只锚定检索路径（有 sources）；
-    图谱/历史路径无来源、兜底句式不锚定。"""
+    锚定后用户一眼知道在答哪份资料。只锚定检索路径；图谱/历史路径无来源、
+    兜底句式不锚定。source 取重排后排名第一的命中（勿用去重集合首项——
+    那是字母序，曾锚成次相关来源的实况）。"""
     q = re.sub(r"\s+", "", query or "")
-    if len(q) > 2 or not sources or not answer or answer == guards.NO_ANSWER:
+    if len(q) > 2 or not source or not answer or answer == guards.NO_ANSWER:
         return answer
-    src = re.sub(r"\.(pdf|docx?|txt|md)$", "", sources[0], flags=re.I)
+    src = re.sub(r"\.(pdf|docx?|txt|md)$", "", source, flags=re.I)
     if not src:
         return answer
     return f"根据《{src}》一文：\n{answer}"
@@ -206,7 +207,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
     final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context)
-    return {"answer": _anchor_short_query(query, final, sources),
+    return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
 
@@ -338,6 +339,6 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
         parts.append(chunk)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
     final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context)
-    yield "token", _anchor_short_query(query, final, sources)
+    yield "token", _anchor_short_query(query, final, hits[0].get("source", ""))
     yield "sources", sources
     yield "done", "[DONE]"
