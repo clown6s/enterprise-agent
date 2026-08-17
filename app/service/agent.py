@@ -49,6 +49,22 @@ def route(query: str, has_history: bool = False) -> str:
     return "KNOWLEDGE_QA"
 
 
+def _resolve_referent(query: str, turns: list[dict]) -> str:
+    """
+    指代消解 v2：'那它的控制目标呢' 结合对话历史改写成完整问题（补上指代对象），
+    用改写后的问题重新检索——指代问题从此有真实来源，而不是纯靠历史猜。
+    失败返回空串（调用方回退原文检索）。"""
+    try:
+        return (llm.chat(
+            "", "结合【对话历史】，把下面的用户问题改写为完整明确的问题"
+                "（消解'它/这个/那个'等指代，补上指代对象）。只输出改写后的问题，"
+                "不要任何解释：\n"
+                f"【对话历史】\n{history.history_block(turns)}\n\n【用户问题】\n{query}",
+            temperature=0.2, extra={"enable_thinking": False}).strip() or "")
+    except Exception:
+        return ""
+
+
 def _today_line() -> str:
     now = datetime.now()
     week = "一二三四五六日"[now.weekday()]
@@ -215,7 +231,9 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                 "sources": [], "route": "CLARIFY", "chart": None}
 
     # 知识问答：预检索 →（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
-    hits = retrieval.retrieve(query, user=user)
+    # 指代消解 v2：指代词 + 有历史 → 先改写为完整问题再检索（有真实来源）
+    search_query = _resolve_referent(query, turns) if (turns and _REFERENTS.search(query)) else query
+    hits = retrieval.retrieve(search_query, user=user)
     # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
@@ -243,6 +261,8 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                            user_prompt)
             final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context,
                                   graph_only=True, query=query)
+            if final != guards.NO_ANSWER:
+                final = "以下内容基于知识图谱关联（无文档来源，仅供参考）：\n" + final
             _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
@@ -268,7 +288,8 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         vctx = f"{vctx}\n{fb}"
     if hblock:
         vctx = f"{vctx}\n{hblock}"
-    final = verify.verify(raw, vctx, query=query)
+    # 相关性闸门用改写后的问题评判（指代问题评审员看不到历史，用原句会误杀）
+    final = verify.verify(raw, vctx, query=search_query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
@@ -353,7 +374,8 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
         return
 
     # 知识问答：预检索（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）
-    hits = retrieval.retrieve(query, user=user)
+    search_query = _resolve_referent(query, turns) if (turns and _REFERENTS.search(query)) else query
+    hits = retrieval.retrieve(search_query, user=user)
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
     fb = guards.strip_injection_sentences(file_block) if file_block else ""
@@ -385,6 +407,8 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
                 parts.append(chunk)
             final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context,
                                   graph_only=True, query=query)
+            if final != guards.NO_ANSWER:
+                final = "以下内容基于知识图谱关联（无文档来源，仅供参考）：\n" + final
             _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
             yield "token", final
             yield "sources", []
@@ -422,7 +446,8 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
         vctx = f"{vctx}\n{fb}"
     if hblock:
         vctx = f"{vctx}\n{hblock}"
-    final = verify.verify("".join(parts), vctx, query=query)
+    # 相关性闸门用改写后的问题评判（指代问题评审员看不到历史，用原句会误杀）
+    final = verify.verify("".join(parts), vctx, query=search_query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
     yield "token", _anchor_short_query(query, final, hits[0].get("source", ""))
