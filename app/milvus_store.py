@@ -130,6 +130,30 @@ def list_documents() -> list[dict]:
     return list(docs.values())
 
 
+def update_document_meta(document_id: str, title: str | None = None,
+                         source: str | None = None) -> int:
+    """按 document_id 更新全部 chunk 的标题/来源（知识库文档改名治理用）。
+    返回更新条数；失败返回 0。"""
+    if not title and not source:
+        return 0
+    try:
+        rows = _col().query(expr=f'document_id == "{document_id}"',
+                            output_fields=["*"], limit=1000)
+        if not rows:
+            return 0
+        for r in rows:
+            if title:
+                r["title"] = title
+            if source:
+                r["source"] = source
+        _col().upsert(rows)
+        _col().flush()
+        return len(rows)
+    except Exception as e:
+        print(f"[milvus] 元数据更新失败: {e!r}")
+        return 0
+
+
 def delete_by_document_id(document_id: str) -> int:
     """按 document_id 删除全部 chunk（知识库删文档用）"""
     try:

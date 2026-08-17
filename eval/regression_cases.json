@@ -74,7 +74,7 @@
     "query": "宫崎骏",
     "expect": {
       "sources_include": [
-        "图片识别"
+        "宫崎骏语录"
       ],
       "answer_not_contain": [
         "伪名言",

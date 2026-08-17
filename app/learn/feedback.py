@@ -77,17 +77,19 @@ def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dic
     except pymysql.MySQLError:
         pass   # 软依赖：MySQL 挂了只影响留痕，不影响入库
 
-    # Milvus 入库：Q&A 拼成一个 chunk（标题带"问答采纳"便于溯源）。
+    # Milvus 入库：Q&A 拼成一个 chunk（标题用问句本身，可读溯源——
+    # 曾用哈希标题"问答采纳-0cae5983"，机器名无法溯源，治理实况）。
     # 锚定句是展示层，剥掉再入库——否则新答案引用它再被锚定 → 双重锚定（实况）
     from .. import guards
     text = f"问题：{query}\n回答：{guards.strip_leading_anchor(answer)}"
     vec = embeddings.embed(text)
+    label = f"问答采纳·{query[:16]}"
     milvus_store.insert_document(
         text=text,
         vector=vec,
         document_id=f"adopt-{qh[:16]}",
-        title=f"问答采纳-{qh[:8]}",
-        source="问答采纳" + (f"·{source}" if source else ""),
+        title=label,
+        source=label,
     )
     return {"adoptId": qh, "query": query}
 

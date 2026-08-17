@@ -620,3 +620,16 @@ def delete_document(doc_id: str, authorization: str | None = Header(default=None
         return _unauthorized()
     removed = milvus_store.delete_by_document_id(doc_id)
     return _ok({"docId": doc_id, "chunksRemoved": removed})
+
+
+@router.post("/api/rag/admin/documents/{doc_id}/rename")
+def rename_document(doc_id: str, body: dict, authorization: str | None = Header(default=None)):
+    """知识库文档改名（治理用）：机器标题（图片识别_xxx/问答采纳-xxx）改回真实名称"""
+    if not _auth(authorization):
+        return _unauthorized()
+    title = (body.get("title") or "").strip()
+    source = (body.get("source") or "").strip() or title
+    if not title:
+        return _ok({"docId": doc_id, "updated": 0, "error": "title 不能为空"})
+    updated = milvus_store.update_document_meta(doc_id, title=title, source=source)
+    return _ok({"docId": doc_id, "updated": updated})
