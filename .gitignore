@@ -10,3 +10,4 @@ __pycache__/
 logs/
 data/synonyms.json
 data/uploads/
+data/backup/

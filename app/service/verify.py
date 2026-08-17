@@ -136,9 +136,15 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
         return guards.fix_output(answer) or guards.NO_ANSWER   # 熔断中：只过确定性守卫
     missing = guards.find_missing_terms(answer, context)
     missing_block = "、".join(missing) if missing else "（无）"
+    # 跨文档拼接检测（句级出处绑定）：疑似清单喂校验模型（软处置），
+    # 高置信（短句全数字失配）并入缺失清单走硬删
+    spliced_soft, spliced_hard = guards.find_mismatched_numbers(answer, context)
+    spliced_block = "、".join(spliced_soft) if spliced_soft else "（无）"
+    missing = (missing + spliced_hard)[:12]
     try:
         checked = llm.chat(
             "", prompts.VERIFY_PROMPT.format(missing=missing_block,
+                                             spliced=spliced_block,
                                              graph_only_rule=prompts.GRAPH_ONLY_RULE if graph_only else "",
                                              context=context[:6000], answer=answer),
             model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE, key=config.DASHSCOPE_KEY,

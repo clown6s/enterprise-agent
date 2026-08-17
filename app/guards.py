@@ -409,7 +409,11 @@ def find_mismatched_numbers(answer: str, context: str) -> tuple[list[str], list[
         nums = _NUM_UNIT_PAT.findall(sentence)
         if not nums:
             continue
-        src = _sentence_source(sentence, chunks)
+        # 出处定位用「去掉数字的主体」——曾整句定位被数字带偏：拼接句
+        # 的数字侧 chunk 赢了 Jaccard，出处归错、拼接漏判。
+        # 数字/比较符/百分号对主体归属无价值，全部剥除
+        body = re.sub(r"[0-9<>/=≥≤.%]+", "", sentence)
+        src = _sentence_source(body, chunks)
         if not src:
             continue
         src_norm = re.sub(r"\s+", "", src)
