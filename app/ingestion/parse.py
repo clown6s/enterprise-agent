@@ -35,17 +35,33 @@ def parse_bytes(filename: str, data: bytes) -> str:
 def _parse_docx(data: bytes) -> str:
     try:
         import docx
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         doc = docx.Document(io.BytesIO(data))
         parts = []
-        for para in doc.paragraphs:
+
+        def add_para(para) -> None:
             text = (para.text or "").strip()
             if not text:
-                continue
+                return
             style = (para.style.name or "").lower() if para.style else ""
-            if style.startswith("heading"):
+            # 中文 Word/WPS 的样式名是"标题 1"——只认 heading 会静默丢失标题感知
+            if style.startswith(("heading", "标题", "title")):
                 parts.append(f"## {text}")
             else:
                 parts.append(text)
+
+        # 按文档实际顺序交错提取段落与表格。doc.paragraphs 不含表格——
+        # 企业制度文档的表格内容曾整体丢失；表格行以 " | " 拼接为一行
+        for child in doc.element.body.iterchildren():
+            if child.tag.endswith("}p"):
+                add_para(Paragraph(child, doc))
+            elif child.tag.endswith("}tbl"):
+                for row in Table(child, doc).rows:
+                    cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+                    cells = [c for c in cells if c]
+                    if cells:
+                        parts.append(" | ".join(cells))
         return "\n".join(parts)
     except Exception:
         return ""

@@ -72,6 +72,17 @@ def chunk_text(text: str, max_chars: int = MAX_CHARS,
     return chunks, pages
 
 
+def _embed_with_retry(text: str, retries: int = 2) -> list[float]:
+    """嵌入重试：嵌入服务瞬时抖动不整单失败（曾无兜底直接 500）"""
+    last: Exception | None = None
+    for _ in range(retries):
+        try:
+            return embeddings.embed(text)
+        except Exception as e:
+            last = e
+    raise last  # type: ignore[misc]
+
+
 def _log(action: str, **fields) -> None:
     entry = {"ts": datetime.now().isoformat(), "action": action, **fields}
     try:
@@ -93,14 +104,18 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         return {"error": f"《{filename}》切分后无内容。"}
     doc_id = uuid.uuid4().hex
     doc_title = (title or filename).strip() or "未命名文档"
-    rows = [{
-        "text": c,
-        "dense": embeddings.embed(c),
-        "document_id": doc_id,
-        "title": doc_title,
-        "source": doc_title,
-        "page": pages[i],
-    } for i, c in enumerate(chunks)]
+    try:
+        rows = [{
+            "text": c,
+            "dense": _embed_with_retry(c),
+            "document_id": doc_id,
+            "title": doc_title,
+            "source": doc_title,
+            "page": pages[i],
+        } for i, c in enumerate(chunks)]
+    except Exception as e:
+        _log("embed_failed", file=filename, error=str(e)[:200])
+        return {"error": f"《{filename}》向量化失败（嵌入服务异常），请稍后重试。"}
     ok = milvus_store.insert_documents(rows)
     # 图谱构建（软依赖：失败/超量只记日志，不阻断摄入）
     rels = graph.build_from_chunks(chunks, doc_id) if ok else 0

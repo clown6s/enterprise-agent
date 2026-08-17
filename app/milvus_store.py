@@ -21,13 +21,31 @@ from . import config
 _collection = None
 
 
+def _ensure_database() -> None:
+    """业务库幂等就绪（裸 Milvus 首启自动建库——上传路径不再依赖人工建库；
+    曾只靠迁移脚本建集合，Milvus 重建后首次上传必失败）。"""
+    if not connections.has_connection("default"):
+        connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
+                            db_name="default")
+    if config.MILVUS_DB not in utility.list_databases():
+        utility.create_database(config.MILVUS_DB)
+        print(f"[milvus] 数据库 {config.MILVUS_DB} 已创建")
+    connections.disconnect("default")
+    connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
+                        db_name=config.MILVUS_DB)
+
+
 def _col() -> Collection:
-    """懒连接单例：进程启动后第一次检索时才连 Milvus（软依赖）"""
+    """懒连接单例：首次调用自动建库建集合再加载（软依赖——失败记日志，
+    异常由各调用方兜底，服务不崩）。"""
     global _collection
     if _collection is None:
-        connections.connect(
-            host=config.MILVUS_HOST, port=config.MILVUS_PORT, db_name=config.MILVUS_DB
-        )
+        try:
+            _ensure_database()
+            if not utility.has_collection(config.MILVUS_COLLECTION):
+                create_collection_v2()
+        except Exception as e:
+            print(f"[milvus] 库/集合就绪失败: {e!r}")
         _collection = Collection(config.MILVUS_COLLECTION)
         _collection.load()
     return _collection
@@ -35,20 +53,10 @@ def _col() -> Collection:
 
 def create_collection_v2(drop_existing: bool = False) -> bool:
     """建 documents_v2（4096 维 dense + BM25 函数字段 + page 溯源字段）。
-    已存在且不 drop → 直接 True。失败返回 False（软依赖）。"""
+    调用前需 _ensure_database() 已连上业务库。已存在且不 drop → 直接 True。
+    失败返回 False（软依赖）。"""
     name = config.MILVUS_COLLECTION
     try:
-        # 数据库幂等就绪：先连默认库确保 rag_service 存在，再切过去
-        # （重新部署后的裸 Milvus 没有业务库——首摄自动建库）
-        if not connections.has_connection("default"):
-            connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
-                                db_name="default")
-        if config.MILVUS_DB not in utility.list_databases():
-            utility.create_database(config.MILVUS_DB)
-            print(f"[milvus] 数据库 {config.MILVUS_DB} 已创建")
-        connections.disconnect("default")
-        connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
-                            db_name=config.MILVUS_DB)
         if utility.has_collection(name):
             if not drop_existing:
                 return True

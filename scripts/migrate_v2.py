@@ -21,8 +21,7 @@ from app import config, embeddings, milvus_store
 
 def read_legacy() -> list[dict]:
     """读旧集合全部 chunk（id 主键分页）"""
-    connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
-                        db_name=config.MILVUS_DB)
+    milvus_store._ensure_database()
     col = Collection(config.LEGACY_COLLECTION)
     col.load()
     rows = []
