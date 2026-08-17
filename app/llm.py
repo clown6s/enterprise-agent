@@ -8,6 +8,7 @@ LLM 客户端：手写 OpenAI 兼容接口调用（httpx），不引 SDK。
 - chat()        一次性对话（校验层/非流式答案用）
 - chat_stream() 生成器，逐段吐出增量文本（SSE 流式用）
 """
+import base64
 import json
 import time
 from typing import Iterator
@@ -28,6 +29,53 @@ def _messages(system: str, user: str) -> list[dict]:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": user})
     return msgs
+
+
+def model_config(purpose: str) -> dict:
+    """按用途取模型注册表条目（{model, base, key}）——模型注册表入口，
+    未知用途回退主力模型。"""
+    return config.MODEL_REGISTRY.get(purpose, config.MODEL_REGISTRY["main"])
+
+
+def _image_mime(image: bytes) -> str:
+    """按魔数识别图片类型（data URL 的 MIME 必须与内容一致，qwen-vl 会校验）"""
+    if image[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if image[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if image[:4] == b"GIF8":
+        return "image/gif"
+    return "image/png"
+
+
+def chat_image(system: str, user: str, image: bytes) -> str:
+    """图片理解（OCR/图注）：走注册表 ocr 条目，OpenAI 兼容 content 数组 +
+    base64 data URL。失败抛异常（调用方决定是否降级跳过该图）。"""
+    m = model_config("ocr")
+    _t0 = time.time()
+    content = [
+        {"type": "text", "text": user},
+        {"type": "image_url", "image_url": {
+            "url": f"data:{_image_mime(image)};base64,{base64.b64encode(image).decode()}"}},
+    ]
+    payload = {
+        "model": m["model"],
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": content}],
+        "temperature": 0.1,
+        "stream": False,
+    }
+    resp = httpx.post(
+        f"{m['base']}/chat/completions",
+        headers={"Authorization": f"Bearer {m['key']}"},
+        json=payload,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    out = data["choices"][0]["message"]["content"] or ""
+    usage.record(m["model"], len(system) + len(user), len(out), time.time() - _t0)
+    return out
 
 
 def chat(system: str, user: str, *,

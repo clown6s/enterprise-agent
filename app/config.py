@@ -20,14 +20,25 @@ def _env(key: str, default: str = "") -> str:
 # ---------------- LLM ----------------
 # 主力模型 qwen3-max（百炼旗舰，OpenAI 兼容接口）：对话 + 流式
 # （2026-08-17 用户指定：主力生成换更强千问，替代 deepseek-chat）
-MAIN_KEY = _env("DASHSCOPE_API_KEY")
-MAIN_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-MAIN_MODEL = "qwen3-max"
-# 阿里云百炼 qwen3-max：答案校验 + 相关性评审（2026-08-17 从 qwen-plus 升级——
-# 弱模型当裁判是半数守卫补丁的根源：洗格式/剥数字/误判相关，擦屁股没完）
 DASHSCOPE_KEY = _env("DASHSCOPE_API_KEY")
 DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-VERIFY_MODEL = "qwen3-max"
+MAIN_KEY = _env("MODEL_MAIN_KEY") or DASHSCOPE_KEY
+MAIN_BASE = _env("MODEL_MAIN_BASE", DASHSCOPE_BASE)
+MAIN_MODEL = _env("MODEL_MAIN", "qwen3-max")
+# 阿里云百炼 qwen3-max：答案校验 + 相关性评审（2026-08-17 从 qwen-plus 升级——
+# 弱模型当裁判是半数守卫补丁的根源：洗格式/剥数字/误判相关，擦屁股没完）
+VERIFY_MODEL = _env("MODEL_VERIFY", "qwen3-max")
+
+# 模型注册表（借鉴 ragflow llm_factories：按用途声明式管理，.env 可覆盖——
+# 加新用途（如 OCR）/换厂商只改 .env，不改代码。曾模型写死在调用点）
+MODEL_REGISTRY = {
+    "main": {"model": MAIN_MODEL, "base": MAIN_BASE, "key": MAIN_KEY},
+    "verify": {"model": VERIFY_MODEL, "base": DASHSCOPE_BASE, "key": DASHSCOPE_KEY},
+    # 图片→文字（PDF/docx 内嵌图 chunk 用，qwen-vl 多模态）
+    "ocr": {"model": _env("MODEL_OCR", "qwen-vl-plus"),
+            "base": _env("MODEL_OCR_BASE", DASHSCOPE_BASE),
+            "key": _env("MODEL_OCR_KEY") or DASHSCOPE_KEY},
+}
 
 # ---------------- 向量检索 ----------------
 SILICONFLOW_KEY = _env("SILICONFLOW_API_KEY")
