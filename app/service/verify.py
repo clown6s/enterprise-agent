@@ -45,6 +45,22 @@ _SCORE_PROMPT = """你是答案相关性评审员。判断【答案】是否**�
 {answer}
 """
 
+# 反向评审（提示词异构：同一模型换提问角度——曾两轮同 prompt 同模型，
+# 系统性偏见要两个不同视角同时犯才漏）
+_REVERSE_SCORE_PROMPT = """你是答案相关性评审员（反向检查）。找出【答案】中与【问题】无关的内容：
+5 = 答案全部直接回应问题，没有跑题内容
+4 = 答案基本回应问题，仅少量细节与问题无关
+3 = 答案大部分是相邻内容（相关但不直接回应问题）或夹杂大量无关内容 → 不合格
+1 = 答非所问
+只输出一个 1-5 的整数。
+
+【问题】
+{query}
+
+【答案】
+{answer}
+"""
+
 _RELEVANCE_MIN = 4   # 3 分（相邻内容）即不合格——问什么答什么，用户明确
 _RELEVANCE_ROUNDS = 2
 # 问句意图词：含任一 → 有明确诉求，进严格闸门；不含 → 名词查找类，豁免
@@ -53,10 +69,10 @@ _QUESTION_INTENT = re.compile(
     r"|区别|流程|方法|方式|能否|可以|会不会|能不能|是不是|原因|时候|时间|多久")
 
 
-def _relevance_score(query: str, answer: str) -> int | None:
+def _relevance_score(query: str, answer: str, prompt: str) -> int | None:
     """单轮相关性评分（小模型评审）；失败返回 None"""
     try:
-        raw = llm.chat("", _SCORE_PROMPT.format(query=query[:200], answer=answer[:2000]),
+        raw = llm.chat("", prompt.format(query=query[:200], answer=answer[:2000]),
                        model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
                        key=config.DASHSCOPE_KEY, temperature=0.1,
                        extra={"enable_thinking": False}).strip()
@@ -68,15 +84,17 @@ def _relevance_score(query: str, answer: str) -> int | None:
 
 def _relevance_gate(query: str, answer: str) -> str:
     """
-    相关性闸门（用户明确要求的最后兜底）：问题+答案多轮评分（并行，
+    相关性闸门（用户明确要求的最后兜底）：问题+答案双轮评分（并行，
     延迟≈单轮），最低分 < 4 → 直接过掉，回兜底句式——只答相邻内容/
-    答非所问的答案不出门。评审模型失败时放行（软依赖；系统性故障
-    由校验熔断机制兜底）。
+    答非所问的答案不出门。两轮提示词异构（正面+反向视角）——曾同
+    prompt 双轮同模型，系统性偏见两个同视角同时犯才漏。评审模型失败
+    时放行（软依赖；系统性故障由校验熔断机制兜底）。
     """
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=_RELEVANCE_ROUNDS) as pool:
-        scores = list(pool.map(lambda _: _relevance_score(query, answer),
-                               range(_RELEVANCE_ROUNDS)))
+        futures = [pool.submit(_relevance_score, query, answer, _SCORE_PROMPT),
+                   pool.submit(_relevance_score, query, answer, _REVERSE_SCORE_PROMPT)]
+        scores = [f.result() for f in futures]
     valid = [s for s in scores if s is not None]
     if not valid:
         return answer
