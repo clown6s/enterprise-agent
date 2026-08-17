@@ -6,7 +6,7 @@
 agent.py 只管"什么时候校验"。改守卫顺序/熔断参数只动这个文件。
 
 守卫顺序（实况换来的，勿调换）：兜底句式混入清理 → 缺失术语硬删除 →
-鉴伪断言 → 空标题清理 → 格式修复。
+（图谱-only 数字硬删）→ 鉴伪断言 → 空标题清理 → 格式修复。
 """
 import re
 import time
@@ -166,10 +166,14 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
     else:
         _verify_failures = 0
 
-    # 确定性守卫顺序：兜底句式混入清理 → 缺失术语硬删除 → 鉴伪断言 → 空标题清理 → 格式修复。
+    # 确定性守卫顺序：兜底句式混入清理 → 缺失术语硬删除 →（图谱-only 数字硬删）
+    # → 鉴伪断言 → 空标题清理 → 格式修复。
     # missing 用校验前的答案算：校验器已删掉的术语不误伤，漏删的在此兜底。
     answer = guards.strip_no_answer_hedge(answer)
     answer = guards.strip_missing_terms(answer, missing)
+    if graph_only:
+        # 图谱-only 数字硬删（软约束管不住模型补数字——图谱编造最危险形态）
+        answer = guards.strip_graph_only_numbers(answer, context)
     answer = guards.strip_assertions(answer, context)
     answer = guards.collapse_empty_headings(answer)
     answer = guards.fix_output(answer) or guards.NO_ANSWER

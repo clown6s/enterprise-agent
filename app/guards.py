@@ -263,9 +263,11 @@ def strip_assertions(text: str, context: str) -> str:
 
 # 术语抽取（确定性缺失术语核对）：
 # 校验模型是小模型，术语级漏检率高——哪些术语"资料里没有"是能确定算出来的事
+# 数值+单位（术语核对与图谱数字硬删共用）
+_NUM_UNIT_PAT = re.compile(r"\d+(?:\.\d+)?\s*(?:%|mmHg|mg|ml|g|kg|次|天|年|月|日|周|元)")
 _TERM_PATTERNS = [
     re.compile(r"[A-Za-z]{2,}(?:[-/][A-Za-z0-9]+){0,3}"),      # 英文缩写/术语（HRBP、BNP）
-    re.compile(r"\d+(?:\.\d+)?\s*(?:%|mmHg|mg|ml|g|kg|次|天|年|月|日|周|元)"),  # 数值+单位
+    _NUM_UNIT_PAT,
     re.compile(r"[《「]([^》」]{2,40})[》」]"),                   # 书名号里的法规/文件名
 ]
 
@@ -357,6 +359,33 @@ def collapse_empty_headings(text: str) -> str:
         out.append(lines[i])
         i += 1
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+# ---------------- 图谱-only 数字硬删 ----------------
+
+
+def strip_graph_only_numbers(text: str, context: str) -> str:
+    """
+    图谱-only 答案的数字确定性硬删：图谱关系里几乎没有数字——答案中的
+    「数值+单位」凡不在图谱上下文（含历史）中的，含该数字的句子删除。
+    软约束管不住模型补数字（图谱兜底编造最危险形态=医疗数值——
+    "诊断主要依据诊所测量的血压值"之外再补数字的实况风险）。
+    全部删空返回兜底句式。
+    """
+    if not text or text == NO_ANSWER:
+        return text
+    ctx = _norm(context)
+    kept, removed = [], 0
+    for sentence in re.split(r"(?<=[。！？；\n])", text):
+        nums = _NUM_UNIT_PAT.findall(sentence)
+        if nums and any(_norm(n) not in ctx for n in nums):
+            removed += 1
+        else:
+            kept.append(sentence)
+    if removed == 0:
+        return text
+    result = "".join(kept).strip()
+    return result or NO_ANSWER
 
 
 # ---------------- 5. 兜底句式混入清理 ----------------
