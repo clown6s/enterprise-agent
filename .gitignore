@@ -8,3 +8,4 @@ __pycache__/
 .idea/
 # 日志
 logs/
+data/synonyms.json
