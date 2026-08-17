@@ -100,12 +100,19 @@ class FeishuChannel:
                 self._seen.clear()
             mtype = getattr(msg, "message_type", None) or ""
             content = getattr(msg, "content", None) or "{}"
+            # 提问者标识（open_id）——检索 ACL 过滤与审计/反馈落库用
+            open_id = ""
+            try:
+                open_id = getattr(data.event.sender.sender_id, "open_id", "") or ""
+            except Exception:
+                pass
             threading.Thread(target=self._handle, daemon=True,
-                             args=(chat_id, message_id, mtype, content)).start()
+                             args=(chat_id, message_id, mtype, content, open_id)).start()
         except Exception as e:
             print(f"[飞书] 事件处理异常: {e}")
 
-    def _handle(self, chat_id: str, message_id: str, mtype: str, content: str) -> None:
+    def _handle(self, chat_id: str, message_id: str, mtype: str, content: str,
+                open_id: str = "") -> None:
         if mtype == "text":
             try:
                 text = (json.loads(content).get("text") or "").strip()
@@ -113,7 +120,7 @@ class FeishuChannel:
                 text = ""
             if not text:
                 return
-            self._handle_text(chat_id, message_id, text)
+            self._handle_text(chat_id, message_id, text, open_id)
         elif mtype == "image":
             self._handle_image(chat_id, message_id, content)
         else:
@@ -121,7 +128,7 @@ class FeishuChannel:
 
     # ---------------- 文本 ----------------
 
-    def _handle_text(self, chat_id: str, message_id: str, text: str) -> None:
+    def _handle_text(self, chat_id: str, message_id: str, text: str, open_id: str = "") -> None:
         # 文件上下文指令
         if text.strip() in ("清除文件", "移除文件"):
             removed = self._file_contexts.pop(chat_id, None)
@@ -143,7 +150,7 @@ class FeishuChannel:
         # 常规问答（带文件上下文）→ 卡片回复（带 👍👎 反馈按钮）
         file_block = self._file_contexts.get(chat_id)
         from ..service import agent
-        result = agent.answer(text, chat_id, file_block=file_block)
+        result = agent.answer(text, chat_id, file_block=file_block, user=open_id)
         self._last_answers[chat_id] = {
             "query": text, "answer": result["answer"],
             "source": (result["sources"] or [None])[0] or "",
@@ -371,6 +378,7 @@ class FeishuChannel:
             ctx = trigger.event.context
             chat_id = (getattr(ctx, "open_chat_id", None)
                        or getattr(ctx, "chat_id", None) or "")
+            open_id = getattr(trigger.event.operator, "open_id", "") or ""
             last = self._last_answers.get(chat_id)
             if not last:
                 toast.content = "未找到对应问答记录（可能已过期）"
@@ -391,10 +399,10 @@ class FeishuChannel:
                                     + "https://feishu.cn/docx/" + doc_id)
                 toast.content = "已生成，请查看消息回复"
             elif action == "helpful":
-                feedback.adopt(last["query"], last["answer"], last["source"])
+                feedback.adopt(last["query"], last["answer"], last["source"], user=open_id)
                 toast.content = "已采纳，该问答已回流知识库"
             elif action == "unhelpful":
-                result = feedback.record_unhelpful(last["query"], last["answer"])
+                result = feedback.record_unhelpful(last["query"], last["answer"], user=open_id)
                 toast.content = ("已记录并生成回归用例，我会改进"
                                  if result.get("status") == "case_created"
                                  else "已记录，我会改进")

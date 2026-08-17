@@ -40,7 +40,8 @@ def chat(body: dict, authorization: str | None = Header(default=None)):
     user = _auth(authorization)
     if not user:
         return _unauthorized()
-    result = agent.answer(body.get("query") or "", body.get("conversationId") or "")
+    result = agent.answer(body.get("query") or "", body.get("conversationId") or "",
+                          user=(user or {}).get("username", ""))
     return {"success": True, "message": None,
             "data": {"answer": result["answer"], "sources": result["sources"],
                      "route": result["route"], "conversationId": body.get("conversationId") or ""}}
@@ -73,7 +74,8 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
         """流式事件包装：收齐 token 后落多轮历史（与 answer() 中央落库对齐；
         兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）"""
         route, parts = "", []
-        for event, data in agent.answer_stream(query, conversation_id):
+        for event, data in agent.answer_stream(query, conversation_id,
+                                               user=(user or {}).get("username", "")):
             if event == "route":
                 route = str(data)
             elif event == "token":

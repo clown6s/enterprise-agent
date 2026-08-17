@@ -64,20 +64,22 @@ def _maybe_enqueue_review(conversation_id: str, query: str, answer: str) -> None
 
 # ---------------- 主入口 ----------------
 
-def answer(query: str, conversation_id: str = "", file_block: str = "") -> dict:
+def answer(query: str, conversation_id: str = "", file_block: str = "",
+           user: str = "") -> dict:
     """非流式回答（Web /chat 端点；飞书桥复用）。
-    file_block：会话文件上下文（图片 OCR 文本等），问答时作为首要依据注入。"""
+    file_block：会话文件上下文（图片 OCR 文本等），问答时作为首要依据注入。
+    user：提问者标识（飞书 open_id/后台用户名）——检索 ACL 过滤与审计落库用。"""
     import time as _t
     _t0 = _t.time()
-    result = _answer_inner(query, conversation_id, file_block)
-    _record_audit(query, result, _t.time() - _t0)
+    result = _answer_inner(query, conversation_id, file_block, user)
+    _record_audit(query, result, _t.time() - _t0, user)
     # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）
     if result.get("route") != "GUARD" and result.get("answer") != guards.NO_ANSWER:
         history.save_turn(conversation_id, query, result["answer"])
     return result
 
 
-def _record_audit(query: str, result: dict, seconds: float) -> None:
+def _record_audit(query: str, result: dict, seconds: float, user: str = "admin") -> None:
     """审计落库（audit_event 表，沿用既有 schema；软依赖）"""
     try:
         import json as _json
@@ -93,7 +95,7 @@ def _record_audit(query: str, result: dict, seconds: float) -> None:
                 "history_count, sources, retrieval_ms, rerank_degraded, graph_context_chars, "
                 "answer_preview, answer_length, total_ms, status, error) "
                 "VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (_uuid.uuid4().hex[:16], "admin", "", "agent/chat", result.get("route", "KNOWLEDGE_QA"),
+                (_uuid.uuid4().hex[:16], user or "admin", "", "agent/chat", result.get("route", "KNOWLEDGE_QA"),
                  query, 0, _json.dumps(result.get("sources") or [], ensure_ascii=False),
                  0, 0, 0, (result.get("answer") or "")[:500],
                  len(result.get("answer") or ""), round(seconds * 1000), "SUCCESS", ""))
@@ -103,7 +105,8 @@ def _record_audit(query: str, result: dict, seconds: float) -> None:
         pass
 
 
-def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -> dict:
+def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
+                  user: str = "") -> dict:
     # 提示注入拦截（确定性，先于一切路由——用户消息级注入防线）
     if guards.contains_injection(query):
         return {"answer": guards.INJECTION_BLOCKED, "sources": [], "route": "GUARD", "chart": None}
@@ -153,7 +156,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
                 "sources": [], "route": "CLARIFY", "chart": None}
 
     # 知识问答：预检索 →（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
-    hits = retrieval.retrieve(query)
+    hits = retrieval.retrieve(query, user=user)
     # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
@@ -192,7 +195,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
     return {"answer": final, "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
 
-def answer_stream(query: str, conversation_id: str = ""):
+def answer_stream(query: str, conversation_id: str = "", user: str = ""):
     """
     流式回答生成器：yield (event, data) 元组。
     SSE 事件名保持 route/token/sources/chart/done，
@@ -270,7 +273,7 @@ def answer_stream(query: str, conversation_id: str = ""):
         return
 
     # 知识问答：预检索（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）
-    hits = retrieval.retrieve(query)
+    hits = retrieval.retrieve(query, user=user)
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
     hblock = history.history_block(turns)
     if not context.strip():

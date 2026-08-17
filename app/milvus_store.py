@@ -28,10 +28,12 @@ def _col() -> Collection:
     return _collection
 
 
-def search(vector: list[float], query_text: str, top_k: int = config.TOP_K) -> list[dict]:
+def search(vector: list[float], query_text: str, top_k: int = config.TOP_K,
+           expr: str | None = None) -> list[dict]:
     """
     混合检索（dense + BM25，RRF 融合）。返回 [{text, document_id, title, source, score}]
-    按融合分降序。Milvus 不可用返回空列表（软依赖：问答降级为兜底句式，不崩服务）。
+    按融合分降序。expr：文档级过滤（ACL 权限，None=不过滤）。
+    Milvus 不可用返回空列表（软依赖：问答降级为兜底句式，不崩服务）。
     """
     try:
         dense_req = AnnSearchRequest(
@@ -39,6 +41,7 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K) -> l
             anns_field="dense",
             param={"metric_type": "COSINE", "params": {"nprobe": 16}},
             limit=top_k,
+            expr=expr,
         )
         # BM25 函数字段：搜索数据直接传原文，服务端用 text_bm25 函数分词打分
         sparse_req = AnnSearchRequest(
@@ -46,6 +49,7 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K) -> l
             anns_field="sparse_bm25",
             param={"metric_type": "BM25"},
             limit=top_k,
+            expr=expr,
         )
         hits = _col().hybrid_search(
             [dense_req, sparse_req],
@@ -135,8 +139,8 @@ def delete_by_document_id(document_id: str) -> int:
         return 0
 
 
-def dense_search(vector: list[float], top_k: int) -> list[dict]:
-    """纯稠密检索（混合检索异常时的回退）"""
+def dense_search(vector: list[float], top_k: int, expr: str | None = None) -> list[dict]:
+    """纯稠密检索（混合检索异常时的回退）；expr：文档级过滤（ACL 权限）"""
     try:
         hits = _col().search(
             data=[vector],
@@ -144,6 +148,7 @@ def dense_search(vector: list[float], top_k: int) -> list[dict]:
             param={"metric_type": "COSINE", "params": {"nprobe": 16}},
             limit=top_k,
             output_fields=["text", "document_id", "title", "source"],
+            expr=expr,
         )
         return [
             {

@@ -40,17 +40,21 @@ def current_params() -> dict:
 
 def retrieve(query: str, *, top_k: int | None = None,
              min_score: float | None = None,
-             rerank_top_n: int | None = None) -> list[dict]:
-    """返回 [{text, document_id, title, source, score}]，按相关度降序"""
+             rerank_top_n: int | None = None,
+             user: str = "") -> list[dict]:
+    """返回 [{text, document_id, title, source, score}]，按相关度降序。
+    user：飞书 open_id/后台用户名——经 doc_acl 转成 Milvus expr 过滤（None=不过滤）。"""
     params = current_params()
     top_k = top_k if top_k is not None else params["top_k"]
     min_score = min_score if min_score is not None else params["min_score"]
 
+    from . import acl
+    expr = acl.allowed_expr(user)
     vec = embeddings.embed(query)
-    hits = milvus_store.search(vec, query, top_k=top_k)
+    hits = milvus_store.search(vec, query, top_k=top_k, expr=expr)
     if not hits:
         # 混合检索失败（如 BM25 字段异常）→ 纯稠密回退，主链路不崩
-        hits = milvus_store.dense_search(vec, top_k)
+        hits = milvus_store.dense_search(vec, top_k, expr=expr)
     if not hits:
         return []
     # rerank 精排（软依赖：rerank 挂了回退原始顺序+分数过滤）
