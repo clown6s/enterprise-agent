@@ -68,6 +68,6 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 - 功能全部完成：回归 17/17、检索 100%/MRR 0.92，飞书真机验证过（回答卡/数据卡/云文档/OCR）
 - 校验链已按"兜底句式清理 → 缺失术语硬删除 → 鉴伪断言 → 空标题清理 → 格式修复"顺序接线（含延伸服务套话拦截、提示注入拦截、graph_only 收紧规则注入校验提示词）
 - 2026-08-17 晚批次（用户全权委托）：文档解析「## 标题」块边界真实现；Milvus 检索失败日志；提示注入防护（查询级拦截+上下文级清洗）；人机协同（低把握答案自动进审核队列 + 请假 SOP 提交前确认）；工具注册表（skill 表开关 TTL 生效）；多轮对话历史（指代消解+历史作答）；检索 ACL 过滤（doc_acl → expr，user 标识从飞书/Web 贯通审计与反馈）
-- 2026-08-17 深夜批次：① Milvus 全量迁 MilvusClient API（pymilvus 3.0，requirements 锁 >=3.0.1,<3.1）+ 服务端重启自动重连 + document_id 标量索引 + client 超时 + 检索重试；② 后台首页监控全真实数据（dashboard noAnswer/feishu/adoptions、usage JSONL 多日、kb-health 双计数修复、kb-stats 真实探活/4096）；③ 借鉴 ragflow 落地：LLM 工厂注册表（MODEL_REGISTRY，加用途改 .env）、PDF 版面识别（字号判标题「## 」）、图片 OCR chunk（PDF/docx 内嵌图 → qwen-vl，扫描件可入库）、CSV 支持（编码回退+分隔符自检）、PDF 乱码拒绝、SOP 组件化（steps+handlers+通用执行器）
+- 2026-08-17 深夜批次：① Milvus 全量迁 MilvusClient API（pymilvus 3.0，requirements 锁 >=3.0.1,<3.1）+ 服务端重启自动重连 + document_id 标量索引 + client 超时 + 检索重试；② 后台首页监控全真实数据（dashboard noAnswer/feishu/adoptions、usage JSONL 多日、kb-health 双计数修复、kb-stats 真实探活/4096）；③ 借鉴 ragflow 落地：LLM 工厂注册表（MODEL_REGISTRY，加用途改 .env）、PDF 版面识别（字号判标题「## 」）、图片 OCR chunk（PDF/docx 内嵌图 → qwen-vl，扫描件可入库）、CSV 支持（编码回退+分隔符自检）、PDF 乱码拒绝、SOP 组件化（steps+handlers+通用执行器）；④ 上传链路四修：upload 端点线程池化（曾阻塞事件循环）、sha256 去重注册表、图谱构建后台化、embed_batch 批量嵌入
 - **Milvus 当前为空**（探针数据已清）。验收待用户上传文档后执行：回归 22/22 + 检索评测 + 图谱构建检查（回归不能提前跑——用户明确：文档没上传跑回归是白跑）
 - 遗留（用户明确延期）：① 部署上线；② 飞书通讯录 scopes 需用户在飞书后台勾选发布（身份层暂用 demo_data 8 人；acl.resolve_employee 恒 None 待映射）
