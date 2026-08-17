@@ -31,6 +31,8 @@ app/
 scripts/
   watchdog.py           # 探活 8080/7000，挂了自动拉起（独立 python 进程常驻）
   run_eval.py           # python scripts/run_eval.py regression|retrieval|all
+  test_guards.py        # guards 形态测试矩阵 18 用例（改 guards 先跑）
+  test_invariants.py    # 不变量套件 38 项（契约锁+入口模糊，全离线——改跨模块契约先跑）
 eval/                   # regression_cases.json（15 用例）+ retrieval_baseline.json
 ```
 
@@ -65,12 +67,14 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 - 追问是一类问题不是个案：有历史时指代/衔接/省略三类追问统一走 `_resolve_query` 改写补全再检索；检索空手时只有元问题（什么意思/再说一遍）能用历史作答（相关性闸门要豁免），其余一律"答没有"——**不要用历史凑数**（"怎么发生的"被套"发生机制"标题重炒分类内容的实况）
 - collapse_empty_headings 判定空标题别把 `\d+[.、]` 编号行加进去（"**标题**：\n1. 内容"是正常结构）
 - 凭据（MySQL root 密码含特殊字符）：走文件传递，**绝不内联到 shell 命令**
+- git 提交信息含引号/括号走 `-F` 文件传递（内联多行信息会被 shell 截断，pathspec 报错实况）
+- 回归单条挂先判两类再动手：① 外部 API 抖动（重跑该条确认，别急着改代码）；② 断言前提漂移（KB 内容变了/断言锁的是旧错误行为——翻断言锁正确行为，不删用例）
 - 不要用"政务/纪检/信访"类措辞，用"合规/企业"等中性词
 
 ## 状态（2026-08-18）
 
 - 功能全部完成：回归 23/23、检索 100%/MRR 0.92，飞书真机验证过（回答卡/数据卡/云文档/OCR）
-- 2026-08-18 上午批次：① 跨文档拼接防线（find_mismatched_numbers 句级出处绑定，body 剥全部数字定位 + 校验提示词 spliced 段 + 高置信硬删）；② 校验换智谱 GLM-4.6（探针 scripts/probe_glm.py 取证：反例判定更果断、价格更优）+ LLM 降级链机制（chat_chain/chat_stream_chain，生成链 main→main_fallback 异厂商故障隔离，校验链 verify→verify_fallback 智谱挂了回退 qwen3-max；厂商参数 extra 随注册表条目声明，调用点不再传厂商参数）；③ 领域插件化 app/domains/（DomainPlugin 协议，行业知识与主流程解耦，.env DOMAIN_PLUGINS 开关）
+- 2026-08-18 上午批次：① 跨文档拼接防线（find_mismatched_numbers 句级出处绑定，body 剥全部数字定位 + 校验提示词 spliced 段 + 高置信硬删）；② 校验换智谱 GLM-4.6（探针 scripts/probe_glm.py 取证：反例判定更果断、价格更优）+ LLM 降级链机制（chat_chain/chat_stream_chain，生成链 main→main_fallback 异厂商故障隔离，校验链 verify→verify_fallback 智谱挂了回退 qwen3-max；厂商参数 extra/超时 timeout 随注册表条目声明，调用点不传厂商参数）；③ 领域插件化 app/domains/（DomainPlugin 协议，行业知识与主流程解耦，.env DOMAIN_PLUGINS 开关）；④ 不变量套件 scripts/test_invariants.py 38 项（全离线契约锁+入口模糊）——首跑抓出万/亿单位缺口、route 追问口径、eval 会话残史污染三处并治类；⑤ 回归中修：主力 60s 挂起即降级（曾 120s）、embed 内建重试、图谱兜底确定性相关性闸门（实质词没命中只中短词→不走兜底）
 - 校验链已按"兜底句式清理 → 缺失术语硬删除 → 鉴伪断言 → 空标题清理 → 格式修复"顺序接线（含延伸服务套话拦截、提示注入拦截、graph_only 收紧规则注入校验提示词）
 - 2026-08-17 晚批次（用户全权委托）：文档解析「## 标题」块边界真实现；Milvus 检索失败日志；提示注入防护（查询级拦截+上下文级清洗）；人机协同（低把握答案自动进审核队列 + 请假 SOP 提交前确认）；工具注册表（skill 表开关 TTL 生效）；多轮对话历史（指代消解+历史作答）；检索 ACL 过滤（doc_acl → expr，user 标识从飞书/Web 贯通审计与反馈）
 - 2026-08-17 深夜批次：① Milvus 全量迁 MilvusClient API（pymilvus 3.0，requirements 锁 >=3.0.1,<3.1）+ 服务端重启自动重连 + document_id 标量索引 + client 超时 + 检索重试；② 后台首页监控全真实数据（dashboard noAnswer/feishu/adoptions、usage JSONL 多日、kb-health 双计数修复、kb-stats 真实探活/4096）；③ 借鉴 ragflow 落地：LLM 工厂注册表（MODEL_REGISTRY，加用途改 .env）、PDF 版面识别（字号判标题「## 」）、图片 OCR chunk（PDF/docx 内嵌图 → qwen-vl，扫描件可入库）、CSV 支持（编码回退+分隔符自检）、PDF 乱码拒绝、SOP 组件化（steps+handlers+通用执行器）；④ 上传链路四修：upload 端点线程池化（曾阻塞事件循环）、sha256 去重注册表、图谱构建后台化、embed_batch 批量嵌入
