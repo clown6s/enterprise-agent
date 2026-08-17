@@ -59,34 +59,73 @@ _TRIPLE_PROMPT = """从下面的文本中提取实体关系三元组，输出严
 {text}
 """
 
-_MAX_BUILD_CHUNKS = 20   # 单文档建图上限（控制 LLM 调用量）
+_MAX_BUILD_CHUNKS = 40      # 单文档建图 chunk 上限（v2 提升）
+_BATCH_CHARS = 4000         # 每批拼接上限（约 3-4 块，跨块上下文更全）
+_RELATION_SYNONYMS = {      # 关系同义词归一（模型措辞漂移 → 图谱关系碎片化）
+    "属于": "属于", "归属于": "属于", "隶属于": "属于", "位于": "位于", "地处": "位于",
+    "包含": "包含", "包括": "包含", "含有": "包含",
+    "别名": "别名", "又称": "别名", "也叫": "别名",
+    "作者": "作者", "创作者": "作者", "编写": "作者",
+    "提出": "提出", "提出者": "提出", "首创": "提出",
+}
 
 
 def build_from_chunks(chunks: list[str], doc_id: str = "") -> int:
     """
-    摄入时图谱构建：逐 chunk LLM 提取三元组 → MERGE 进 Neo4j。
+    摄入时图谱构建（v2）：相邻 chunk 拼批提取（减调用 + 跨块上下文更全）、
+    三元组去重、关系同义词归一、单批失败重试一次 → MERGE 进 Neo4j。
     返回构建的关系条数；软依赖——任何失败只记日志不阻断摄入。
     """
     from .. import llm
 
-    triples: list[dict] = []
+    # 1) 拼批（相邻块合并到 _BATCH_CHARS 上限）
+    batches: list[str] = []
+    cur = ""
     for c in chunks[:_MAX_BUILD_CHUNKS]:
-        try:
-            raw = llm.chat(
-                "", _TRIPLE_PROMPT.format(text=c[:2000]),
-                model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
-                key=config.DASHSCOPE_KEY, temperature=0.1,
-                extra={"enable_thinking": False},
-            )
-            m = re.search(r"\[.*\]", raw, re.S)
-            if not m:
+        if len(cur) + len(c) + 1 > _BATCH_CHARS and cur:
+            batches.append(cur)
+            cur = c
+        else:
+            cur = f"{cur}\n{c}" if cur else c
+    if cur:
+        batches.append(cur)
+
+    # 2) 逐批提取（失败重试一次），去重 + 关系归一
+    triples: list[dict] = []
+    seen: set[tuple] = set()
+    for b in batches:
+        raw = ""
+        for attempt in range(2):
+            try:
+                raw = llm.chat(
+                    "", _TRIPLE_PROMPT.format(text=b[:4000]),
+                    model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
+                    key=config.DASHSCOPE_KEY, temperature=0.1,
+                    extra={"enable_thinking": False},
+                )
+                break
+            except Exception:
                 continue
-            for t in json.loads(m.group()):
-                if (isinstance(t, dict) and t.get("source") and t.get("target")
-                        and t.get("relation")):
-                    triples.append(t)
-        except Exception:
+        m = re.search(r"\[.*\]", raw, re.S)
+        if not m:
             continue
+        try:
+            items = json.loads(m.group())
+        except json.JSONDecodeError:
+            continue
+        for t in items:
+            if not (isinstance(t, dict) and t.get("source") and t.get("target")
+                    and t.get("relation")):
+                continue
+            src = t["source"].strip()[:40]
+            tgt = t["target"].strip()[:40]
+            rel = _RELATION_SYNONYMS.get(t["relation"].strip(), t["relation"].strip())[:24]
+            key = (src, rel, tgt)
+            if key in seen:
+                continue
+            seen.add(key)
+            triples.append({"source": src, "relation": rel, "target": tgt})
+
     if not triples:
         return 0
     try:

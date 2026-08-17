@@ -2,14 +2,19 @@
 """
 Milvus 向量库访问（pymilvus ORM 接口）。
 
-集合 schema：
-    id(PK) / text(中文分词) / sparse_bm25(BM25 函数输出) / dense(1024维) / document_id / title / source
+集合 schema（documents_v2）：
+    id(PK) / text(中文分词) / sparse_bm25(BM25 函数输出) / dense(4096维) /
+    document_id / title / source / page(溯源页码)
 
 search() 用混合检索：稠密向量（语义召回）+ BM25（关键词召回）RRF 融合。
 纯稠密检索的历史教训：关键词类问法（"今年国庆放几天"）语义向量召不回
 （纯稠密 62.5%，加 BM25 混合后关键词面才补上），BM25 补的就是关键词面。
+
+create_collection_v2() 建集合（含 BM25 函数字段与 HNSW/稀疏索引）；
+旧集合（documents）仅作迁移源，见 scripts/migrate_v2.py。
 """
-from pymilvus import AnnSearchRequest, Collection, RRFRanker, connections
+from pymilvus import (AnnSearchRequest, Collection, CollectionSchema, DataType,
+                      FieldSchema, Function, FunctionType, RRFRanker, connections, utility)
 
 from . import config
 
@@ -26,6 +31,48 @@ def _col() -> Collection:
         _collection = Collection(config.MILVUS_COLLECTION)
         _collection.load()
     return _collection
+
+
+def create_collection_v2(drop_existing: bool = False) -> bool:
+    """建 documents_v2（4096 维 dense + BM25 函数字段 + page 溯源字段）。
+    已存在且不 drop → 直接 True。失败返回 False（软依赖）。"""
+    name = config.MILVUS_COLLECTION
+    try:
+        if not connections.has_connection("default"):
+            connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
+                                db_name=config.MILVUS_DB)
+        if utility.has_collection(name):
+            if not drop_existing:
+                return True
+            utility.drop_collection(name)
+        schema = CollectionSchema(
+            fields=[
+                FieldSchema("id", DataType.INT64, is_primary=True, auto_id=True),
+                FieldSchema("text", DataType.VARCHAR, max_length=6000,
+                            enable_analyzer=True,
+                            analyzer_params={"type": "chinese"}),
+                FieldSchema("sparse_bm25", DataType.SPARSE_FLOAT_VECTOR),
+                FieldSchema("dense", DataType.FLOAT_VECTOR, dim=config.EMBED_DIM),
+                FieldSchema("document_id", DataType.VARCHAR, max_length=128),
+                FieldSchema("title", DataType.VARCHAR, max_length=512),
+                FieldSchema("source", DataType.VARCHAR, max_length=512),
+                FieldSchema("page", DataType.INT64, default_value=1),
+            ],
+            functions=[Function(
+                name="text_bm25", function_type=FunctionType.BM25,
+                input_field_names=["text"], output_field_names=["sparse_bm25"])],
+        )
+        col = Collection(name, schema=schema)
+        col.create_index("dense", {"index_type": "HNSW", "metric_type": "COSINE",
+                                   "params": {"M": 16, "efConstruction": 200}})
+        col.create_index("sparse_bm25", {"index_type": "SPARSE_INVERTED_INDEX",
+                                         "metric_type": "BM25"})
+        col.load()
+        print(f"[milvus] 集合 {name} 已创建并加载（dense={config.EMBED_DIM}维）")
+        return True
+    except Exception as e:
+        print(f"[milvus] 集合创建失败: {e!r}")
+        return False
 
 
 def search(vector: list[float], query_text: str, top_k: int = config.TOP_K,
@@ -55,7 +102,7 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K,
             [dense_req, sparse_req],
             rerank=RRFRanker(),
             limit=top_k,
-            output_fields=["text", "document_id", "title", "source"],
+            output_fields=["text", "document_id", "title", "source", "page"],
         )
         return [
             {
@@ -63,6 +110,7 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K,
                 "document_id": h.entity.get("document_id", ""),
                 "title": h.entity.get("title", ""),
                 "source": h.entity.get("source", ""),
+                "page": int(h.entity.get("page", 0) or 0),
                 "score": float(h.distance),
             }
             for h in hits[0]
@@ -87,6 +135,7 @@ def insert_document(text: str, vector: list[float], document_id: str,
             "document_id": document_id,
             "title": title,
             "source": source,
+            "page": 1,
         }])
         _col().flush()
         return True
@@ -171,7 +220,7 @@ def dense_search(vector: list[float], top_k: int, expr: str | None = None) -> li
             anns_field="dense",
             param={"metric_type": "COSINE", "params": {"nprobe": 16}},
             limit=top_k,
-            output_fields=["text", "document_id", "title", "source"],
+            output_fields=["text", "document_id", "title", "source", "page"],
             expr=expr,
         )
         return [
@@ -180,6 +229,7 @@ def dense_search(vector: list[float], top_k: int, expr: str | None = None) -> li
                 "document_id": h.entity.get("document_id", ""),
                 "title": h.entity.get("title", ""),
                 "source": h.entity.get("source", ""),
+                "page": int(h.entity.get("page", 0) or 0),
                 "score": float(h.distance),
             }
             for h in hits[0]

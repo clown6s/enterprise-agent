@@ -5,7 +5,8 @@
 本地解析：
 - txt/md  文本直读（UTF-8，失败回退 GBK——Windows 环境常见）
 - docx    python-docx：标题段落标成「## 标题」行（标题感知切分用）
-- pdf     pypdf 逐页抽取（扫描件 PDF 抽不出文字 → 空文本，后续可接 OCR，路线图）
+- pdf     pdfplumber 版式感知抽取 + [[page:N]] 页码标记（表格/双栏稳），
+          失败回退 pypdf；扫描件抽不出文字 → 空文本（OCR 路线图）
 - doc     老格式不支持——请转存 docx 后上传
 """
 import io
@@ -51,6 +52,23 @@ def _parse_docx(data: bytes) -> str:
 
 
 def _parse_pdf(data: bytes) -> str:
+    """
+    PDF 解析：pdfplumber 版式感知抽取（表格/双栏比 pypdf 稳——流式拍平
+    导致列混排的历史失分点），逐页注入 [[page:N]] 标记（切分时落 page 字段，
+    溯源到页码）。pdfplumber 失败回退 pypdf（不丢文档）。
+    """
+    try:
+        import pdfplumber
+        parts = []
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for i, page in enumerate(pdf.pages, 1):
+                text = (page.extract_text() or "").strip()
+                if text:
+                    parts.append(f"[[page:{i}]]\n{text}")
+        if parts:
+            return "\n".join(parts)
+    except Exception:
+        pass
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))

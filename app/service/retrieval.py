@@ -74,13 +74,15 @@ def retrieve(query: str, *, top_k: int | None = None,
 
 
 def build_context(hits: list[dict], max_chars: int = 6000) -> str:
-    """上下文拼装（文档部分；图谱-only 上下文由 graph 模块提供）"""
+    """上下文拼装（文档部分；图谱-only 上下文由 graph 模块提供）。
+    带页码的来源注记（"第N页"）——溯源粒度到页。"""
     if not hits:
         return "暂无相关资料。"
     parts = []
     total = 0
     for h in hits:
-        entry = f"[来源: {h['source'] or '未知'}]\n{h['text']}\n\n"
+        loc = f" 第{h['page']}页" if h.get("page") else ""
+        entry = f"[来源: {h['source'] or '未知'}{loc}]\n{h['text']}\n\n"
         if total + len(entry) > max_chars:
             break
         parts.append(entry)

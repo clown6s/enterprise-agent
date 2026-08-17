@@ -15,7 +15,8 @@ def embed(text: str) -> list[float]:
     resp = httpx.post(
         f"{config.SILICONFLOW_BASE}/embeddings",
         headers={"Authorization": f"Bearer {config.SILICONFLOW_KEY}"},
-        json={"model": config.EMBED_MODEL, "input": [text]},
+        json={"model": config.EMBED_MODEL, "input": [text],
+              "dimensions": config.EMBED_DIM},
         timeout=60,
     )
     resp.raise_for_status()

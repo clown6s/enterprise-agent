@@ -18,40 +18,58 @@ from . import parse
 
 _LOG = os.path.join(config.LOG_DIR, "ingestion.jsonl")
 
-MAX_CHARS = 600       # 单 chunk 上限（约 300 中文字，BGE-M3 舒适区间）
-LONG_CUT = 600        # 长段落按句号切割的参考长度
+MAX_CHARS = 600       # 单 chunk 上限
+OVERLAP = 90          # 断点重叠（15%），语义不割裂
+
+_PAGE_MARK = re.compile(r"^\[\[page:(\d+)\]\]$")
 
 
-def chunk_text(text: str, max_chars: int = MAX_CHARS) -> list[str]:
+def chunk_text(text: str, max_chars: int = MAX_CHARS,
+               overlap: int = 90) -> tuple[list[str], list[int]]:
     """
-    段落感知切分：短段落聚合、长段落按句号断。
-    「## 标题」行作为块边界：先 flush 当前块，标题作为下一块的开头
-    （标题感知切分的实况修复——早期注释声称有此功能但从未实现，
-    标题一直被当普通段落聚合进上一块）。
+    段落感知切分：短段落聚合、长段落按句号断，断点带 15% 重叠（90 字，
+    语义不割裂）。「## 标题」行作为块边界：先 flush 当前块，标题作为下一块
+    的开头。[[page:N]] 标记逐页追踪页码——返回 (chunks, pages)。
     """
     paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
     chunks: list[str] = []
+    pages: list[int] = []
     buf = ""
+    buf_page = 1
+
+    def flush():
+        nonlocal buf
+        if buf:
+            chunks.append(buf)
+            pages.append(buf_page)
+            buf = ""
+
     for p in paragraphs:
+        m = _PAGE_MARK.match(p)
+        if m:
+            flush()
+            buf_page = int(m.group(1))
+            continue
         if p.startswith("## "):
-            if buf:
-                chunks.append(buf)
+            flush()
             buf = p            # 标题成为新块的开头
             continue
         if len(buf) + len(p) + 1 <= max_chars:
             buf = f"{buf}\n{p}" if buf else p
             continue
-        if buf:
-            chunks.append(buf)
+        flush()
         while len(p) > max_chars:
             cut = p.rfind("。", 0, max_chars)
             cut = cut if cut > max_chars // 2 else max_chars
-            chunks.append(p[: cut + 1])
-            p = p[cut + 1:]
+            piece = p[: cut + 1]
+            chunks.append(piece)
+            pages.append(buf_page)
+            # 重叠续接：下一段从上一块尾部带 overlap 字开始，断点语义不割裂
+            tail = piece[-overlap:] if overlap and len(piece) > overlap else ""
+            p = (tail + p[cut + 1:]).strip()
         buf = p
-    if buf:
-        chunks.append(buf)
-    return chunks
+    flush()
+    return chunks, pages
 
 
 def _log(action: str, **fields) -> None:
@@ -70,7 +88,7 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
     if not text or not text.strip():
         _log("parse_failed", file=filename, size=len(data))
         return {"error": f"未从《{filename}》中解析出文本（扫描件 PDF/不支持的格式？）"}
-    chunks = chunk_text(text)
+    chunks, pages = chunk_text(text, max_chars=MAX_CHARS, overlap=OVERLAP)
     if not chunks:
         return {"error": f"《{filename}》切分后无内容。"}
     doc_id = uuid.uuid4().hex
@@ -81,7 +99,8 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         "document_id": doc_id,
         "title": doc_title,
         "source": doc_title,
-    } for c in chunks]
+        "page": pages[i],
+    } for i, c in enumerate(chunks)]
     ok = milvus_store.insert_documents(rows)
     # 图谱构建（软依赖：失败/超量只记日志，不阻断摄入）
     rels = graph.build_from_chunks(chunks, doc_id) if ok else 0

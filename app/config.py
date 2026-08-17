@@ -32,8 +32,9 @@ VERIFY_MODEL = "qwen3-max"
 # ---------------- 向量检索 ----------------
 SILICONFLOW_KEY = _env("SILICONFLOW_API_KEY")
 SILICONFLOW_BASE = "https://api.siliconflow.cn/v1"
-EMBED_MODEL = "BAAI/bge-m3"            # 1024 维稠密向量
-RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
+EMBED_MODEL = "Qwen/Qwen3-Embedding-8B"   # 4096 维（2026-08-17 从 BGE-M3 1024 升级，用户要求提维度）
+EMBED_DIM = 4096
+RERANK_MODEL = "Qwen/Qwen3-Reranker-8B"   # 2026-08-17 从 bge-reranker-v2-m3 升级
 RERANK_MIN_SCORE = 0.3                 # rerank 分数下限（低于此分视为不相关）
 TOP_K = 8                              # 向量召回数
 RERANK_TOP_N = 4                       # 重排后保留数
@@ -42,7 +43,8 @@ RERANK_TOP_N = 4                       # 重排后保留数
 MILVUS_HOST = _env("MILVUS_HOST", "10.211.55.5")
 MILVUS_PORT = int(_env("MILVUS_PORT", "19530"))
 MILVUS_DB = _env("MILVUS_DB", "rag_service")
-MILVUS_COLLECTION = "documents"
+MILVUS_COLLECTION = "documents_v2"     # 4096 维 + page 字段的新集合（旧 documents 仅作迁移源）
+LEGACY_COLLECTION = "documents"
 
 # ---------------- MySQL（后台统一身份：sys_user 表） ----------------
 MYSQL_HOST = _env("MYSQL_HOST", "10.211.55.5")
