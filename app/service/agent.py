@@ -18,7 +18,7 @@ from datetime import datetime
 
 from .. import guards, llm, prompts, tools
 from ..intent import rules as intent_rules
-from ..learn import feedback, gap_discovery
+from ..learn import feedback, gap_discovery, synonyms
 from ..plan import sop as sop_engine
 from . import docwizard, graph, history, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
@@ -160,7 +160,8 @@ def _expand_queries(query: str) -> list[str]:
     """确定性查询扩展（多查询并联，不拼串——曾把扩展词拼进主查询，
     高频词如"处罚/罚款/拘留"稀释 BM25：纯"结伙斗殴"检索 GT 排第一，
     扩展串检索反而掉出前 12 的实况）。返回 ≤2 条扩展检索短语，与主查询
-    并联检索后并集重排。词表 _SYNONYM_GROUPS + _DIM_CHECKS 资料侧。"""
+    并联检索后并集重排。来源：_SYNONYM_GROUPS（静态）+ _DIM_CHECKS
+    资料侧 + 拒绝路径自学习沉淀的词对（synonyms.json）。"""
     extra = []
     for q_pat, c_pat in _DIM_CHECKS:
         if q_pat.search(query):
@@ -168,7 +169,67 @@ def _expand_queries(query: str) -> list[str]:
     for group in _SYNONYM_GROUPS:
         if any(t in query for t in group["terms"]):
             extra.append(group["expand"])
+    extra.extend(synonyms.expand_queries(query))
     return extra[:2]
+
+
+def _first_trigger(query: str) -> str:
+    """查询中第一个命中维度/同义词组的词（词对沉淀的触发键）；
+    无命中回退查询前 8 字"""
+    for q_pat, _ in _DIM_CHECKS:
+        m = q_pat.search(query)
+        if m:
+            return m.group()
+    for group in _SYNONYM_GROUPS:
+        for t in group["terms"]:
+            if t in query:
+                return t
+    return re.sub(r"\s+", "", query)[:8]
+
+
+def _try_synonym_recovery(query: str, search_query: str, turns: list[dict],
+                          user: str, fb: str, conversation_id: str) -> dict | None:
+    """闸门拒绝后的自学习恢复（一次机会）：LLM 生成检索变体 → 并联再检索
+    → 有新资料则重新生成+评审 → 通过即答出并沉淀词对。
+    曾每发现词汇不对齐人工给词表加一行——现在系统第一次遇到就自愈并记住。"""
+    try:
+        variants_raw = llm.chat(
+            "", "把下面的问题改写为 2 个检索用的同义词短语。每行一个短语，"
+                "短语内用空格分隔多个同义词，例如：\n饮食 膳食 食物 低盐 低脂\n"
+                "只输出短语，不要解释：\n" + search_query,
+            temperature=0.2, extra={"enable_thinking": False}).strip()
+        variants = [l.strip() for l in variants_raw.splitlines() if l.strip()][:2]
+    except Exception:
+        return None
+    variants = [v for v in variants if v and v != search_query]
+    if not variants:
+        return None
+    hits = retrieval.retrieve(search_query, extra_queries=variants, user=user)
+    if not hits:
+        return None
+    context = guards.strip_injection_sentences(retrieval.build_context(hits))
+    hblock = history.history_block(turns)
+    prefix = f"【资料】\n{context}"
+    if fb:
+        prefix += f"\n\n【文件上下文】\n{fb}"
+    gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                  else f"{prefix}\n\n【用户问题】\n{query}")
+    raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
+    vctx = context
+    if fb:
+        vctx = f"{vctx}\n{fb}"
+    if hblock:
+        vctx = f"{vctx}\n{hblock}"
+    final = verify.verify(raw, vctx, query=search_query)
+    if final == guards.NO_ANSWER:
+        return None
+    trigger = _first_trigger(search_query)
+    for v in variants:
+        synonyms.learn(trigger, v)
+    _maybe_enqueue_review(conversation_id, query, final)
+    return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
+            "sources": sorted({h["source"] for h in hits if h.get("source")}),
+            "route": "KNOWLEDGE_QA", "chart": None}
 
 
 def _attention_gap(query: str, context: str) -> bool:
@@ -440,6 +501,11 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     final = verify.verify(raw, vctx, query=search_query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
+        # 自学习恢复：LLM 生成检索变体再试一次（词汇不对齐的自我补全）
+        recovered = _try_synonym_recovery(query, search_query, turns, user, fb,
+                                          conversation_id)
+        if recovered:
+            return recovered
         # 闸门拒绝=无依据，不得带来源（曾"暂无法回答"+来源并存的矛盾实况）
         return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
@@ -672,6 +738,14 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     final = verify.verify("".join(parts), vctx, query=search_query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
+        # 自学习恢复（与非流式同口径——双路径同步）
+        recovered = _try_synonym_recovery(query, search_query, turns, user, fb,
+                                          conversation_id)
+        if recovered:
+            yield "token", recovered["answer"]
+            yield "sources", recovered["sources"]
+            yield "done", "[DONE]"
+            return
         # 闸门拒绝=无依据，不得带来源（与非流式同口径）
         yield "token", final
         yield "sources", []
