@@ -23,6 +23,10 @@ from . import parse
 
 _LOG = os.path.join(config.LOG_DIR, "ingestion.jsonl")
 _INGESTED_FILE = os.path.join(config.LOG_DIR, "ingested.jsonl")   # 内容 sha256 注册表
+# 原始文档留底目录（根备份：向量/图谱都可重建，原始文件不可——曾 Milvus
+# 重建后只能靠用户重传，本地文件再丢就彻底归零）
+_UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "data", "uploads")
 
 MAX_CHARS = 600       # 单 chunk 上限
 OVERLAP = 90          # 断点重叠（15%），语义不割裂
@@ -219,4 +223,18 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
     if not ok:
         return {"error": f"《{filename}》向量库写入失败。"}
     _record_ingested(sha, doc_id, filename, doc_title, len(chunks))
+    _archive_original(sha, filename, data)
     return {"documentId": doc_id, "fileName": filename, "chunks": len(chunks)}
+
+
+def _archive_original(sha: str, filename: str, data: bytes) -> None:
+    """原始文档留底（sha256 命名 + 扩展名）——根备份，软依赖"""
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else "bin"
+    if not re.match(r"^[a-z0-9]{1,8}$", ext):
+        ext = "bin"
+    try:
+        os.makedirs(_UPLOADS_DIR, exist_ok=True)
+        with open(os.path.join(_UPLOADS_DIR, f"{sha}.{ext}"), "wb") as f:
+            f.write(data)
+    except OSError:
+        pass

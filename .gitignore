@@ -9,3 +9,4 @@ __pycache__/
 # 日志
 logs/
 data/synonyms.json
+data/uploads/
