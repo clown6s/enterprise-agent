@@ -72,22 +72,34 @@ def _build_schema() -> CollectionSchema:
 
 def _build_index_params() -> IndexParams:
     ip = IndexParams()
-    ip.add_index(field_name="dense", index_type="HNSW", metric_type="COSINE",
+    ip.add_index(field_name="dense", index_name="dense",
+                 index_type="HNSW", metric_type="COSINE",
                  params={"M": 16, "efConstruction": 200})
-    ip.add_index(field_name="sparse_bm25", index_type="SPARSE_INVERTED_INDEX",
-                 metric_type="BM25")
+    ip.add_index(field_name="sparse_bm25", index_name="sparse_bm25",
+                 index_type="SPARSE_INVERTED_INDEX", metric_type="BM25")
+    # document_id 标量倒排索引：delete/rename/ACL 过滤按 document_id 走索引
+    # 而非全表扫描（曾无标量索引——文档量上来后删除/改名/过滤全表扫）
+    ip.add_index(field_name="document_id", index_name="document_id",
+                 index_type="INVERTED")
     return ip
 
 
 def _ensure_collection(client: MilvusClient) -> bool:
-    """幂等建集合（不存在才建，含索引；创建成功即加载——加载统一在此）。"""
+    """幂等建集合（不存在才建）；索引按名字缺失补齐（含已存在的集合——
+    曾只在新集合上建索引，旧集合补不上新加字段的索引。存在性探测用
+    list_indexes 名字比对——曾用重复建索引靠异常探测，Milvus 报 1100
+    "at most one distinct index per field" 而非 "already exist"）。"""
     name = config.MILVUS_COLLECTION
     try:
-        if client.has_collection(name):
-            return True
-        client.create_collection(name, schema=_build_schema())
-        client.create_index(name, _build_index_params())
-        print(f"[milvus] 集合 {name} 已创建（dense={config.EMBED_DIM}维）")
+        if not client.has_collection(name):
+            client.create_collection(name, schema=_build_schema())
+            print(f"[milvus] 集合 {name} 已创建（dense={config.EMBED_DIM}维）")
+        existing = set(client.list_indexes(name))
+        for ip in _build_index_params():
+            if ip.index_name in existing:
+                continue
+            client.create_index(name, IndexParams([ip]))
+            print(f"[milvus] 索引 {ip.field_name} 已补建")
         return True
     except Exception as e:
         print(f"[milvus] 集合创建失败: {e!r}")
@@ -119,7 +131,8 @@ def _get_client() -> MilvusClient:
                     _ensure_database()
                 except Exception as e:
                     print(f"[milvus] 数据库就绪失败: {e!r}")
-                _client = MilvusClient(uri=_uri(), db_name=config.MILVUS_DB)
+                _client = MilvusClient(uri=_uri(), db_name=config.MILVUS_DB,
+                                       timeout=30)   # 请求超时：检索/写入不无限挂起
                 try:
                     _ensure_collection(_client)
                     # 幂等 load：已加载为 no-op；覆盖服务端重启后集合脱载的场景
