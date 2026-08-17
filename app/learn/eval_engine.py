@@ -29,6 +29,13 @@ def run_answer_case(case: dict) -> dict:
     query = case["query"]
     expect = case.get("expect", {})
     conversation_id = f"eval-{case.get('id', 'case')}"
+    # 追问类用例预置多轮历史（eval 会话本身不落历史防污染；追问逻辑
+    # 需要上一轮内容——清空后重建，防重复跑分历史堆积）
+    if case.get("history"):
+        from ..service import history as _history
+        _history.clear_conversation(conversation_id)
+        for t in case["history"]:
+            _history.save_turn(conversation_id, t.get("q", ""), t.get("a", ""))
     start = time.time()
     result = agent.answer(query, conversation_id)
     followup = case.get("followup")

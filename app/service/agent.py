@@ -27,8 +27,14 @@ from .verify import verify_breaker_state   # 再导出：管理后台熔断状�
 
 # 短实体名词查询（"宫崎骏"3 字）不追问：让检索兜底（无结果走 NO_ANSWER）
 _CLARIFY_GUARD = re.compile(r"这个|那个|它|他|她|怎么办|怎么弄|怎么用|什么意思")
-# 指代词：有对话历史可消解时不再追问（无历史仍走追问澄清）
-_REFERENTS = re.compile(r"这个|那个|它|他|她|上述|前面|刚刚|刚才")
+# 追问形态三类（统一判定，有历史时走改写补全——曾只认显式指代，
+# "怎么发生的"零指代/省略主语追问漏网，检索空手后用历史凑数的实况）：
+# ① 指代词（含衔接代词 那/这）② 衔接词开头的短句 ③ 疑问省略句
+_REFERENTS = re.compile(r"这个|那个|它|他|她|上述|前面|刚刚|刚才|那|这")
+_CONNECTORS = re.compile(r"^(那|还有|另外|其次|然后|接着|顺便)")
+_QUESTION_ELIDE = re.compile(r"^(怎么|为什么|为何|有哪些|有什么|能不能|可以|会不会|是什么|怎么办|咋|如何|怎样|啥|什么|呢)")
+# 元问题：问的是"上一轮回答本身"——唯一合法用历史作答的场景
+_META_QUESTION = re.compile(r"什么意思|没听懂|再说|重复|复述|你刚才|你说的是|刚才说的")
 _CHAT_WORDS = re.compile(
     r"^(你好|您好|hi|hello|谢谢|你是谁|你能做什么|你叫什么|在吗|早上好|晚上好|再见|拜拜|辛苦|谢谢啦|好的|OK|ok)"
 )
@@ -39,11 +45,13 @@ _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
 
 def route(query: str, has_history: bool = False) -> str:
     """意图路由（正则启发式，不调路由模型——模型路由不可靠已被验证过）。
-    has_history：指代词 + 有对话历史 → 不追问，走知识问答（历史消解指代）。"""
+    has_history：指代词/元问题 + 有对话历史 → 不追问，走知识问答
+    （指代走改写补全；"什么意思"走历史作答分支）。"""
     if _CHAT_WORDS.search(query.strip()):
         return "CHAT"
     if _CLARIFY_GUARD.search(query.strip()) and not _DATA_DAYS.search(query):
-        if has_history and _REFERENTS.search(query.strip()):
+        if has_history and (_REFERENTS.search(query.strip())
+                            or _META_QUESTION.search(query.strip())):
             return "KNOWLEDGE_QA"
         return "CLARIFY"
     return "KNOWLEDGE_QA"
@@ -77,6 +85,35 @@ def _resolve_referent(query: str, turns: list[dict]) -> str:
             temperature=0.2, extra={"enable_thinking": False}).strip() or "")
     except Exception:
         return ""
+
+
+def _is_followup(query: str, turns: list[dict]) -> bool:
+    """追问判定（确定性，一类机制）：有历史且属三类追问形态之一。
+    ① 指代词 ② 衔接词开头短句 ③ 疑问省略句（去掉疑问词后 ≤4 字且无数字/
+    书名号——"治疗高血压"5 字是动宾完整短语不判省略，曾用 8 字误判
+    完整问句浪费改写调用）"""
+    q = (query or "").strip()
+    if not turns or not q:
+        return False
+    if _REFERENTS.search(q):
+        return True
+    if _CONNECTORS.match(q) and len(q) <= 15:
+        return True
+    m = _QUESTION_ELIDE.match(q)
+    if m:
+        rest = re.sub(r"\s+", "", q[m.end():])
+        if rest and len(rest) <= 4 and not re.search(r"\d|《|》", rest):
+            return True
+    return False
+
+
+def _resolve_query(query: str, turns: list[dict]) -> str:
+    """追问统一解析：追问形态 → LLM 补全改写（失败回退原句）。
+    曾只对显式指代改写——零指代/衔接追问漏网是"无来源凑数"类实况的根因。"""
+    if not _is_followup(query, turns):
+        return query
+    rewritten = _resolve_referent(query, turns)
+    return rewritten or query
 
 
 def _today_line() -> str:
@@ -181,12 +218,16 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
         result = _answer_inner(query, conversation_id, file_block, user)
     except Exception as e:
         # 异常也落审计（曾只记 SUCCESS——看板 errorCount 恒 0，故障不可见）
-        _record_audit(query, {"answer": "", "route": "ERROR", "sources": []},
-                      _t.time() - _t0, user, 0, endpoint=endpoint,
-                      status="ERROR", error=str(e)[:200])
+        if not history.is_test_conversation(conversation_id):
+            _record_audit(query, {"answer": "", "route": "ERROR", "sources": []},
+                          _t.time() - _t0, user, 0, endpoint=endpoint,
+                          status="ERROR", error=str(e)[:200])
         raise
     turns = history.recent_turns(conversation_id)
-    _record_audit(query, result, _t.time() - _t0, user, len(turns), endpoint=endpoint)
+    # 评测/扫描会话不落审计（曾 eval 流量灌进看板——热门问法里"你好"65 次
+    # 全是跑分噪音，监控数据失真）
+    if not history.is_test_conversation(conversation_id):
+        _record_audit(query, result, _t.time() - _t0, user, len(turns), endpoint=endpoint)
     # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流；
     # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定；
     # 评测/扫描会话不落——防跑分污染历史表）
@@ -278,11 +319,18 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": "抱歉，我没太理解你的问题。可以再具体一点吗？比如补充对象、时间或背景。",
                 "sources": [], "route": "CLARIFY", "chart": None}
 
-    # 知识问答：预检索 →（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
-    # 指代消解 v2：指代词 + 有历史 → 先改写为完整问题再检索（有真实来源）
-    search_query = _resolve_referent(query, turns) if (turns and _REFERENTS.search(query)) else query
+    # 知识问答：预检索 →（空手 → 元问题用历史 / 有文件上下文用文件 → 图谱-only
+    # 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
+    # 追问统一解析：指代/衔接/省略三类追问 → 补全改写再检索（曾只认显式
+    # 指代——"怎么发生的"零指代追问漏网后用历史凑数，sources=[] 实况）
+    search_query = _resolve_query(query, turns)
     hits = retrieval.retrieve(search_query, user=user)
-    # 口语化改写重试：检索空手且问句值得改写（>4 字）→ 规范问法再试一次
+    # 检索双保险：改写句空手且与原句不同 → 原句再试（防改写改错）
+    if not hits and search_query != query:
+        hits = retrieval.retrieve(query, user=user)
+        if hits:
+            search_query = query
+    # 口语化改写重试：仍空手且问句值得改写（>4 字）→ 规范问法再试一次
     if not hits and len(re.sub(r"\s+", "", query)) > 4:
         rewritten = _rewrite_query(query)
         if rewritten and rewritten != query:
@@ -294,12 +342,24 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     hblock = history.history_block(turns)
     fb = guards.strip_injection_sentences(file_block) if file_block else ""
     if not context.strip():
-        if hblock:
-            # 检索空手但有对话历史：历史消解指代/延续话题（校验依据=历史本身）
+        if hblock and _META_QUESTION.search(query):
+            # 元问题（"什么意思/再说一遍"）：问上一轮回答本身——唯一合法
+            # 历史作答场景。曾任何追问空手都拿历史凑数（"怎么发生的"被
+            # 套上"发生机制"标题重炒分类内容——无来源+凑数双实况）。
+            # 相关性闸门豁免（query=""）：评审员看不到历史，"什么意思"vs
+            # 历史转述必评 1 分误杀——与指代问题用改写句评审的对称处理
             user_prompt = (f"【资料】\n{hblock}\n\n【文件上下文】\n{fb}\n\n【用户问题】\n{query}"
                            if fb else f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
             raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), user_prompt)
-            final = verify.verify(raw, f"{hblock}\n{fb}" if fb else hblock, query=query)
+            final = verify.verify(raw, f"{hblock}\n{fb}" if fb else hblock, query="")
+            _maybe_enqueue_review(conversation_id, query, final)
+            return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+        if fb:
+            # 文件上下文作答（图片 OCR 等）：依据=文件内容本身。曾 fb 只在
+            # 检索命中时注入——检索空手时图片问答错走历史/图谱兜底
+            user_prompt = f"【资料】\n{fb}\n\n【用户问题】\n{query}"
+            raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), user_prompt)
+            final = verify.verify(raw, fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         graph_ctx = guards.strip_injection_sentences(graph.expand(query))
@@ -371,10 +431,13 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
                 route_val = data
             yield event, data
     except Exception as e:
-        _record_audit(query, {"answer": "".join(tokens), "route": route_val, "sources": []},
-                      _t.time() - _t0, user, 0, endpoint=endpoint,
-                      status="ERROR", error=str(e)[:200])
+        if not history.is_test_conversation(conversation_id):
+            _record_audit(query, {"answer": "".join(tokens), "route": route_val, "sources": []},
+                          _t.time() - _t0, user, 0, endpoint=endpoint,
+                          status="ERROR", error=str(e)[:200])
         raise
+    if history.is_test_conversation(conversation_id):
+        return   # 评测/扫描会话不落审计（与非流式同口径）
     hc = len(history.recent_turns(conversation_id))   # 与 answer() 审计口径一致
     _record_audit(query, {"answer": "".join(tokens), "route": route_val, "sources": []},
                   _t.time() - _t0, user, hc, endpoint=endpoint)
@@ -467,10 +530,16 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "done", "[DONE]"
         return
 
-    # 知识问答：预检索（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）
-    search_query = _resolve_referent(query, turns) if (turns and _REFERENTS.search(query)) else query
+    # 知识问答：预检索（空手 → 元问题用历史 / 有文件上下文用文件 → 图谱-only
+    # 兜底 → 仍空 → 兜底句式）——与非流式路径同步
+    search_query = _resolve_query(query, turns)
     hits = retrieval.retrieve(search_query, user=user)
-    # 口语化改写重试：检索空手且问句值得改写（>4 字）→ 规范问法再试一次
+    # 检索双保险：改写句空手且与原句不同 → 原句再试（防改写改错）
+    if not hits and search_query != query:
+        hits = retrieval.retrieve(query, user=user)
+        if hits:
+            search_query = query
+    # 口语化改写重试：仍空手且问句值得改写（>4 字）→ 规范问法再试一次
     if not hits and len(re.sub(r"\s+", "", query)) > 4:
         rewritten = _rewrite_query(query)
         if rewritten and rewritten != query:
@@ -481,15 +550,28 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     hblock = history.history_block(turns)
     fb = guards.strip_injection_sentences(file_block) if file_block else ""
     if not context.strip():
-        if hblock:
-            # 检索空手但有对话历史：历史消解指代/延续话题（校验依据=历史本身）
+        if hblock and _META_QUESTION.search(query):
+            # 元问题：问上一轮回答本身——唯一合法历史作答场景（同步非流式；
+            # 相关性闸门豁免同非流式）
             user_prompt = (f"【资料】\n{hblock}\n\n【文件上下文】\n{fb}\n\n【用户问题】\n{query}"
                            if fb else f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
             parts = []
             for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
                                           user_prompt):
                 parts.append(chunk)
-            final = verify.verify("".join(parts), f"{hblock}\n{fb}" if fb else hblock, query=query)
+            final = verify.verify("".join(parts), f"{hblock}\n{fb}" if fb else hblock, query="")
+            _maybe_enqueue_review(conversation_id, query, final)
+            yield "token", final
+            yield "sources", []
+            yield "done", "[DONE]"
+            return
+        if fb:
+            # 文件上下文作答（同步非流式——曾 fb 只在检索命中时注入）
+            parts = []
+            for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+                                          f"【资料】\n{fb}\n\n【用户问题】\n{query}"):
+                parts.append(chunk)
+            final = verify.verify("".join(parts), fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             yield "token", final
             yield "sources", []

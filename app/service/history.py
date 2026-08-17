@@ -68,6 +68,19 @@ def save_turn(conversation_id: str, query: str, answer: str) -> None:
         print(f"[history] 历史落库失败: {e!r}")
 
 
+def clear_conversation(conversation_id: str) -> None:
+    """清空某会话历史（评测用例预置历史用——防重复跑分历史堆积）"""
+    try:
+        conn = _conn()
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM chat_history WHERE conversation_id=%s",
+                        (conversation_id,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def recent_turns(conversation_id: str, max_turns: int = _MAX_TURNS) -> list[dict]:
     """最近 N 轮 [{q, a}]（旧→新，总量压缩）；失败/无会话返回空列表（软依赖）"""
     if not conversation_id:
