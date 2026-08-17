@@ -112,8 +112,24 @@ def dashboard(days: int = 7, authorization: str | None = Header(default=None)):
         "SUM(CASE WHEN status='SUCCESS' THEN 1 ELSE 0 END) s, AVG(total_ms) a "
         "FROM audit_event WHERE timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY) "
         "GROUP BY d ORDER BY d", (days,))
-    trend = [{"day": r[0], "requests": r[1], "success": int(r[2] or 0),
-              "avgMs": round(float(r[3] or 0))} for r in rows]
+    trend = {r[0]: {"requests": r[1], "success": int(r[2] or 0),
+                    "avgMs": round(float(r[3] or 0))} for r in rows}
+    # noAnswer：gaps.jsonl 兜底句式按天计数（曾该列恒 0——前端字段无数据源）
+    for day, c in gap_discovery.daily_counts(days).items():
+        trend.setdefault(day, {"requests": 0, "success": 0, "avgMs": 0})["noAnswer"] = c
+    # feishu：审计 endpoint 区分渠道（曾所有渠道都写 agent/chat，无法区分）
+    feishu_rows = _query(
+        "SELECT DATE_FORMAT(timestamp, '%%Y-%%m-%%d') d, COUNT(*) c FROM audit_event "
+        "WHERE endpoint='feishu/chat' AND timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY) "
+        "GROUP BY d", (days,))
+    for r in feishu_rows:
+        trend.setdefault(r[0], {"requests": 0, "success": 0, "avgMs": 0})["feishu"] = r[1]
+    # adoptions：采纳回流按天
+    adopt_rows = _query(
+        "SELECT DATE_FORMAT(created_at, '%%Y-%%m-%%d') d, COUNT(*) c FROM feedback_adopt "
+        "WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY) GROUP BY d", (days,))
+    for r in adopt_rows:
+        trend.setdefault(r[0], {"requests": 0, "success": 0, "avgMs": 0})["adoptions"] = r[1]
     top = _query(
         "SELECT query, COUNT(*) c FROM audit_event WHERE query IS NOT NULL AND query<>'' "
         "AND timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY) GROUP BY query ORDER BY c DESC LIMIT 8",
@@ -122,11 +138,24 @@ def dashboard(days: int = 7, authorization: str | None = Header(default=None)):
         "SELECT category, COUNT(*) c FROM audit_event "
         "WHERE timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY) GROUP BY category ORDER BY c DESC",
         (days,))
+    employees = _query(
+        "SELECT user, COUNT(*) c, AVG(total_ms) a FROM audit_event "
+        "WHERE user IS NOT NULL AND user<>'' AND user<>'admin' "
+        "AND timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY) GROUP BY user ORDER BY c DESC LIMIT 8",
+        (days,))
+    depts = _query(
+        "SELECT dept, COUNT(*) c FROM digital_employee WHERE dept IS NOT NULL AND dept<>'' "
+        "GROUP BY dept ORDER BY c DESC")
     return _ok({
-        "trend": trend,
+        "trend": [{"day": d, "requests": v["requests"], "success": v["success"],
+                   "noAnswer": v.get("noAnswer", 0), "feishu": v.get("feishu", 0),
+                   "avgMs": v["avgMs"], "adoptions": v.get("adoptions", 0)}
+                  for d, v in sorted(trend.items())],
         "topQueries": [{"name": r[0][:30], "count": r[1]} for r in top],
         "routes": [{"name": r[0] or "未知", "count": r[1]} for r in routes],
-        "employees": [], "depts": [],
+        "employees": [{"name": r[0][:20], "count": r[1], "avgMs": round(float(r[2] or 0))}
+                      for r in employees],
+        "depts": [{"name": r[0], "count": r[1], "avgMs": 0} for r in depts],
     })
 
 
@@ -137,7 +166,7 @@ def kb_health(days: int = 7, authorization: str | None = Header(default=None)):
     total_rows = _query("SELECT COUNT(*) FROM audit_event "
                         "WHERE timestamp >= DATE_SUB(NOW(), INTERVAL %s DAY)", (days,))
     total = total_rows[0][0] if total_rows else 0
-    gaps = gap_discovery.report()
+    gaps = gap_discovery.report(days)
     return _ok({
         "totalQueries": total,
         "unanswered": gaps["total_gaps"],
@@ -211,6 +240,11 @@ def audit_events(page: int = 1, size: int = 20, q: str = "", status: str = "",
 def usage_view(days: int = 7, authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
+    # JSONL 历史按天聚合（重启不归零；曾只返回进程内快照单日——重启即清零）
+    hist = usage.history(days)
+    if hist:
+        return _ok(hist)
+    # JSONL 空（极早期/写入异常）→ 进程内快照兜底单日
     snap = usage.snapshot()
     by_model = [{"model": m, "purpose": m, "calls": v["calls"], "chars": v["chars"],
                  "estTokens": v["chars"] // 2, "totalMs": round(v["seconds"] * 1000)}
@@ -593,10 +627,20 @@ def task_status(task_id: str, authorization: str | None = Header(default=None)):
 def kb_stats(authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
-    docs = milvus_store.list_documents()
-    return _ok({"collection": config.MILVUS_COLLECTION, "status": "OK",
+    # 真实探活：Milvus 不可用必须反映出来（曾状态恒 OK、维度写死 1024——
+    # 向量库挂了看板还显示正常，维度升级 4096 后页面还是旧数）
+    docs: list = []
+    try:
+        if milvus_store._get_client().has_collection(config.MILVUS_COLLECTION):
+            docs = milvus_store.list_documents()
+            status = "OK"
+        else:
+            status = "DISCONNECTED"
+    except Exception:
+        status = "DISCONNECTED"
+    return _ok({"collection": config.MILVUS_COLLECTION, "status": status,
                 "totalDocuments": len(docs), "totalChunks": sum(d["chunks"] for d in docs),
-                "vectorDimension": 1024, "indexType": "HNSW+BM25(RRF)"})
+                "vectorDimension": config.EMBED_DIM, "indexType": "HNSW+BM25(RRF)"})
 
 
 @router.get("/api/rag/admin/health/verify")

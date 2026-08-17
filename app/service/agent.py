@@ -170,15 +170,23 @@ def _maybe_enqueue_review(conversation_id: str, query: str, answer: str) -> None
 # ---------------- 主入口 ----------------
 
 def answer(query: str, conversation_id: str = "", file_block: str = "",
-           user: str = "") -> dict:
+           user: str = "", endpoint: str = "agent/chat") -> dict:
     """非流式回答（Web /chat 端点；飞书桥复用）。
     file_block：会话文件上下文（图片 OCR 文本等），问答时作为首要依据注入。
-    user：提问者标识（飞书 open_id/后台用户名）——检索 ACL 过滤与审计落库用。"""
+    user：提问者标识（飞书 open_id/后台用户名）——检索 ACL 过滤与审计落库用。
+    endpoint：渠道标识（feishu/chat 等）——看板按渠道监控用。"""
     import time as _t
     _t0 = _t.time()
-    result = _answer_inner(query, conversation_id, file_block, user)
+    try:
+        result = _answer_inner(query, conversation_id, file_block, user)
+    except Exception as e:
+        # 异常也落审计（曾只记 SUCCESS——看板 errorCount 恒 0，故障不可见）
+        _record_audit(query, {"answer": "", "route": "ERROR", "sources": []},
+                      _t.time() - _t0, user, 0, endpoint=endpoint,
+                      status="ERROR", error=str(e)[:200])
+        raise
     turns = history.recent_turns(conversation_id)
-    _record_audit(query, result, _t.time() - _t0, user, len(turns))
+    _record_audit(query, result, _t.time() - _t0, user, len(turns), endpoint=endpoint)
     # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流；
     # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定；
     # 评测/扫描会话不落——防跑分污染历史表）
@@ -189,8 +197,10 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
 
 
 def _record_audit(query: str, result: dict, seconds: float, user: str = "admin",
-                  history_count: int = 0) -> None:
-    """审计落库（audit_event 表，沿用既有 schema；软依赖）"""
+                  history_count: int = 0, endpoint: str = "agent/chat",
+                  status: str = "SUCCESS", error: str = "") -> None:
+    """审计落库（audit_event 表，沿用既有 schema；软依赖）。
+    endpoint 区分渠道（曾所有渠道都写 agent/chat，飞书流量与 Web 混在一起）。"""
     try:
         import json as _json
         import uuid as _uuid
@@ -205,10 +215,11 @@ def _record_audit(query: str, result: dict, seconds: float, user: str = "admin",
                 "history_count, sources, retrieval_ms, rerank_degraded, graph_context_chars, "
                 "answer_preview, answer_length, total_ms, status, error) "
                 "VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (_uuid.uuid4().hex[:16], user or "admin", "", "agent/chat", result.get("route", "KNOWLEDGE_QA"),
+                (_uuid.uuid4().hex[:16], user or "admin", "", endpoint,
+                 result.get("route", "KNOWLEDGE_QA"),
                  query, history_count, _json.dumps(result.get("sources") or [], ensure_ascii=False),
                  0, 0, 0, (result.get("answer") or "")[:500],
-                 len(result.get("answer") or ""), round(seconds * 1000), "SUCCESS", ""))
+                 len(result.get("answer") or ""), round(seconds * 1000), status, error))
         conn.commit()
         conn.close()
     except Exception:
@@ -340,11 +351,37 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
 
-def answer_stream(query: str, conversation_id: str = "", user: str = "", file_block: str = ""):
+def answer_stream(query: str, conversation_id: str = "", user: str = "", file_block: str = "",
+                  endpoint: str = "agent/chat"):
     """
     流式回答生成器：yield (event, data) 元组。
     SSE 事件名保持 route/token/sources/chart/done，
     这样 rag-admin 前端一行都不用改。
+    包装层做审计收尾（曾流式路径完全不落审计——SSE 用量在看板上不可见；
+    异常也落 ERROR，与 answer() 口径一致）。"""
+    import time as _t
+    _t0 = _t.time()
+    tokens: list[str] = []
+    route_val = "UNKNOWN"
+    try:
+        for event, data in _answer_stream_impl(query, conversation_id, user, file_block):
+            if event == "token" and isinstance(data, str):
+                tokens.append(data)
+            elif event == "route":
+                route_val = data
+            yield event, data
+    except Exception as e:
+        _record_audit(query, {"answer": "".join(tokens), "route": route_val, "sources": []},
+                      _t.time() - _t0, user, 0, endpoint=endpoint,
+                      status="ERROR", error=str(e)[:200])
+        raise
+    _record_audit(query, {"answer": "".join(tokens), "route": route_val, "sources": []},
+                  _t.time() - _t0, user, 0, endpoint=endpoint)
+
+
+def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", file_block: str = ""):
+    """
+    流式回答实现（answer_stream 的包装层做审计，这里只管生成）。
     """
     # 提示注入拦截（与非流式路径同款——双路径必须同步）
     if guards.contains_injection(query):

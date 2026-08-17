@@ -11,14 +11,15 @@
 import json
 import os
 import re
-import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .. import config
 
 _FILE = os.path.join(config.LOG_DIR, "gaps.jsonl")
-_lock = threading.Lock()
-_gaps: list[dict] = []
+
+# 报告缓存：文件未变化且同窗口时直接复用（聚类 O(N·M)，首页轮询
+# 不能每次都重算全量——曾每次都全量读文件+重聚类）
+_report_cache: dict = {"key": None, "val": None}
 
 # 停用词（问法里不携带语义的虚词）
 _STOPWORDS = set("请问 是什么 什么 怎么 如何 哪些 那个 这个 帮我 一下 有没有 多少 几天 吗 呢 的 了 在 是 有 请".split())
@@ -26,7 +27,8 @@ _TOKEN = re.compile(r"[一-龥]{2,}|[A-Za-z]{2,}")
 
 
 def record_gap(query: str) -> None:
-    """兜底句式触发即记录"""
+    """兜底句式触发即记录（JSONL 为唯一数据源——曾内存+文件双源合并，
+    每条缺口在报告里重复计数，重启后数字跳变）"""
     entry = {"ts": datetime.now().isoformat(), "query": query}
     try:
         os.makedirs(os.path.dirname(_FILE), exist_ok=True)
@@ -34,9 +36,6 @@ def record_gap(query: str) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass
-    with _lock:
-        _gaps.append(entry)
-        del _gaps[:-500]   # 内存聚合限长（JSONL 全量在盘上，进程内只留最近 500 条防膨胀）
 
 
 def _tokens(query: str) -> set[str]:
@@ -52,20 +51,39 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
-def report() -> dict:
-    """缺口报告：单遍聚类（同问法聚合）+ 补库建议。
-    进程内聚合 + JSONL 历史合并（服务重启后历史缺口不丢）。"""
-    with _lock:
-        gaps = list(_gaps)
+def _load_gaps(days: int) -> list[dict]:
+    """读近 N 天缺口（JSONL 全量历史；按 ts 过滤窗口——
+    曾 total_gaps 是全时段计数，与看板 N 天查询口径不一致）"""
+    cutoff = datetime.now() - timedelta(days=days)
+    gaps: list[dict] = []
     try:
         with open(_FILE, encoding="utf-8") as f:
             for line in f:
                 try:
-                    gaps.append(json.loads(line))
-                except ValueError:
+                    e = json.loads(line)
+                    ts = datetime.fromisoformat(e.get("ts", ""))
+                except (ValueError, TypeError):
                     continue
+                if ts >= cutoff:
+                    gaps.append(e)
     except OSError:
         pass
+    return gaps
+
+
+def report(days: int = 30) -> dict:
+    """缺口报告：单遍聚类（同问法聚合）+ 补库建议。
+    文件 mtime/size 未变时复用缓存（首页轮询零重算）。"""
+    global _report_cache
+    try:
+        st = os.stat(_FILE)
+        key = (st.st_mtime, st.st_size, days)
+    except OSError:
+        key = None
+    if key and _report_cache.get("key") == key:
+        return _report_cache["val"]
+
+    gaps = _load_gaps(days)
     clusters: list[dict] = []
     for g in gaps:
         toks = _tokens(g["query"])
@@ -88,4 +106,17 @@ def report() -> dict:
             "samples": c["samples"][:3],
             "suggestion": f"知识库缺少关于「{topic}」的资料，建议补充相关文档",
         })
-    return {"total_gaps": len(gaps), "clusters": items}
+    result = {"total_gaps": len(gaps), "clusters": items}
+    if key:
+        _report_cache = {"key": key, "val": result}
+    return result
+
+
+def daily_counts(days: int) -> dict[str, int]:
+    """近 N 天缺口按天计数（看板 noAnswer 列——兜底句式的每日实况）"""
+    out: dict[str, int] = {}
+    for g in _load_gaps(days):
+        day = str(g.get("ts", ""))[:10]
+        if day:
+            out[day] = out.get(day, 0) + 1
+    return out

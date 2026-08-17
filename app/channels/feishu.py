@@ -158,7 +158,8 @@ class FeishuChannel:
         # 常规问答（带文件上下文）→ 卡片回复（带 👍👎 反馈按钮）
         file_block = self._file_contexts.get(chat_id)
         from ..service import agent
-        result = agent.answer(text, chat_id, file_block=file_block, user=open_id)
+        result = agent.answer(text, chat_id, file_block=file_block, user=open_id,
+                              endpoint="feishu/chat")
         self._last_answers[chat_id] = {
             "query": text, "answer": result["answer"],
             "source": (result["sources"] or [None])[0] or "",
@@ -182,7 +183,7 @@ class FeishuChannel:
         """延伸问题异步作答：回复新卡片（带新一轮延伸推荐）"""
         try:
             from ..service import agent
-            result = agent.answer(q, chat_id, user=open_id)
+            result = agent.answer(q, chat_id, user=open_id, endpoint="feishu/chat")
             self._last_answers[chat_id] = {
                 "query": q, "answer": result["answer"],
                 "source": (result["sources"] or [None])[0] or "",

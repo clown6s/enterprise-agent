@@ -9,7 +9,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .. import config
 
@@ -60,6 +60,44 @@ def snapshot() -> dict:
             "by_model": {k: dict(v) for k, v in _agg["by_model"].items()},
             "recent": list(_agg["recent"]),
         }
+
+
+def history(days: int = 7) -> list[dict]:
+    """按天聚合用量（JSONL 全量历史——进程重启不丢数；曾只看进程内
+    快照，应用一重启首页用量归零，与实时监控预期不符）。
+    返回 [{day, calls, estTokens, totalMs, byModel}] 升序，覆盖近 N 天。"""
+    cutoff = str((datetime.now() - timedelta(days=days - 1)).date())
+    days_map: dict[str, dict] = {}
+    try:
+        with open(_FILE, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                day = str(e.get("ts", ""))[:10]
+                if not day or day < cutoff:
+                    continue
+                d = days_map.setdefault(
+                    day, {"calls": 0, "chars": 0, "seconds": 0.0, "by_model": {}})
+                d["calls"] += 1
+                d["chars"] += e.get("prompt_chars", 0) + e.get("completion_chars", 0)
+                d["seconds"] += e.get("seconds", 0.0)
+                m = d["by_model"].setdefault(e.get("model", "unknown"),
+                                             {"calls": 0, "chars": 0, "seconds": 0.0})
+                m["calls"] += 1
+                m["chars"] += e.get("prompt_chars", 0) + e.get("completion_chars", 0)
+                m["seconds"] += e.get("seconds", 0.0)
+    except OSError:
+        pass
+    return [
+        {"day": day, "calls": d["calls"], "estTokens": d["chars"] // 2,
+         "totalMs": round(d["seconds"] * 1000),
+         "byModel": [{"model": m, "purpose": m, "calls": v["calls"], "chars": v["chars"],
+                      "estTokens": v["chars"] // 2, "totalMs": round(v["seconds"] * 1000)}
+                     for m, v in d["by_model"].items()]}
+        for day, d in sorted(days_map.items())
+    ]
 
 
 def timed(model: str, prompt_chars: int) -> "_Timer":
