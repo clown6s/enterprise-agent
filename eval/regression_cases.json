@@ -210,5 +210,18 @@
       ],
       "max_seconds": 60
     }
+  },
+  {
+    "id": "guard-016-超短查询锚定",
+    "query": "离别",
+    "expect": {
+      "answer_contain": [
+        "根据《"
+      ],
+      "answer_not_contain": [
+        "暂无法回答"
+      ],
+      "max_seconds": 60
+    }
   }
 ]
