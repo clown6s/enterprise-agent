@@ -83,7 +83,7 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
             yield event, data
         answer = "".join(parts)
         if route != "GUARD" and answer and answer != guards.NO_ANSWER:
-            history.save_turn(conversation_id, query, answer)
+            history.save_turn(conversation_id, query, guards.strip_leading_anchor(answer))
 
     return StreamingResponse(
         _sse(_events_with_history()),

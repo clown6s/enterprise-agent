@@ -60,13 +60,16 @@ def _anchor_short_query(query: str, answer: str, source: str) -> str:
     模型把资料的阅读理解答案直接当回答（"描写告别的方法"），像自问自答。
     锚定后用户一眼知道在答哪份资料。只锚定检索路径；图谱/历史路径无来源、
     兜底句式不锚定。source 取重排后排名第一的命中（勿用去重集合首项——
-    那是字母序，曾锚成次相关来源的实况）。"""
+    那是字母序，曾锚成次相关来源的实况）。
+    答案自带锚定（模型引用了被采纳的带锚定内容）时先剥掉再补——
+    双重锚定的实况根因。"""
     q = re.sub(r"\s+", "", query or "")
     if len(q) > 2 or not source or not answer or answer == guards.NO_ANSWER:
         return answer
     src = re.sub(r"\.(pdf|docx?|txt|md)$", "", source, flags=re.I)
     if not src:
         return answer
+    answer = guards.strip_leading_anchor(answer)
     return f"根据《{src}》一文：\n{answer}"
 
 
@@ -88,9 +91,10 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
     _t0 = _t.time()
     result = _answer_inner(query, conversation_id, file_block, user)
     _record_audit(query, result, _t.time() - _t0, user)
-    # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）
+    # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流；
+    # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定）
     if result.get("route") != "GUARD" and result.get("answer") != guards.NO_ANSWER:
-        history.save_turn(conversation_id, query, result["answer"])
+        history.save_turn(conversation_id, query, guards.strip_leading_anchor(result["answer"]))
     return result
 
 

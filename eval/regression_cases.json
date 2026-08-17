@@ -223,5 +223,15 @@
       ],
       "max_seconds": 60
     }
+  },
+  {
+    "id": "auto-unhelpful-4c55c26265",
+    "query": "告别",
+    "expect": {
+      "answer_not_contain": [
+        "暂无法回答"
+      ],
+      "max_seconds": 60
+    }
   }
 ]

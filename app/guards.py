@@ -368,6 +368,20 @@ def strip_injection_sentences(text: str) -> str:
     return "".join(kept).strip()
 
 
+# ---------------- 8. 来源锚定句剥除 ----------------
+
+_ANCHOR_LINE = re.compile(r"^\s*根据《[^》]+》(一文)?[：:]\s*\n?")
+
+
+def strip_leading_anchor(text: str) -> str:
+    """剥掉首行来源锚定句（"根据《xxx》一文："）——锚定是展示层，
+    不应随答案进入知识回流/历史存储（实况：采纳带锚定的答案后，
+    新答案引用它再被守卫锚定 → 双重锚定）。"""
+    if not text:
+        return text
+    return _ANCHOR_LINE.sub("", text, count=1)
+
+
 # ---------------- 6. CJK 空格清理 ----------------
 
 def clean_cjk_spacing(text: str) -> str:

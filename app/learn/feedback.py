@@ -77,8 +77,10 @@ def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dic
     except pymysql.MySQLError:
         pass   # 软依赖：MySQL 挂了只影响留痕，不影响入库
 
-    # Milvus 入库：Q&A 拼成一个 chunk（标题带"问答采纳"便于溯源）
-    text = f"问题：{query}\n回答：{answer}"
+    # Milvus 入库：Q&A 拼成一个 chunk（标题带"问答采纳"便于溯源）。
+    # 锚定句是展示层，剥掉再入库——否则新答案引用它再被锚定 → 双重锚定（实况）
+    from .. import guards
+    text = f"问题：{query}\n回答：{guards.strip_leading_anchor(answer)}"
     vec = embeddings.embed(text)
     milvus_store.insert_document(
         text=text,
