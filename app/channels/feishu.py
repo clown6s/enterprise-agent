@@ -462,8 +462,8 @@ class FeishuChannel:
                 else:
                     toast.content = "无效的追问"
             elif action == "helpful":
-                feedback.adopt(last["query"], last["answer"], last["source"], user=open_id)
-                toast.content = "已采纳，该问答已回流知识库"
+                result = feedback.adopt(last["query"], last["answer"], last["source"], user=open_id)
+                toast.content = result.get("error") or "已采纳，该问答已回流知识库"
             elif action == "unhelpful":
                 # 恢复答案被点👎：其使用的自学习词对失败计数（满 2 次移除）
                 # ——曾词对只增不减，坏词对永久固化

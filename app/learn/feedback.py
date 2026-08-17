@@ -130,8 +130,27 @@ def enqueue_review(query: str, answer: str, sources: str = "") -> bool:
 # ---------------- 1. 采纳 → 知识库回流 ----------------
 
 def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dict:
-    """采纳问答：MySQL 留痕 + Milvus 入库（立即可被检索到）"""
+    """采纳问答：MySQL 留痕 + Milvus 入库（立即可被检索到）。
+    质量门（E 确定性启发式）：客观错误确定性拦截（兜底/过短/注入/
+    格式残骸清洗）——主观质量不做硬评分（用户点👍是表态，系统不替
+    用户做主）。"""
+    from .. import guards
     qh = _hash_query(query)
+    # 质量门：无信息量内容无采纳价值（确定性，先于一切落库）
+    if not query or len(query.strip()) < 2:
+        return {"query": query, "error": "问题过短，无采纳价值"}
+    if guards.NO_ANSWER in (answer or ""):
+        return {"query": query, "error": "兜底回答无采纳价值"}
+    if len((answer or "").strip()) < 10:
+        return {"query": query, "error": "回答过短，无采纳价值"}
+    # 回流投毒防线：采纳内容进知识库前必须过注入检查（曾无检查——
+    # 先发一条含注入的问答再点👍，注入内容入库毒化所有检索）
+    if guards.contains_injection(f"{query}\n{answer}"):
+        return {"adoptId": qh, "query": query, "error": "内容含异常指令，已拒绝采纳"}
+    # 格式残骸不带进库（fix_output 确定性重建后入库）
+    answer = guards.fix_output(answer or "")
+    if not answer.strip():
+        return {"query": query, "error": "回答内容为空，已拒绝采纳"}
     try:
         conn = _conn()
         with conn.cursor() as cur:
@@ -148,11 +167,6 @@ def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dic
     # Milvus 入库：Q&A 拼成一个 chunk（标题用问句本身，可读溯源——
     # 曾用哈希标题"问答采纳-0cae5983"，机器名无法溯源，治理实况）。
     # 锚定句是展示层，剥掉再入库——否则新答案引用它再被锚定 → 双重锚定（实况）
-    from .. import guards
-    # 回流投毒防线：采纳内容进知识库前必须过注入检查（曾无检查——
-    # 先发一条含注入的问答再点👍，注入内容入库毒化所有检索）
-    if guards.contains_injection(f"{query}\n{answer}"):
-        return {"adoptId": qh, "query": query, "error": "内容含异常指令，已拒绝采纳"}
     doc_id = f"adopt-{qh[:16]}"
     # 重复采纳去重：同一问法点两次👍会生成同 doc_id 两套 chunk，污染检索
     if milvus_store.has_document(doc_id):
