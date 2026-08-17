@@ -129,8 +129,11 @@ _ATTENTION_QUERY = re.compile(r"注意")
 _LIFESTYLE_TERMS = re.compile(r"饮食|运动|锻炼|戒烟|限酒|饮酒|体重|睡眠|情绪|复查|监测|低盐|低脂")
 # 维度词检查：问句中出现的维度，资料里必须有对应内容（问什么答什么，没有就答没有）
 _DIM_CHECKS = [
-    (re.compile(r"用药|服药|吃药|药物"), re.compile(r"用药|药物|制剂|剂量|药")),
-    (re.compile(r"饮食|怎么吃|吃什么|低盐|低脂"), re.compile(r"饮食|低盐|低脂|盐")),
+    (re.compile(r"用药|服药|吃药|药物"), re.compile(r"用药|药物|制剂|剂量|药|治疗")),
+    # 饮食维度资料侧词汇宽表：OCR 表格用"食物/脂肪/钠"而非"盐/低盐"——
+    # 曾只认 饮食|低盐|低脂|盐，饮食表格 chunk 全漏（闸门误杀+检索漏召回）
+    (re.compile(r"饮食|怎么吃|吃什么|低盐|低脂"),
+     re.compile(r"饮食|低盐|低脂|盐|食物|膳食|脂肪|钠")),
     (re.compile(r"运动|锻炼"), re.compile(r"运动|锻炼")),
     (re.compile(r"睡眠|失眠"), re.compile(r"睡眠|失眠")),
     (re.compile(r"监测|复查"), re.compile(r"监测|复查|测量")),
@@ -138,6 +141,20 @@ _DIM_CHECKS = [
     (re.compile(r"限酒|饮酒|喝酒"), re.compile(r"酒")),
     (re.compile(r"体重|减肥|肥胖"), re.compile(r"体重|肥胖")),
 ]
+
+
+def _expand_query(query: str) -> str:
+    """确定性查询扩展：问句里的维度词（饮食/用药/运动…）追加其资料侧
+    同义词——检索词汇对齐（实况：问"饮食注意"，OCR 表格用"食物/高钠/
+    低盐"词汇，BM25 和语义都召不回，只命中"可采纳饮食指导原则"元信息句，
+    闸门拒绝后带来源兜底）。扩展词来自 _DIM_CHECKS 的资料侧模式。"""
+    extra = []
+    for q_pat, c_pat in _DIM_CHECKS:
+        if q_pat.search(query):
+            extra.append(c_pat.pattern.replace("|", " "))
+    if not extra:
+        return query
+    return f"{query} {' '.join(extra)}".strip()
 
 
 def _attention_gap(query: str, context: str) -> bool:
@@ -324,17 +341,19 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     # 追问统一解析：指代/衔接/省略三类追问 → 补全改写再检索（曾只认显式
     # 指代——"怎么发生的"零指代追问漏网后用历史凑数，sources=[] 实况）
     search_query = _resolve_query(query, turns)
-    hits = retrieval.retrieve(search_query, user=user)
+    # 检索词=查询扩展版（维度词追加资料侧同义词）；闸门评审仍用 clean 的
+    # search_query——扩展词会干扰评审员（"…饮食 低盐 低脂 膳食"vs 答案）
+    hits = retrieval.retrieve(_expand_query(search_query), user=user)
     # 检索双保险：改写句空手且与原句不同 → 原句再试（防改写改错）
     if not hits and search_query != query:
-        hits = retrieval.retrieve(query, user=user)
+        hits = retrieval.retrieve(_expand_query(query), user=user)
         if hits:
             search_query = query
     # 口语化改写重试：仍空手且问句值得改写（>4 字）→ 规范问法再试一次
     if not hits and len(re.sub(r"\s+", "", query)) > 4:
         rewritten = _rewrite_query(query)
         if rewritten and rewritten != query:
-            hits = retrieval.retrieve(rewritten, user=user)
+            hits = retrieval.retrieve(_expand_query(rewritten), user=user)
             if hits:
                 search_query = rewritten
     # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
@@ -407,6 +426,8 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     final = verify.verify(raw, vctx, query=search_query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
+        # 闸门拒绝=无依据，不得带来源（曾"暂无法回答"+来源并存的矛盾实况）
+        return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
@@ -533,17 +554,17 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     # 知识问答：预检索（空手 → 元问题用历史 / 有文件上下文用文件 → 图谱-only
     # 兜底 → 仍空 → 兜底句式）——与非流式路径同步
     search_query = _resolve_query(query, turns)
-    hits = retrieval.retrieve(search_query, user=user)
+    hits = retrieval.retrieve(_expand_query(search_query), user=user)
     # 检索双保险：改写句空手且与原句不同 → 原句再试（防改写改错）
     if not hits and search_query != query:
-        hits = retrieval.retrieve(query, user=user)
+        hits = retrieval.retrieve(_expand_query(query), user=user)
         if hits:
             search_query = query
     # 口语化改写重试：仍空手且问句值得改写（>4 字）→ 规范问法再试一次
     if not hits and len(re.sub(r"\s+", "", query)) > 4:
         rewritten = _rewrite_query(query)
         if rewritten and rewritten != query:
-            hits = retrieval.retrieve(rewritten, user=user)
+            hits = retrieval.retrieve(_expand_query(rewritten), user=user)
             if hits:
                 search_query = rewritten
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
@@ -637,6 +658,11 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     final = verify.verify("".join(parts), vctx, query=search_query)
     if final == guards.NO_ANSWER:
         _maybe_enqueue_review(conversation_id, query, final)   # 相关性闸门拒绝的也进人工审核
+        # 闸门拒绝=无依据，不得带来源（与非流式同口径）
+        yield "token", final
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
     yield "token", _anchor_short_query(query, final, hits[0].get("source", ""))
     yield "sources", sources
     yield "done", "[DONE]"

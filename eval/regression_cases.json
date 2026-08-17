@@ -260,11 +260,14 @@
     "id": "guard-019-建议类维度闸门",
     "query": "高血压的饮食建议",
     "expect": {
+      "sources_include": [
+        "高血压营养"
+      ],
       "answer_contain": [
-        "暂无法回答"
+        "钠"
       ],
       "answer_not_contain": [
-        "140/90"
+        "暂无法回答"
       ],
       "max_seconds": 60
     }
