@@ -227,9 +227,12 @@ def _try_synonym_recovery(query: str, search_query: str, turns: list[dict],
     for v in variants:
         synonyms.learn(trigger, v)
     _maybe_enqueue_review(conversation_id, query, final)
+    # _learned_pairs：本次恢复使用的词对——渠道层在用户点👎时回调
+    # penalize（负向强化闭环：恢复答案被否定 → 词对失败计数）
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sorted({h["source"] for h in hits if h.get("source")}),
-            "route": "KNOWLEDGE_QA", "chart": None}
+            "route": "KNOWLEDGE_QA", "chart": None,
+            "_learned_pairs": [(trigger, v) for v in variants]}
 
 
 def _attention_gap(query: str, context: str) -> bool:

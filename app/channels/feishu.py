@@ -161,7 +161,8 @@ class FeishuChannel:
         result = agent.answer(text, chat_id, file_block=file_block, user=open_id,
                               endpoint="feishu/chat")
         last = {"query": text, "answer": result["answer"],
-                "source": (result["sources"] or [None])[0] or ""}
+                "source": (result["sources"] or [None])[0] or "",
+                "pairs": result.get("_learned_pairs") or []}
         card_msg_id = ""
         if result.get("chart"):
             # 数据类回答 → 图表卡（VChart + 原生表格 + 汇总）
@@ -192,7 +193,8 @@ class FeishuChannel:
             from ..service import agent
             result = agent.answer(q, chat_id, user=open_id, endpoint="feishu/chat")
             last = {"query": q, "answer": result["answer"],
-                    "source": (result["sources"] or [None])[0] or ""}
+                    "source": (result["sources"] or [None])[0] or "",
+                    "pairs": result.get("_learned_pairs") or []}
             suggestions = []
             if (result.get("route") == "KNOWLEDGE_QA" and result.get("sources")
                     and len(result["answer"]) > 50):
@@ -463,6 +465,11 @@ class FeishuChannel:
                 feedback.adopt(last["query"], last["answer"], last["source"], user=open_id)
                 toast.content = "已采纳，该问答已回流知识库"
             elif action == "unhelpful":
+                # 恢复答案被点👎：其使用的自学习词对失败计数（满 2 次移除）
+                # ——曾词对只增不减，坏词对永久固化
+                from ..learn import synonyms
+                for t, e in last.get("pairs") or []:
+                    synonyms.penalize(t, e)
                 result = feedback.record_unhelpful(last["query"], last["answer"], user=open_id)
                 toast.content = ("已记录并生成回归用例，我会改进"
                                  if result.get("status") == "case_created"

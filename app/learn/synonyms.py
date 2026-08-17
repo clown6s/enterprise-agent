@@ -41,6 +41,16 @@ def expand_queries(query: str) -> list[str]:
     return out[:2]
 
 
+def _write(pairs: list[dict]) -> None:
+    try:
+        os.makedirs(os.path.dirname(_FILE), exist_ok=True)
+        with open(_FILE, "w", encoding="utf-8") as f:
+            json.dump({"pairs": pairs}, f, ensure_ascii=False, indent=2)
+        _learned[:] = pairs
+    except OSError:
+        pass
+
+
 def learn(trigger: str, expand: str) -> None:
     """沉淀词对（触发词→扩展短语）；去重、上限 200 条防膨胀"""
     trigger, expand = (trigger or "").strip(), (expand or "").strip()
@@ -52,11 +62,27 @@ def learn(trigger: str, expand: str) -> None:
                for p in pairs):
             return
         pairs.append({"trigger": trigger, "expand": expand})
-        pairs = pairs[-200:]
-        try:
-            os.makedirs(os.path.dirname(_FILE), exist_ok=True)
-            with open(_FILE, "w", encoding="utf-8") as f:
-                json.dump({"pairs": pairs}, f, ensure_ascii=False, indent=2)
-            _learned[:] = pairs
-        except OSError:
-            pass
+        _write(pairs[-200:])
+
+
+def penalize(trigger: str, expand: str) -> None:
+    """负反馈惩罚：恢复答案被点👎时，其使用的词对失败计数 +1，
+    满 2 次移除（曾词对只增不减——坏词对永久固化，恢复答案被👎
+    无从纠正；移错了恢复链路会重新学回来，自愈）"""
+    trigger, expand = (trigger or "").strip(), (expand or "").strip()
+    if not trigger or not expand:
+        return
+    with _lock:
+        pairs = _load()
+        kept, changed = [], False
+        for p in pairs:
+            if p.get("trigger") == trigger and p.get("expand") == expand:
+                p = dict(p)
+                p["fail"] = p.get("fail", 0) + 1
+                changed = True
+                if p["fail"] < 2:
+                    kept.append(p)
+            else:
+                kept.append(p)
+        if changed:
+            _write(kept)
