@@ -375,8 +375,9 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
                       _t.time() - _t0, user, 0, endpoint=endpoint,
                       status="ERROR", error=str(e)[:200])
         raise
+    hc = len(history.recent_turns(conversation_id))   # 与 answer() 审计口径一致
     _record_audit(query, {"answer": "".join(tokens), "route": route_val, "sources": []},
-                  _t.time() - _t0, user, 0, endpoint=endpoint)
+                  _t.time() - _t0, user, hc, endpoint=endpoint)
 
 
 def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", file_block: str = ""):
@@ -500,6 +501,10 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
                        + graph_ctx)
             user_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                            else f"【资料】\n{context}\n\n【用户问题】\n{query}")
+            if fb:
+                # 双路径同步：图谱兜底分支也要注入文件上下文（曾流式漏接——
+                # 发图后图谱-only 回答只字不提图片，与非流式不一致的实况）
+                user_prompt = f"【文件上下文】\n{fb}\n\n" + user_prompt
             parts = []
             for chunk in llm.chat_stream(
                     prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,

@@ -75,7 +75,7 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
         兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）。
         流中断兜底：生成器中途异常时补发错误 token + done，前端不悬死
         （曾无兜底——LLM 流中断时 SSE 没有 done 事件，前端永远转圈）。"""
-        route, parts, done_sent = "", [], False
+        route, parts, done_sent, failed = "", [], False, False
         try:
             for event, data in agent.answer_stream(query, conversation_id,
                                                    user=(user or {}).get("username", "")):
@@ -87,12 +87,16 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
                     parts.append(str(data))
                 yield event, data
         except Exception as e:
+            failed = True
             print(f"[chat] 流式异常: {e!r}")
             yield "token", "抱歉，回答生成失败，请稍后重试。"
         if not done_sent:
             yield "done", "[DONE]"
         answer = "".join(parts)
-        if (route != "GUARD" and answer and not answer.startswith(guards.NO_ANSWER)
+        # 流中断时部分 token 不落历史（曾把半句残答案存进 chat_history，
+        # 污染下一轮上下文）
+        if (not failed and route != "GUARD" and answer
+                and not answer.startswith(guards.NO_ANSWER)
                 and not history.is_test_conversation(conversation_id)):
             history.save_turn(conversation_id, query, guards.strip_leading_anchor(answer))
 
