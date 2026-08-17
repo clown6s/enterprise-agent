@@ -211,7 +211,8 @@ def rewrite_cloud_doc(doc_id: str, content: str) -> bool:
                 headers=headers, json={"children": blocks[i * 50: (i + 1) * 50],
                                        "index": 0}, timeout=30)
         return True
-    except (httpx.HTTPError, KeyError):
+    except (httpx.HTTPError, KeyError, ValueError):
+        # ValueError：飞书返回非 JSON（网关 500 页）时 .json() 抛——曾炸穿到 500
         return False
 
 
@@ -252,7 +253,8 @@ def publish_cloud_doc(title: str, content: str, editor_open_id: str = "") -> str
                 json={"member_type": "openid", "member_id": editor_open_id,
                       "perm": "full_access"}, timeout=15)
         return f"https://feishu.cn/docx/{doc_id}"
-    except (httpx.HTTPError, KeyError):
+    except (httpx.HTTPError, KeyError, ValueError):
+        # ValueError：飞书返回非 JSON（网关 500 页）时 .json() 抛——曾炸穿到 500
         return None
 
 
