@@ -92,7 +92,7 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
         if not done_sent:
             yield "done", "[DONE]"
         answer = "".join(parts)
-        if (route != "GUARD" and answer and answer != guards.NO_ANSWER
+        if (route != "GUARD" and answer and not answer.startswith(guards.NO_ANSWER)
                 and not history.is_test_conversation(conversation_id)):
             history.save_turn(conversation_id, query, guards.strip_leading_anchor(answer))
 

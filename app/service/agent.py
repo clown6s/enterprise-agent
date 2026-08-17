@@ -55,6 +55,9 @@ def _today_line() -> str:
     return f"今天是 {now.strftime('%Y-%m-%d')} 星期{week}"
 
 
+# 兜底句式 + 缺口告知（智能方向：答不上的时候告诉用户"缺口已被记录、会补"）
+_NO_ANSWER_GAP = guards.NO_ANSWER + "（已记录为知识缺口，将定期汇总补库建议。）"
+
 _ATTENTION_QUERY = re.compile(r"注意")
 _LIFESTYLE_TERMS = re.compile(r"饮食|运动|锻炼|戒烟|限酒|饮酒|体重|睡眠|情绪|复查|监测|低盐|低脂")
 # 维度词检查：问句中出现的维度，资料里必须有对应内容（问什么答什么，没有就答没有）
@@ -128,7 +131,7 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
     # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流；
     # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定；
     # 评测/扫描会话不落——防跑分污染历史表）
-    if (result.get("route") != "GUARD" and result.get("answer") != guards.NO_ANSWER
+    if (result.get("route") != "GUARD" and not result.get("answer").startswith(guards.NO_ANSWER)
             and not history.is_test_conversation(conversation_id)):
         history.save_turn(conversation_id, query, guards.strip_leading_anchor(result["answer"]))
     return result
@@ -244,13 +247,13 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
-        return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+        return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     sources = sorted({h["source"] for h in hits if h.get("source")})
     # 资料覆盖闸门：问"注意事项"但资料没该维度内容 → 直接答没有，不凑数
     if _attention_gap(query, context):
         gap_discovery.record_gap(query)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
-        return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+        return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     # 文件上下文（图片 OCR 等）作为首要依据注入——此前只在图谱兜底分支注入，
     # 检索命中时被静默忽略（实况：发图后问"图里说什么"，答案只字不提图片）
     prefix = f"【资料】\n{context}"
@@ -389,7 +392,7 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
             return
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
-        yield "token", guards.NO_ANSWER
+        yield "token", _NO_ANSWER_GAP
         yield "sources", []
         yield "done", "[DONE]"
         return
@@ -399,7 +402,7 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
     if _attention_gap(query, context):
         gap_discovery.record_gap(query)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
-        yield "token", guards.NO_ANSWER
+        yield "token", _NO_ANSWER_GAP
         yield "sources", []
         yield "done", "[DONE]"
         return

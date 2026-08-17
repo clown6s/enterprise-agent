@@ -35,6 +35,11 @@ _GENERATE_PROMPT = """你是企业文档撰写助手。请按【{doc_type}】的
 4. 通用文档按说明文体撰写，不写成"须/不得/应"式规章制度条文
 5. 使用规范中文术语，不要中英混写
 6. 今天是 {today}，涉及年份与星期必须与实际日历一致
+7. 【知识库资料】是公司内部资料：涉及日期、数字、政策表述必须与资料
+   逐字一致并直接引用；资料没有且用户没给的信息一律不写
+
+【知识库资料】
+{context}
 
 用户要点：
 {points}
@@ -129,16 +134,35 @@ def _generate(title: str, query: str, editor_open_id: str, chat_id: str) -> dict
                 else "纪要" if title.endswith("纪要") else "通用文档")
     structure = _DOC_STRUCTURES.get(doc_type, "通用文档")
     points = re.sub(r"^(帮我|请|麻烦)?(生成|起草|写一个|写|做一个|做)", "", query).strip()
+    # 知识库接地：生成通知/方案类文档时检索公司资料做依据——
+    # "关于五一的放假通知"应引用库里的放假安排原文，而不是让模型想当然编日期
+    from . import guards, retrieval
+    hits = retrieval.retrieve(f"{title} {points}", user="")
+    context = (guards.strip_injection_sentences(retrieval.build_context(hits))
+               if hits else "（知识库暂无相关资料）")
     try:
         content = llm.chat(
             "", _GENERATE_PROMPT.format(
                 doc_type=structure, title=title, points=points,
-                today=datetime.now().strftime("%Y-%m-%d")),
+                today=datetime.now().strftime("%Y-%m-%d"), context=context),
         ).strip()
     except Exception:
         return None
     if not content:
         return None
+    # 接地复核：正文里出现的术语/数字既不在资料也不在用户要点中 →
+    # 带缺失清单重写一次（生成侧编造的日期/数字是文档最致命的错误）
+    if hits:
+        missing = guards.find_missing_terms(content, context + "\n" + points)
+        if missing:
+            warn = "、".join(missing[:8])
+            try:
+                content = llm.chat(
+                    "", "上一条撰写要求不变。但以下术语/数字在你的正文里出现了，"
+                        "却不在【知识库资料】和用户要点中：" + warn +
+                        "。请删除或改写这些内容，重新输出完整正文。").strip()
+            except Exception:
+                pass
     url = publish_cloud_doc(title, content, editor_open_id)
     doc_id = url.rsplit("/", 1)[-1] if url else ""
     if chat_id:
