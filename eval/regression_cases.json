@@ -56,20 +56,15 @@
     }
   },
   {
-    "id": "guard-005-高血压无图谱回声",
+    "id": "guard-005-高血压注意闸门",
     "query": "高血压应该注意什么",
     "expect": {
-      "sources_include": [
-        "内科学.pdf"
-      ],
       "answer_contain": [
-        "血压",
-        "140/90"
+        "暂无法回答"
       ],
       "answer_not_contain": [
-        "（属于）：",
-        "伪名言",
-        "暂无法回答"
+        "140/90",
+        "伪名言"
       ],
       "max_seconds": 60
     }
@@ -242,6 +237,20 @@
       "answer_contain": [
         "140",
         "mmHg"
+      ],
+      "answer_not_contain": [
+        "暂无法回答"
+      ],
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-018-维度闸门放行",
+    "query": "高血压用药需要注意什么",
+    "expect": {
+      "answer_contain": [
+        "mmHg",
+        "剂量"
       ],
       "answer_not_contain": [
         "暂无法回答"

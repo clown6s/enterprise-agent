@@ -57,19 +57,21 @@ def _today_line() -> str:
 
 _ATTENTION_QUERY = re.compile(r"注意")
 _LIFESTYLE_TERMS = re.compile(r"饮食|运动|锻炼|戒烟|限酒|饮酒|体重|睡眠|情绪|复查|监测|低盐|低脂")
+_DIM_TERMS = re.compile(r"用药|服药|吃药|饮食|运动|锻炼|睡眠|监测|复查|戒烟|限酒|饮酒|体重|低盐|低脂")
 
 
-def _note_coverage_gap(query: str, context: str, answer: str) -> str:
-    """问"注意事项"但资料未覆盖生活方式类内容 → 文末加确定性说明。
-    实况：'高血压的注意事项'被答成诊断/治疗——知识库里没有生活方式段落，
-    '无依据内容不出门'只能答有据部分；加说明避免"装傻"感（系统主动告知缺口）。"""
-    if (not _ATTENTION_QUERY.search(query or "") or not answer
-            or answer == guards.NO_ANSWER or not context):
-        return answer
-    if _LIFESTYLE_TERMS.search(context):
-        return answer
-    return (answer.rstrip() + "\n\n（知识库中暂未收录生活方式类注意事项"
-            "（如饮食、运动、戒烟限酒、血压监测等）——可补充相关资料后再问。）")
+def _attention_gap(query: str, context: str) -> bool:
+    """
+    "注意事项"提问的资料覆盖闸门（用户明确的设计原则）：
+    问什么答什么——问"注意事项"，资料里没有生活方式/所问维度的内容，
+    直接答没有，**不得拿诊断、治疗等相邻内容凑数**（凑数=乱扯的实况）。
+    问具体维度（如"用药注意事项"）时只查该维度词是否在资料中。"""
+    if not _ATTENTION_QUERY.search(query or "") or not context:
+        return False
+    m = _DIM_TERMS.search(query)
+    if m:
+        return re.search(m.group(), context) is None
+    return _LIFESTYLE_TERMS.search(context) is None
 
 
 def _anchor_short_query(query: str, answer: str, source: str) -> str:
@@ -223,12 +225,16 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     sources = sorted({h["source"] for h in hits if h.get("source")})
+    # 资料覆盖闸门：问"注意事项"但资料没该维度内容 → 直接答没有，不凑数
+    if _attention_gap(query, context):
+        gap_discovery.record_gap(query)
+        _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
+        return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     gen_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                   else f"【资料】\n{context}\n\n【用户问题】\n{query}")
     raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
     final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context)
-    final = _note_coverage_gap(query, context, final)
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
@@ -353,6 +359,15 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
         return
     sources = sorted({h["source"] for h in hits if h.get("source")})
 
+    # 资料覆盖闸门：问"注意事项"但资料没该维度内容 → 直接答没有，不凑数
+    if _attention_gap(query, context):
+        gap_discovery.record_gap(query)
+        _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
+        yield "token", guards.NO_ANSWER
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
+
     # 流式链路同样先收齐全文再校验再下发（"无依据内容不出门"原则）
     gen_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                   else f"【资料】\n{context}\n\n【用户问题】\n{query}")
@@ -361,7 +376,6 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
         parts.append(chunk)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
     final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context)
-    final = _note_coverage_gap(query, context, final)
     yield "token", _anchor_short_query(query, final, hits[0].get("source", ""))
     yield "sources", sources
     yield "done", "[DONE]"
