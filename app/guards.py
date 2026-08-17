@@ -26,27 +26,45 @@ NO_ANSWER = "根据现有资料，暂无法回答该问题"
 _TRIPLE_LINE = re.compile(
     r"^[ \t]*\d*\.?\s*[^\-–—\n]{1,40}\s*[\-–—]{2,3}\s*\[[^\]\n]*\][\-–—]{0,2}\s*>\s*.+$"
 )
+# 分隔线行（模型自创的 "---" 排版元素——规范只有 **标题** 和 - 条目，无分隔线）
+_HR_LINE = re.compile(r"^[ \t]*[-—_*]{3,}[ \t]*$")
 # 图谱自然语言回声行："高血压（属于）：恶性高血压、高血压亚急症"
 _GRAPH_LINE = re.compile(r"^[^\n：（）]{1,40}（[^\n）]{1,40}）：[^\n。！？；]{0,100}$")
 # 孤立编号行："1." 独占一行
 _LONE_NUMBER = re.compile(r"^(\d+)\.\s*$")
+# 编号条目行：1. / 1、 /（1）/ ① 四种编号形态（负向 lookahead 防 1.5倍/日期行）
+_NUMBERED_ITEM = re.compile(
+    r"^(?!\d+\.\d)(\d+)[.、]\s*(.*)$"
+    r"|^[（(]\d+[）)]\s*(.*)$"
+    r"|^[①-⑳]\s*(.*)$")
+# 裸标题候选：短行、不含句末标点（散文防线）、冒号可选
+_BARE_HEADING = re.compile(r"^(?:\*\*)?([^\n：|*。！？]{1,24})(?:\*\*)?([：:]?)$")
+# 条目状行：无内部句末标点、行尾至多一个句末标点或分号、≤59 字
+# （医学条目分号结尾是常态——曾把；当非法字符整段漏判）
+_FRAGMENT = re.compile(r"^[^。！？：]{1,59}[。！？；]?$")
+# 阅读理解题题干句式（"描写××的方法"——题干是给题目的不是给用户的）
+_COMPREHENSION_HEADER = re.compile(
+    r"^(描写|介绍|说明|阐述|讲述|如何|怎样)[^\n。！？]{1,20}"
+    r"(的方法|的方式|的写法|的手法|的途径|的内容|的表达)$")
+# 定义行（"词：解释"——校验层常把编号定义列表洗成裸行；负向 lookahead 排除
+# 已编号/列表符行，防双重编号）
+_DEF_LINE = re.compile(r"^(?![（(]?\d+[.)、）]\s*)(?![*-]\s)[^\n：|]{1,24}：[^\n]{1,200}$")
 
 
 def _dash_list_lines(lines: list[str]) -> list[str]:
-    """列表统一为 '- ' 条目（'1. 内容'/'1、内容'/'- 内容'/'* 内容' → '- 内容'）；
-    加粗标题行（**标题**，可带冒号结尾）去编号/符号，保持纯标题。
-    编号正则带负向 lookahead：'1.5倍'、'2024.01.01' 这类数字开头的行不动。
+    """条目归一（幂等）：编号（1./1、/（1）/①）/无序（- /*/•）→ '- '；
+    加粗标题行去编号保持纯标题。
     （用户风格决策：条目不要数字编号——飞书卡片会把多级编号渲染成连续 1-10。）"""
     out: list[str] = []
     for l in lines:
         s = l.strip()
         rest = None
-        m = re.match(r"^(?!\d+\.\d)(\d+)[.、]\s*(.*)$", s)
+        m = _NUMBERED_ITEM.match(s)
         if m:
-            rest = m.group(2)
+            rest = (m.group(2) or m.group(3) or m.group(4) or "").strip()
         elif s.startswith(("- ", "* ", "• ")):
-            rest = s[2:]
-        if rest is not None:
+            rest = s[2:].strip()
+        if rest:
             if rest.startswith("**") and rest.rstrip("：:").endswith("**"):
                 out.append(rest)               # 标题行：去编号/符号，保留加粗
             else:
@@ -57,14 +75,20 @@ def _dash_list_lines(lines: list[str]) -> list[str]:
 
 
 def fix_output(text: str) -> str:
+    """输出格式确定性重建（原则：不信任上游留下的任何格式，按规范重建——
+    **标题** 加粗、条目统一 '- '、无分隔线/编号/题干句式；幂等）。
+    曾按实况逐条补恢复规则（3.5 裸标题、4.5 定义行…——每个实况一条补丁，
+    新形态永远慢一步：裸标题无冒号/分号条目/--- 分隔线三形态同批漏网的
+    实况）。现按格式语义分阶段，新形态进对应阶段而非新增散规则。"""
     if not text:
         return text
     lines = text.split("\n")
 
-    # 1) 图谱三元组行 → 删
-    lines = ["" if _TRIPLE_LINE.match(l.strip()) else l for l in lines]
+    # 阶段1 分隔元素清理：图谱三元组行 / 分隔线行（"---"，规范无此元素）→ 删
+    lines = ["" if (_TRIPLE_LINE.match(l.strip()) or _HR_LINE.match(l.strip()))
+             else l for l in lines]
 
-    # 2) 图谱回声块：连续 ≥3 行 "实体（关系）：目标" → 整块删（单行可能是正常表述）
+    # 阶段2 图谱回声块：连续 ≥3 行 "实体（关系）：目标" → 整块删（单行可能是正常表述）
     kept: list[str] = []
     i = 0
     while i < len(lines):
@@ -78,7 +102,7 @@ def fix_output(text: str) -> str:
             i += 1
     lines = kept
 
-    # 3) 孤立编号行与下一行合并："1.\n内容" → "1. 内容"
+    # 阶段3 孤立编号行与下一行合并："1.\n内容" → "1. 内容"
     merged: list[str] = []
     for idx, l in enumerate(lines):
         m = _LONE_NUMBER.match(l.strip())
@@ -89,59 +113,75 @@ def fix_output(text: str) -> str:
             merged.append(l)
     lines = merged
 
-    # 3.5) 裸标题列表恢复：校验层把 "**标题**：\n- 条目" 洗成 "标题：\n裸条目"
-    #      （实况：高血压回答的"血压控制目标值：/用药原则："下全是无前缀裸行）。
-    #      裸标题行（短行以"："结尾、后无内容）下连续 ≥2 行条目状裸行
-    #      → 标题回填加粗、条目回填 "- " 前缀（交给步骤 4 归一）。
-    #      条目判定：无内部句末标点、行尾至多一个句末标点、≤60 字——校验层还会
-    #      给条目补句号的实况后放宽过（曾用"无句号"判条目，结果全被放过）。
-    #      散文防线是"行内多句/长行"，不是"有句号"。
-    #      已有编号的行排除（防双重编号，01a1cb9 同款根因）。
-    _BARE_HEADING = re.compile(r"^(?:\*\*)?([^\n：|*]{1,24})(?:\*\*)?([：:])$")
-    _FRAGMENT = re.compile(r"^[^。！？；：]{1,59}[。！？]?$")
-    _NUMBERED = re.compile(r"^\d+[.、]\s*")
+    # 阶段4 题干句式首行剥除（先于标题重建——题干行可能长得像裸标题）：
+    # 阅读理解题题干是给题目的不是给用户的（OCR 入库素材实况）
+    head_idx = next((i for i, l in enumerate(lines) if l.strip()), None)
+    if head_idx is not None and _COMPREHENSION_HEADER.match(lines[head_idx].strip()):
+        del lines[head_idx]
+
+    # 阶段5 标题重建 + 标题下裸条目回填（先于首行标题——曾阶段顺序颠倒：
+    #   首行标题先被加粗，本阶段的"已加粗排除"使其条目不回填，格式分裂）：
+    #   裸标题（短行无句末标点、冒号可选、非条目前缀）后随 ≥2 条条目状行
+    #   → 标题加粗、条目回填 '- '（校验层洗格式的实况恢复；曾只认"标题："
+    #   带冒号形态——"出血程度评估"类裸标题漏网）；已加粗标题同样恢复其下
+    #   裸条目（校验层有时只洗列表不洗标题）
+    #   条目判定：无内部句末标点、行尾至多一个句末标点或分号、≤59 字
+    #   （医学条目分号结尾是常态——曾把；当非法字符整段漏网）
+    #   散文防线是"行内多句/长行"，不是"有句号"；已有编号的行排除（防双重编号）
     restored_bare: list[str] = []
     i = 0
     while i < len(lines):
         head = lines[i].strip()
         m = _BARE_HEADING.match(head)
-        if m and not head.startswith(("- ", "* ", "• ")):
-            frags = []
+        is_bold = bool(_HEADING_LINE.match(head))
+        if (m and not head.startswith(("- ", "* ", "• "))
+                and not _NUMBERED_ITEM.match(head)
+                and (not head.startswith("**") or is_bold)):
             j = i + 1
+            if j >= len(lines) or not lines[j].strip():
+                # 孤立短行后无内容 → 不是标题（散文片段）
+                restored_bare.append(lines[i])
+                i += 1
+                continue
+            frags = []
             while (j < len(lines) and lines[j].strip()
                    and _FRAGMENT.match(lines[j].strip())
-                   and not _NUMBERED.match(lines[j].strip())
+                   and not _NUMBERED_ITEM.match(lines[j].strip())
                    and not lines[j].strip().startswith(("- ", "* ", "• ", "**"))):
                 frags.append(j)
                 j += 1
+            # 标题一律加粗（后随内容即可）；其下 ≥2 条条目状行才回填 '- '
+            # （散文内容保持原样——"临床表现"下是定义式散文不是列表）
+            restored_bare.append(head if is_bold else f"**{m.group(1)}**{m.group(2) or ''}")
             if len(frags) >= 2:
-                restored_bare.append(f"**{m.group(1)}**{m.group(2)}")
                 for k in frags:
                     restored_bare.append("- " + lines[k].strip())
                 i = j
-                continue
+            else:
+                i += 1
+            continue
         restored_bare.append(lines[i])
         i += 1
     lines = restored_bare
 
-    # 3.7) 阅读理解题题干句式首行剥除："描写告别的方法"这类独立首行是模型
-    #      从阅读理解类资料抄来的题干（实况：OCR 入库的问答素材，用户问"离别"，
-    #      答案却以题干句式开头——题干是给题目的，不是给用户的）
-    _COMPREHENSION_HEADER = re.compile(
-        r"^(描写|介绍|说明|阐述|讲述|如何|怎样)[^\n。！？]{1,20}"
-        r"(的方法|的方式|的写法|的手法|的途径|的内容|的表达)$")
-    head_idx = next((i for i, l in enumerate(lines) if l.strip()), None)
-    if head_idx is not None and _COMPREHENSION_HEADER.match(lines[head_idx].strip()):
-        del lines[head_idx]
+    # 阶段6 首行裸标题加粗：整篇顶格标题（"上消化道出血"）——短行、
+    # 无任何标点、后文存在、非编号行；散文首行（含标点）不受影响
+    first = next((i for i, l in enumerate(lines) if l.strip()), None)
+    if first is not None:
+        s = lines[first].strip()
+        if (_BARE_HEADING.match(s) and len(s) <= 24
+                and not re.search(r"[。！？：；，、）】》]", s)
+                and not _NUMBERED_ITEM.match(s)
+                and not s.startswith(("**", "- ", "* ", "• "))
+                and sum(1 for l in lines if l.strip()) >= 2):
+            lines[first] = f"**{s}**"
 
-    # 4) 列表统一 '- ' 条目（编号/无序都归一；加粗标题去符号）
+    # 阶段7 条目归一（幂等）：编号四形态（1./1、/（1）/①）+ 无序（- /*/•）→ '- '
     out = _dash_list_lines(lines)
 
-    # 4.5) 定义行列表恢复：校验层常把编号列表洗成裸行（"感知工具：让 Agent 访问信息"）
-    #      连续 ≥3 行 → 整段恢复为 " - " 列表（含段内前几行，回填前缀）
-    # 排除已有编号/列表符的行（"1. 感知工具：…"、"（1）感知工具：…" 不再重复编号
-    # → 双重编号"1. 1."的根因，01a1cb9 修过数字点号，这里补（1）式）
-    _DEF_LINE = re.compile(r"^(?![（(]?\d+[.)、）]\s*)(?![*-]\s)[^\n：|]{1,24}：[^\n]{1,200}$")
+    # 阶段8 定义行列表恢复：校验层常把编号定义列表洗成裸行（"感知工具：让
+    #   Agent 访问信息"）——连续 ≥3 行 → 整段回填 '- '。排除已编号/列表符的
+    #   行（双重编号"1. 1."根因——负向 lookahead 含（1）式）
     restored = []
     run_start = -1
     for idx, l in enumerate(out):
@@ -153,27 +193,30 @@ def fix_output(text: str) -> str:
                 for j in range(run_start, idx):
                     restored[j] = "- " + restored[j].strip()
             run_start = -1
-        # 非定义行原样保留（早期版本对全部行 strip，会把嵌套列表/代码块的缩进抹平）
+        # 非定义行原样保留（曾对全部行 strip，把嵌套列表/代码块的缩进抹平）
         restored.append(l)
     if run_start >= 0 and len(out) - run_start >= 3:
         for j in range(run_start, len(out)):
             restored[j] = "- " + restored[j].strip()
     out = restored
 
-    # 4.6) 4.5 回填 "- " 前缀后统一过一遍 dash 归一（幂等；顺带归一 * / •）
+    # 阶段9 幂等归一（阶段8 回填后的前缀与其他符号再归一遍）
     out = _dash_list_lines(out)
 
-    # 5) CJK 与拉丁字符之间补空格（"通过Agent 状态栏" → "通过 Agent 状态栏"）
+    # 阶段10 CJK 与拉丁字符之间补空格（"通过Agent 状态栏" → "通过 Agent 状态栏"）
     out = [re.sub(r"(?<=[一-龥])(?=[A-Za-z])", " ", l) for l in out]
     out = [re.sub(r"(?<=[A-Za-z])(?=[一-龥])", " ", l) for l in out]
 
-    # 6) 压缩连续空行 + 结尾残句清理（模型收尾被截断的典型形态）：
-    #    文末悬空编号行（"3." 独占一行）、以冒号/逗号/顿号/分号结尾的半截句
+    # 阶段11 压缩连续空行 + 结尾残句清理（模型收尾被截断的典型形态）：
+    #   文末悬空编号行（"3." 独占一行）、以冒号/逗号/顿号/分号结尾的半截句
     result = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
     lines = result.split("\n")
     while lines and re.fullmatch(r"\d+[.、]\s*", lines[-1].strip()):
         lines.pop()   # 悬空编号：后面内容被截断，编号本身无意义
-    if lines and re.search(r"[：:，、；]$", lines[-1].strip()):
+    # 半截句清理：排除条目/标题行——"- 条目；"行尾分号是合法条目形态，
+    # 不是残句（曾把最后一条条目当半截句删掉，且破坏幂等）
+    if (lines and re.search(r"[：:，、；]$", lines[-1].strip())
+            and not lines[-1].strip().startswith(("- ", "* ", "• ", "**"))):
         # 半截句：在最后一个句末标点处截断；整行无句末标点则整行移除
         last = lines[-1].strip()
         cut = max(last.rfind("。"), last.rfind("！"), last.rfind("？"))
