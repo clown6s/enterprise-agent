@@ -46,13 +46,14 @@ _SCORE_PROMPT = """你是答案相关性评审员。判断【答案】是否**�
 """
 
 # 反向评审（提示词异构：同一模型换提问角度——曾两轮同 prompt 同模型，
-# 系统性偏见要两个不同视角同时犯才漏）
-_REVERSE_SCORE_PROMPT = """你是答案相关性评审员（反向检查）。找出【答案】中与【问题】无关的内容：
-5 = 答案全部直接回应问题，没有跑题内容
-4 = 答案基本回应问题，仅少量细节与问题无关
-3 = 答案大部分是相邻内容（相关但不直接回应问题）或夹杂大量无关内容 → 不合格
-1 = 答非所问
-只输出一个 1-5 的整数。
+# 系统性偏见要两个不同视角同时犯才漏）。评分标准与正面评审对齐：
+# 主体回应=4/5，"有补充段落"不算跑题（曾把含补充段落的正常答案打 3
+# 误杀——guard-005 实况）
+_REVERSE_SCORE_PROMPT = """你是答案相关性评审员（反向检查）。只判断一件事：【答案】的主体内容是否跑题——
+即答案大部分内容没有回应【问题】想问的点（例如问"饮食注意"却主要在讲
+诊断分类或元信息）。注意事项类答案的多小节列表（饮食/运动/用药各一节）
+都算回应，不算跑题；个别补充段落也不算跑题。
+跑题输出 1，不跑题输出 5。只输出一个数字。
 
 【问题】
 {query}
@@ -177,11 +178,20 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
     answer = guards.strip_assertions(answer, context)
     answer = guards.collapse_empty_headings(answer)
     answer = guards.fix_output(answer) or guards.NO_ANSWER
+    if graph_only and answer == guards.NO_ANSWER and context.strip():
+        # 数字硬删清空答案时回退确定性关系回显（数字编造拦住了，图谱关系
+        # 本身仍可答——曾清空直接兜底，连合法关系内容也没了的 guard-014 实况）
+        rels = context.replace(
+            "## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）",
+            "").strip()
+        answer = guards.fix_output(rels) or guards.NO_ANSWER
     # 相关性闸门（最后一道）：问题 vs 答案多轮评分，低分直接过掉。
-    # 名词查找类豁免：≤2 字（"离别"）或无问句意图词（"高血压"——检索锚定的
-    # 资料内容就是答案）不进严格闸门；闸门管的是"注意/怎么/建议"这类
-    # 有明确诉求的提问（实况：强裁判把裸词'高血压'评 3 分拒绝，误伤）
-    if query and answer and answer != guards.NO_ANSWER:
+    # 豁免两类：① 名词查找类——≤2 字（"离别"）或无问句意图词（"高血压"，
+    # 检索锚定的资料内容就是答案）不进严格闸门（实况：强裁判把裸词评 3 分
+    # 误伤）；② 图谱-only——图谱关系是降级兜底，已带"仅供参考"前缀+收紧
+    # 规则+数字硬删+进审核队列，且关系列表天然偏弱（"奔马律是什么"被评
+    # [3,3] 导致图谱兜底永远兜不住的实况）；闸门管的是"有资料却答非所问"
+    if query and answer and answer != guards.NO_ANSWER and not graph_only:
         q = re.sub(r"\s+", "", query)
         if len(q) > 2 and _QUESTION_INTENT.search(q):
             answer = _relevance_gate(query, answer)

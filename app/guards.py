@@ -18,6 +18,8 @@
 """
 import re
 
+from .domains import num_unit_extra
+
 NO_ANSWER = "根据现有资料，暂无法回答该问题"
 
 # ---------------- 1. 输出格式修复（StreamTokenFixer.fixFull 的 Python 浓缩版） ----------------
@@ -263,8 +265,12 @@ def strip_assertions(text: str, context: str) -> str:
 
 # 术语抽取（确定性缺失术语核对）：
 # 校验模型是小模型，术语级漏检率高——哪些术语"资料里没有"是能确定算出来的事
-# 数值+单位（术语核对与图谱数字硬删共用）
-_NUM_UNIT_PAT = re.compile(r"\d+(?:\.\d+)?\s*(?:%|mmHg|mg|ml|g|kg|次|天|年|月|日|周|元)")
+# 数值+单位（术语核对与图谱数字硬删共用）。
+# 单位 = 通用基础（次/天/年/月/日/周/元）+ 领域插件贡献（如医学 %/mmHg/mg…）
+# ——领域单位不再硬编码（插件化，用户 2026-08-18 定调）
+_UNITS = "|".join(re.escape(u) for u in
+                  ["次", "天", "年", "月", "日", "周", "元"] + num_unit_extra())
+_NUM_UNIT_PAT = re.compile(r"\d+(?:\.\d+)?\s*(?:%s)" % _UNITS)
 _TERM_PATTERNS = [
     re.compile(r"[A-Za-z]{2,}(?:[-/][A-Za-z0-9]+){0,3}"),      # 英文缩写/术语（HRBP、BNP）
     _NUM_UNIT_PAT,
@@ -359,6 +365,66 @@ def collapse_empty_headings(text: str) -> str:
         out.append(lines[i])
         i += 1
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+# ---------------- 跨文档拼接检测（句级出处绑定） ----------------
+
+_UNIT_SYNONYMS = {"g": "g|克", "kg": "kg|千克", "mg": "mg|毫克", "ml": "ml|毫升",
+                  "mmHg": "mmHg", "元": "元", "天": "天|日", "次": "次"}
+
+
+def _sentence_source(sentence: str, chunks: list[str]) -> str:
+    """句子与哪个 chunk 最像（字符 2-gram Jaccard）——句级出处定位"""
+    def grams(s: str) -> set:
+        s = re.sub(r"\s+", "", s)
+        return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) >= 2 else set()
+    g1 = grams(sentence)
+    if not g1:
+        return ""
+    best, best_score = "", 0.0
+    for c in chunks:
+        g2 = grams(c)
+        if not g2:
+            continue
+        score = len(g1 & g2) / len(g1 | g2)
+        if score > best_score:
+            best, best_score = c, score
+    return best if best_score >= 0.1 else ""
+
+
+def find_mismatched_numbers(answer: str, context: str) -> tuple[list[str], list[str]]:
+    """
+    跨文档拼接检测（确定性句级绑定）：答案按句切 → 每句定位出处 chunk
+    （2-gram Jaccard）→ 句中的「数值+单位」必须在该 chunk 内出现（数值
+    相等），不在 → 疑似拼接（A 文档主体 + B 文档数字的组合在资料里
+    不存在的实况风险）。返回 (疑似清单, 高置信硬删清单)：
+    硬删仅当句子短（≤60 字）且句中数字全部失配。
+    """
+    if not answer or not context:
+        return [], []
+    chunks = [c.strip() for c in re.split(r"\n\s*\n|\[来源:", context) if c.strip()]
+    soft: list[str] = []
+    hard: list[str] = []
+    for sentence in re.split(r"(?<=[。！？；\n])", answer):
+        nums = _NUM_UNIT_PAT.findall(sentence)
+        if not nums:
+            continue
+        src = _sentence_source(sentence, chunks)
+        if not src:
+            continue
+        src_norm = re.sub(r"\s+", "", src)
+        mism = []
+        for n in nums:
+            m = re.match(r"(\d+(?:\.\d+)?)\s*(.+)", n)
+            value = m.group(1) if m else n
+            if value not in src_norm:
+                mism.append(n)
+        if not mism:
+            continue
+        soft.extend(mism)
+        if len(sentence.strip()) <= 60 and len(mism) == len(nums):
+            hard.extend(mism)
+    return soft[:6], hard[:6]
 
 
 # ---------------- 图谱-only 数字硬删 ----------------

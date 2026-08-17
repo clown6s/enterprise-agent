@@ -17,6 +17,8 @@ import re
 from datetime import datetime
 
 from .. import guards, llm, prompts, tools
+from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
+                       synonym_groups)
 from ..intent import rules as intent_rules
 from ..learn import feedback, gap_discovery, synonyms
 from ..plan import sop as sop_engine
@@ -125,48 +127,22 @@ def _today_line() -> str:
 # 兜底句式 + 缺口告知（智能方向：答不上的时候告诉用户"缺口已被记录、会补"）
 _NO_ANSWER_GAP = guards.NO_ANSWER + "（已记录为知识缺口，将定期汇总补库建议。）"
 
-_ATTENTION_QUERY = re.compile(r"注意")
-_LIFESTYLE_TERMS = re.compile(r"饮食|运动|锻炼|戒烟|限酒|饮酒|体重|睡眠|情绪|复查|监测|低盐|低脂")
-# 维度词检查：问句中出现的维度，资料里必须有对应内容（问什么答什么，没有就答没有）
-_DIM_CHECKS = [
-    (re.compile(r"用药|服药|吃药|药物"), re.compile(r"用药|药物|制剂|剂量|药|治疗")),
-    # 饮食维度资料侧词汇宽表：OCR 表格用"食物/脂肪/钠"而非"盐/低盐"——
-    # 曾只认 饮食|低盐|低脂|盐，饮食表格 chunk 全漏（闸门误杀+检索漏召回）
-    (re.compile(r"饮食|怎么吃|吃什么|低盐|低脂"),
-     re.compile(r"饮食|低盐|低脂|盐|食物|膳食|脂肪|钠")),
-    (re.compile(r"运动|锻炼"), re.compile(r"运动|锻炼")),
-    (re.compile(r"睡眠|失眠"), re.compile(r"睡眠|失眠")),
-    (re.compile(r"监测|复查"), re.compile(r"监测|复查|测量")),
-    (re.compile(r"戒烟|吸烟"), re.compile(r"戒烟|吸烟|烟")),
-    (re.compile(r"限酒|饮酒|喝酒"), re.compile(r"酒")),
-    (re.compile(r"体重|减肥|肥胖"), re.compile(r"体重|肥胖")),
-]
-
-# 检索同义词组（查询→资料词汇对齐，按领域分组，发现新不对齐=加一行）：
-# terms=查询侧触发词；expand=资料侧扩展短语（独立检索词，不进主查询；
-# 只放桥接词——曾放"处罚/罚款"类高频词把主查询稀释）
-_SYNONYM_GROUPS = [
-    {"terms": ["报销", "报账"], "expand": "报账 差旅 费用报销"},
-    {"terms": ["请假", "休假", "调休"], "expand": "年假 事假 调休 休假"},
-    {"terms": ["工资", "薪资", "薪酬"], "expand": "薪水 薪酬 待遇"},
-    {"terms": ["斗殴", "打架"], "expand": "结伙 殴打"},
-    {"terms": ["制度", "规定", "规章"], "expand": "办法 条例 规范 规章"},
-    {"terms": ["员工", "同事"], "expand": "职工 人员"},
-    {"terms": ["智能体", "Agent"], "expand": "智能体 Agent"},
-]
+# 领域知识已插件化（app/domains/，.env DOMAIN_PLUGINS 开关）——
+# 行业词表不再硬编码主流程：dimension_pairs/synonym_groups/attention/lifestyle
+# 均由启用插件聚合提供（换行业 KB=换插件列表，主流程零改动；用户 2026-08-18 定调）
 
 
 def _expand_queries(query: str) -> list[str]:
     """确定性查询扩展（多查询并联，不拼串——曾把扩展词拼进主查询，
     高频词如"处罚/罚款/拘留"稀释 BM25：纯"结伙斗殴"检索 GT 排第一，
     扩展串检索反而掉出前 12 的实况）。返回 ≤2 条扩展检索短语，与主查询
-    并联检索后并集重排。来源：_SYNONYM_GROUPS（静态）+ _DIM_CHECKS
-    资料侧 + 拒绝路径自学习沉淀的词对（synonyms.json）。"""
+    并联检索后并集重排。来源：领域插件（domains）+ 拒绝路径
+    自学习沉淀的词对（synonyms.json）。"""
     extra = []
-    for q_pat, c_pat in _DIM_CHECKS:
+    for q_pat, c_pat in dimension_pairs():
         if q_pat.search(query):
             extra.append(c_pat.pattern.replace("|", " "))
-    for group in _SYNONYM_GROUPS:
+    for group in synonym_groups():
         if any(t in query for t in group["terms"]):
             extra.append(group["expand"])
     extra.extend(synonyms.expand_queries(query))
@@ -176,11 +152,11 @@ def _expand_queries(query: str) -> list[str]:
 def _first_trigger(query: str) -> str:
     """查询中第一个命中维度/同义词组的词（词对沉淀的触发键）；
     无命中回退查询前 8 字"""
-    for q_pat, _ in _DIM_CHECKS:
+    for q_pat, _ in dimension_pairs():
         m = q_pat.search(query)
         if m:
             return m.group()
-    for group in _SYNONYM_GROUPS:
+    for group in synonym_groups():
         for t in group["terms"]:
             if t in query:
                 return t
@@ -235,6 +211,35 @@ def _try_synonym_recovery(query: str, search_query: str, turns: list[dict],
             "_learned_pairs": [(trigger, v) for v in variants]}
 
 
+def _try_graph_fallback(query: str, turns: list[dict], fb: str,
+                        conversation_id: str) -> dict | None:
+    """图谱兜底二段尝试：检索有命中但答案兜底（噪音 chunk 挡住/闸门拒绝/
+    模型自觉兜底）时，图谱关系仍有答案价值——曾只在检索空手时走图谱，
+    1 条无关 chunk 挡住图谱路径的实况（guard-014）。"""
+    try:
+        graph_ctx = guards.strip_injection_sentences(graph.expand(query))
+    except Exception:
+        return None
+    if not graph_ctx:
+        return None
+    context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
+               + graph_ctx)
+    hblock = history.history_block(turns)
+    user_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                   else f"【资料】\n{context}\n\n【用户问题】\n{query}")
+    if fb:
+        user_prompt = f"【文件上下文】\n{fb}\n\n" + user_prompt
+    raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
+                   user_prompt)
+    final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context,
+                          graph_only=True, query=query)
+    if final == guards.NO_ANSWER:
+        return None
+    final = "以下内容基于知识图谱关联（无文档来源，仅供参考）：\n" + final
+    _maybe_enqueue_review(conversation_id, query, final)
+    return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+
+
 def _attention_gap(query: str, context: str) -> bool:
     """
     资料覆盖闸门（用户明确的设计原则）：问什么答什么——
@@ -245,11 +250,11 @@ def _attention_gap(query: str, context: str) -> bool:
     q, ctx = query or "", context or ""
     if not q or not ctx:
         return False
-    for q_pat, c_pat in _DIM_CHECKS:
+    for q_pat, c_pat in dimension_pairs():
         if q_pat.search(q):
             return c_pat.search(ctx) is None
-    if _ATTENTION_QUERY.search(q):
-        return _LIFESTYLE_TERMS.search(ctx) is None
+    if attention_pattern().search(q):
+        return lifestyle_pattern().search(ctx) is None
     return False
 
 
@@ -459,24 +464,9 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             final = verify.verify(raw, fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
-        graph_ctx = guards.strip_injection_sentences(graph.expand(query))
-        if graph_ctx:
-            # 图谱-only：上下文只有图谱关联，校验层加图谱收紧规则
-            context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
-                       + graph_ctx)
-            user_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
-                           else f"【资料】\n{context}\n\n【用户问题】\n{query}")
-            if file_block:
-                user_prompt = (f"【文件上下文】\n{guards.strip_injection_sentences(file_block)}\n\n"
-                               + user_prompt)
-            raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
-                           user_prompt)
-            final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context,
-                                  graph_only=True, query=query)
-            if final != guards.NO_ANSWER:
-                final = "以下内容基于知识图谱关联（无文档来源，仅供参考）：\n" + final
-            _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
-            return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        if graph_fb:
+            return graph_fb
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
@@ -509,6 +499,10 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                                           conversation_id)
         if recovered:
             return recovered
+        # 图谱兜底二段：噪音 chunk 挡住时图谱关系仍有答案价值（曾直接兜底）
+        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        if graph_fb:
+            return graph_fb
         # 恢复也失败：记知识缺口（曾闸门拒绝不进缺口聚类——知识库健康度
         # 看板上这类"答不上"隐形，与空手/维度闸门路径口径不一致）
         gap_discovery.record_gap(query)
@@ -684,28 +678,10 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
             yield "sources", []
             yield "done", "[DONE]"
             return
-        graph_ctx = guards.strip_injection_sentences(graph.expand(query))
-        if graph_ctx:
-            context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
-                       + graph_ctx)
-            user_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
-                           else f"【资料】\n{context}\n\n【用户问题】\n{query}")
-            if fb:
-                # 双路径同步：图谱兜底分支也要注入文件上下文（曾流式漏接——
-                # 发图后图谱-only 回答只字不提图片，与非流式不一致的实况）
-                user_prompt = f"【文件上下文】\n{fb}\n\n" + user_prompt
-            parts = []
-            for chunk in llm.chat_stream(
-                    prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
-                    user_prompt):
-                parts.append(chunk)
-            final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context,
-                                  graph_only=True, query=query)
-            if final != guards.NO_ANSWER:
-                final = "以下内容基于知识图谱关联（无文档来源，仅供参考）：\n" + final
-            _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
-            yield "token", final
-            yield "sources", []
+        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        if graph_fb:
+            yield "token", graph_fb["answer"]
+            yield "sources", graph_fb["sources"]
             yield "done", "[DONE]"
             return
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
@@ -750,6 +726,13 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         if recovered:
             yield "token", recovered["answer"]
             yield "sources", recovered["sources"]
+            yield "done", "[DONE]"
+            return
+        # 图谱兜底二段（与非流式同口径）
+        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        if graph_fb:
+            yield "token", graph_fb["answer"]
+            yield "sources", graph_fb["sources"]
             yield "done", "[DONE]"
             return
         # 恢复也失败：记知识缺口（与非流式同口径）
