@@ -168,9 +168,36 @@ class FeishuChannel:
             if not self._reply_card(message_id, self.build_data_card(
                     result["answer"], result["chart"])):
                 self._reply(message_id, result["answer"])
-        elif not self._reply_card(message_id, self.build_answer_card(
-                result["answer"], result["sources"])):
-            self._reply(message_id, result["answer"])   # 卡片失败回退纯文本
+        else:
+            suggestions = []
+            if (result.get("route") == "KNOWLEDGE_QA" and result.get("sources")
+                    and len(result["answer"]) > 50):
+                from ..service import agent as _agent
+                suggestions = _agent.suggest_followups(text, result["answer"])
+            if not self._reply_card(message_id, self.build_answer_card(
+                    result["answer"], result["sources"], suggestions)):
+                self._reply(message_id, result["answer"])   # 卡片失败回退纯文本
+
+    def _handle_suggestion(self, chat_id: str, msg_id: str, q: str, open_id: str = "") -> None:
+        """延伸问题异步作答：回复新卡片（带新一轮延伸推荐）"""
+        try:
+            from ..service import agent
+            result = agent.answer(q, chat_id, user=open_id)
+            self._last_answers[chat_id] = {
+                "query": q, "answer": result["answer"],
+                "source": (result["sources"] or [None])[0] or "",
+            }
+            suggestions = []
+            if (result.get("route") == "KNOWLEDGE_QA" and result.get("sources")
+                    and len(result["answer"]) > 50):
+                suggestions = agent.suggest_followups(q, result["answer"])
+            if msg_id and self._reply_card(msg_id, self.build_answer_card(
+                    result["answer"], result["sources"], suggestions)):
+                return
+            self._reply(msg_id, result["answer"])
+        except Exception as e:
+            print(f"[飞书] 延伸问答异常: {e!r}")
+            self._reply(msg_id or "", "抱歉，回答生成失败，请稍后重试。")
 
     # ---------------- 图片 OCR ----------------
 
@@ -325,11 +352,25 @@ class FeishuChannel:
         }
 
     @staticmethod
-    def build_answer_card(answer: str, sources: list[str]) -> dict:
-        """回答卡片（schema 2.0）：markdown 正文 + 来源 note + 👍👎 反馈按钮"""
+    def build_answer_card(answer: str, sources: list[str], suggestions: list[str] = ()) -> dict:
+        """回答卡片（schema 1.0）：markdown 正文 + 来源 note + 延伸追问按钮 + 👍👎。
+        suggestions：'你可能还想问'按钮（点击即追问）。"""
         source_note = "、".join(sources) if sources else "无来源"
         # schema 1.0：无 schema 键 = 1.0，elements 在顶层；
         # action 按钮/note 组件在 1.0 支持（2.0 会拒 unsupported tag action）
+        actions = [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": f"💡 {s[:28]}"},
+            "type": "default", "value": {"action": "suggest", "q": s},
+        } for s in suggestions]
+        actions += [
+            {"tag": "button",
+             "text": {"tag": "plain_text", "content": "👍 有帮助"},
+             "type": "primary", "value": {"action": "helpful"}},
+            {"tag": "button",
+             "text": {"tag": "plain_text", "content": "👎 无帮助"},
+             "type": "default", "value": {"action": "unhelpful"}},
+        ]
         return {
             "config": {"wide_screen_mode": True},
             "header": {"title": {"tag": "plain_text", "content": "🤖 数字员工回答"},
@@ -339,14 +380,7 @@ class FeishuChannel:
                 {"tag": "hr"},
                 {"tag": "note", "elements": [
                     {"tag": "plain_text", "content": "📄 来源：" + source_note}]},
-                {"tag": "action", "actions": [
-                    {"tag": "button",
-                     "text": {"tag": "plain_text", "content": "👍 有帮助"},
-                     "type": "primary", "value": {"action": "helpful"}},
-                    {"tag": "button",
-                     "text": {"tag": "plain_text", "content": "👎 无帮助"},
-                     "type": "default", "value": {"action": "unhelpful"}},
-                ]},
+                {"tag": "action", "actions": actions},
             ],
         }
 
@@ -406,6 +440,16 @@ class FeishuChannel:
                         self._reply(msg_id, "已生成《" + title + "》云文档（在线可编辑）：" + chr(10)
                                     + "https://feishu.cn/docx/" + doc_id)
                 toast.content = "已生成，请查看消息回复"
+            elif action == "suggest":
+                q = ((trigger.event.action.value or {}).get("q") or "").strip()
+                if q:
+                    # 卡片回调有 3s 超时，问答链路必须异步（toast 先回"正在查询"）
+                    toast.content = "正在查询…"
+                    msg_id = getattr(trigger.event.context, "open_message_id", None) or ""
+                    threading.Thread(target=self._handle_suggestion, daemon=True,
+                                     args=(chat_id, msg_id, q, open_id)).start()
+                else:
+                    toast.content = "无效的追问"
             elif action == "helpful":
                 feedback.adopt(last["query"], last["answer"], last["source"], user=open_id)
                 toast.content = "已采纳，该问答已回流知识库"

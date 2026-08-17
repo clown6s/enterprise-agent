@@ -139,6 +139,27 @@ def _anchor_short_query(query: str, answer: str, source: str) -> str:
     return f"根据《{src}》一文：\n{answer}"
 
 
+def suggest_followups(query: str, answer: str) -> list[str]:
+    """答案延伸推荐：根据问题+答案生成 2 个自然的追问（飞书卡片按钮用，
+    点击即追问）。软依赖：失败返回空列表。"""
+    try:
+        raw = llm.chat(
+            "", "根据下面的问题与回答，提出 2 个用户最可能接着问的相关问题。"
+                "每行一个，只输出问题本身（≤20 字），不要编号和解释：\n\n"
+                f"【问题】\n{query}\n\n【回答】\n{answer[:1500]}",
+            temperature=0.3, extra={"enable_thinking": False}).strip()
+        out = []
+        for line in raw.splitlines():
+            line = re.sub(r"^[\d.\-、*\s]+", "", line).strip()
+            if line and len(line) <= 30 and line not in out:
+                out.append(line)
+            if len(out) >= 2:
+                break
+        return out
+    except Exception:
+        return []
+
+
 def _maybe_enqueue_review(conversation_id: str, query: str, answer: str) -> None:
     """低把握答案进人工审核队列；评测/扫描会话跳过（防跑分污染审核队列）"""
     if history.is_test_conversation(conversation_id):
