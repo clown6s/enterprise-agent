@@ -55,6 +55,23 @@ def _today_line() -> str:
     return f"今天是 {now.strftime('%Y-%m-%d')} 星期{week}"
 
 
+_ATTENTION_QUERY = re.compile(r"注意")
+_LIFESTYLE_TERMS = re.compile(r"饮食|运动|锻炼|戒烟|限酒|饮酒|体重|睡眠|情绪|复查|监测|低盐|低脂")
+
+
+def _note_coverage_gap(query: str, context: str, answer: str) -> str:
+    """问"注意事项"但资料未覆盖生活方式类内容 → 文末加确定性说明。
+    实况：'高血压的注意事项'被答成诊断/治疗——知识库里没有生活方式段落，
+    '无依据内容不出门'只能答有据部分；加说明避免"装傻"感（系统主动告知缺口）。"""
+    if (not _ATTENTION_QUERY.search(query or "") or not answer
+            or answer == guards.NO_ANSWER or not context):
+        return answer
+    if _LIFESTYLE_TERMS.search(context):
+        return answer
+    return (answer.rstrip() + "\n\n（知识库中暂未收录生活方式类注意事项"
+            "（如饮食、运动、戒烟限酒、血压监测等）——可补充相关资料后再问。）")
+
+
 def _anchor_short_query(query: str, answer: str, source: str) -> str:
     """超短实体查询（≤2 字）的答案补来源锚定句——实况：用户问"离别"，
     模型把资料的阅读理解答案直接当回答（"描写告别的方法"），像自问自答。
@@ -211,6 +228,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
     final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context)
+    final = _note_coverage_gap(query, context, final)
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
@@ -343,6 +361,7 @@ def answer_stream(query: str, conversation_id: str = "", user: str = ""):
         parts.append(chunk)
     # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
     final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context)
+    final = _note_coverage_gap(query, context, final)
     yield "token", _anchor_short_query(query, final, hits[0].get("source", ""))
     yield "sources", sources
     yield "done", "[DONE]"
