@@ -506,6 +506,9 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                                           conversation_id)
         if recovered:
             return recovered
+        # 恢复也失败：记知识缺口（曾闸门拒绝不进缺口聚类——知识库健康度
+        # 看板上这类"答不上"隐形，与空手/维度闸门路径口径不一致）
+        gap_discovery.record_gap(query)
         # 闸门拒绝=无依据，不得带来源（曾"暂无法回答"+来源并存的矛盾实况）
         return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
@@ -746,6 +749,8 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
             yield "sources", recovered["sources"]
             yield "done", "[DONE]"
             return
+        # 恢复也失败：记知识缺口（与非流式同口径）
+        gap_discovery.record_gap(query)
         # 闸门拒绝=无依据，不得带来源（与非流式同口径）
         yield "token", final
         yield "sources", []
