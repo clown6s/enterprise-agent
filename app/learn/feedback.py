@@ -142,13 +142,17 @@ def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dic
     # 曾用哈希标题"问答采纳-0cae5983"，机器名无法溯源，治理实况）。
     # 锚定句是展示层，剥掉再入库——否则新答案引用它再被锚定 → 双重锚定（实况）
     from .. import guards
+    doc_id = f"adopt-{qh[:16]}"
+    # 重复采纳去重：同一问法点两次👍会生成同 doc_id 两套 chunk，污染检索
+    if milvus_store.has_document(doc_id):
+        return {"adoptId": qh, "query": query, "duplicate": True}
     text = f"问题：{query}\n回答：{guards.strip_leading_anchor(answer)}"
     vec = embeddings.embed(text)
     label = f"问答采纳·{query[:16]}"
     milvus_store.insert_document(
         text=text,
         vector=vec,
-        document_id=f"adopt-{qh[:16]}",
+        document_id=doc_id,
         title=label,
         source=label,
     )
