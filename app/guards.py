@@ -218,7 +218,12 @@ _TERM_PATTERNS = [
 
 
 def find_missing_terms(answer: str, context: str) -> list[str]:
-    """答案里的术语，凡资料（归一化后）中不出现的 → 缺失清单"""
+    """
+    答案里的术语，凡资料（归一化后）中不出现的 → 缺失清单。
+    术语侧必须同样归一化再比对——曾直接拿原串（含空格）查去空格后的
+    上下文，"140 mmHg"（模型写法）在"140/90mmHg"（资料写法）里判缺失，
+    校验模型据此把有据数字剥掉（"收缩压均 > 和/或 舒张压均 >"实况）。
+    """
     ctx = re.sub(r"\s+", "", context).lower()
     missing = []
     seen = set()
@@ -228,7 +233,7 @@ def find_missing_terms(answer: str, context: str) -> list[str]:
             if term in seen:
                 continue
             seen.add(term)
-            if term.lower() not in ctx:
+            if _norm(term) not in ctx:
                 missing.append(term)
     return missing[:12]
 

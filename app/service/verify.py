@@ -27,6 +27,25 @@ def verify_breaker_state() -> dict:
             "suspended_until": _verify_suspended_until}
 
 
+_NUM_UNIT = re.compile(r"\d+(?:\.\d+)?\s*(?:%|mmHg|mg|ml|g|kg|次|天|年|月|日|周|元)")
+
+
+def _grounded_number_retention(raw: str, checked: str, context: str) -> float:
+    """
+    原文中"资料里有据的数字"在校验后答案中的留存率（0~1）。
+    只统计有据数字——原文编造的数字被删是正确行为，不算损失。
+    归一化比对（去空白），"140 mmHg" 与 "140/90mmHg" 视为同款。
+    """
+    ctx = re.sub(r"\s+", "", context).lower()
+    grounded = [n for n in _NUM_UNIT.findall(raw)
+                if re.sub(r"\s+", "", n).lower() in ctx]
+    if not grounded:
+        return 1.0
+    checked_norm = re.sub(r"\s+", "", checked).lower()
+    kept = sum(1 for n in grounded if re.sub(r"\s+", "", n).lower() in checked_norm)
+    return kept / len(grounded)
+
+
 def verify(answer: str, context: str, graph_only: bool = False) -> str:
     """
     小模型对照资料核查 → 确定性守卫收尾。
@@ -52,9 +71,14 @@ def verify(answer: str, context: str, graph_only: bool = False) -> str:
         if checked.startswith("```"):
             checked = re.sub(r"^```\w*\s*", "", checked)
             checked = re.sub(r"\s*```$", "", checked)
-        # 过度删除防护：小模型偶发把正文整个删空（只剩标题）——正文超过 200 字
-        # 却被删掉一半以上时，判定为误删，回退原文走确定性守卫
-        if checked and not (len(answer) > 200 and len(checked) < len(answer) * 0.5):
+        # 过度删除防护（两层）：
+        # ① 小模型偶发把正文整个删空（只剩标题）——正文超过 200 字却被删掉一半以上 → 回退原文
+        # ② 数字保全：原文中在资料里有据的数字，校验后留存率 <60% → 判定误删回退原文
+        #    （实况：缺失术语误判曾诱导校验模型把 140/90 等数字剥掉，句壳留下）
+        over_deleted = (len(answer) > 200 and len(checked) < len(answer) * 0.5)
+        if not over_deleted:
+            over_deleted = _grounded_number_retention(answer, checked, context) < 0.6
+        if checked and not over_deleted:
             answer = checked
     except Exception:
         # 校验模型失败 → 原文下发（软依赖），确定性守卫仍会执行；连续失败触发熔断

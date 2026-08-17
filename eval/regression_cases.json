@@ -63,7 +63,8 @@
         "内科学.pdf"
       ],
       "answer_contain": [
-        "血压"
+        "血压",
+        "140/90"
       ],
       "answer_not_contain": [
         "（属于）：",
@@ -228,6 +229,20 @@
     "id": "auto-unhelpful-4c55c26265",
     "query": "告别",
     "expect": {
+      "answer_not_contain": [
+        "暂无法回答"
+      ],
+      "max_seconds": 60
+    }
+  },
+  {
+    "id": "guard-017-高血压数字保全",
+    "query": "高血压",
+    "expect": {
+      "answer_contain": [
+        "140",
+        "mmHg"
+      ],
       "answer_not_contain": [
         "暂无法回答"
       ],
