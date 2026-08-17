@@ -73,10 +73,8 @@ _QUESTION_INTENT = re.compile(
 def _relevance_score(query: str, answer: str, prompt: str) -> int | None:
     """单轮相关性评分（小模型评审）；失败返回 None"""
     try:
-        raw = llm.chat("", prompt.format(query=query[:200], answer=answer[:2000]),
-                       model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
-                       key=config.DASHSCOPE_KEY, temperature=0.1,
-                       extra={"enable_thinking": False}).strip()
+        raw = llm.verify_chat("", prompt.format(query=query[:200], answer=answer[:2000]),
+                              temperature=0.1).strip()
         m = re.search(r"[1-5]", raw)
         return int(m.group()) if m else None
     except Exception:
@@ -142,13 +140,12 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
     spliced_block = "、".join(spliced_soft) if spliced_soft else "（无）"
     missing = (missing + spliced_hard)[:12]
     try:
-        checked = llm.chat(
+        checked = llm.verify_chat(
             "", prompts.VERIFY_PROMPT.format(missing=missing_block,
                                              spliced=spliced_block,
                                              graph_only_rule=prompts.GRAPH_ONLY_RULE if graph_only else "",
                                              context=context[:6000], answer=answer),
-            model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE, key=config.DASHSCOPE_KEY,
-            temperature=0.2, extra={"enable_thinking": False},
+            temperature=0.2,
         ).strip()
         if checked.startswith("```"):
             checked = re.sub(r"^```\w*\s*", "", checked)

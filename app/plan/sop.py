@@ -254,13 +254,12 @@ def _h_extract(state: dict) -> tuple[bool, dict | None]:
     now = datetime.now()
     names = "、".join(e.get("realName", "") for e in state["employees"])
     t0 = time.time()
-    raw = llm.chat(
+    raw = llm.verify_chat(
         "", _EXTRACT_PROMPT.format(
             today=now.strftime("%Y-%m-%d"), week="一二三四五六日"[now.weekday()],
             tomorrow=(now + timedelta(days=1)).strftime("%Y-%m-%d"),
             after_tomorrow=(now + timedelta(days=2)).strftime("%Y-%m-%d"),
             names=names, query=state["query"]),
-        model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE, key=config.DASHSCOPE_KEY,
         temperature=0.1,
     )
     state["params"] = _parse_json(raw) or {}
@@ -327,8 +326,7 @@ def _h_receipt(state: dict) -> tuple[bool, dict | None]:
         f"时间：{state['params']['startTime']} 至 {state['params']['endTime']}；"
         f"事由：{state['params']['reason'].strip()}。\n"
         "只输出这句话，不要编造其他信息（如审批人、预计通过时间）。")
-    receipt = llm.chat("", receipt_prompt, model=config.MAIN_MODEL,
-                       base=config.MAIN_BASE, key=config.MAIN_KEY)
+    receipt = llm.chat_chain("", receipt_prompt)
     return True, {"answer": receipt.strip(), "route": "SOP"}
 
 

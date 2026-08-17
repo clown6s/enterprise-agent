@@ -32,9 +32,62 @@ def _messages(system: str, user: str) -> list[dict]:
 
 
 def model_config(purpose: str) -> dict:
-    """按用途取模型注册表条目（{model, base, key}）——模型注册表入口，
+    """按用途取模型注册表条目（{model, base, key, extra?}）——模型注册表入口，
     未知用途回退主力模型。"""
     return config.MODEL_REGISTRY.get(purpose, config.MODEL_REGISTRY["main"])
+
+
+# 降级链（类机制）：按用途顺序尝试注册表条目，前一棒异常接下一棒。
+# 生成链 = 主力 + 异厂商第二棒（百炼挂了生成仍有智谱）；
+# 校验链 = 独立裁判 + 旧裁判（智谱挂了校验回退 qwen3-max）。
+# 加新用途只加注册表条目，不写散规则。
+_GEN_CHAIN = ("main", "main_fallback")
+_VERIFY_CHAIN = ("verify", "verify_fallback")
+
+
+def chat_chain(system: str, user: str, *,
+               purposes: tuple[str, ...] = _GEN_CHAIN, **kw) -> str:
+    """带降级链的一次性对话：按 purposes 顺序尝试，全部失败抛最后一个异常。
+    kw（temperature 等）由调用方给出；厂商特有参数来自注册表条目 extra——
+    调用方不传厂商参数（换厂商参数随条目走）。"""
+    last: Exception | None = None
+    for purpose in purposes:
+        m = model_config(purpose)
+        try:
+            return chat(system, user, model=m["model"], base=m["base"], key=m["key"],
+                        extra=m.get("extra"), **kw)
+        except Exception as e:
+            last = e
+            print(f"[llm] {purpose} 调用失败，降级下一棒: {e!r}")
+    raise last
+
+
+def chat_stream_chain(system: str, user: str, *,
+                      purposes: tuple[str, ...] = _GEN_CHAIN) -> Iterator[str]:
+    """带降级链的流式生成：首块前失败换下一棒；流式中断保留已生成部分
+    （部分答案仍会走校验链再出门，比整体 500 强）。全部未出块失败抛最后一个异常。"""
+    last: Exception | None = None
+    for purpose in purposes:
+        m = model_config(purpose)
+        started = False
+        try:
+            for chunk in chat_stream(system, user, model=m["model"], base=m["base"],
+                                     key=m["key"]):
+                started = True
+                yield chunk
+            return
+        except Exception as e:
+            if started:
+                print(f"[llm] {purpose} 流式中断，保留已生成部分")
+                return
+            last = e
+            print(f"[llm] {purpose} 流式失败，降级下一棒: {e!r}")
+    raise last
+
+
+def verify_chat(system: str, user: str, temperature: float = 0.2) -> str:
+    """校验链调用（独立裁判 → 旧裁判）——校验/提取类小任务的统一入口"""
+    return chat_chain(system, user, purposes=_VERIFY_CHAIN, temperature=temperature)
 
 
 def _image_mime(image: bytes) -> str:

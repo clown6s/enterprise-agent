@@ -90,7 +90,7 @@ def revise(chat_id: str, query: str) -> str | None:
     if not doc or not _REVISE_WORDS.search(query):
         return None
     try:
-        new_content = llm.chat(
+        new_content = llm.chat_chain(
             "", "你是文档编辑。按用户指令修改原文，直接输出修改后的完整正文，不要解释。\n\n"
                 "【原文】\n" + doc["content"] + "\n\n【修改指令】\n" + query,
         ).strip()
@@ -141,7 +141,7 @@ def _generate(title: str, query: str, editor_open_id: str, chat_id: str) -> dict
     context = (guards.strip_injection_sentences(retrieval.build_context(hits))
                if hits else "（知识库暂无相关资料）")
     try:
-        content = llm.chat(
+        content = llm.chat_chain(
             "", _GENERATE_PROMPT.format(
                 doc_type=structure, title=title, points=points,
                 today=datetime.now().strftime("%Y-%m-%d"), context=context),
@@ -157,7 +157,7 @@ def _generate(title: str, query: str, editor_open_id: str, chat_id: str) -> dict
         if missing:
             warn = "、".join(missing[:8])
             try:
-                content = llm.chat(
+                content = llm.chat_chain(
                     "", "上一条撰写要求不变。但以下术语/数字在你的正文里出现了，"
                         "却不在【知识库资料】和用户要点中：" + warn +
                         "。请删除或改写这些内容，重新输出完整正文。").strip()

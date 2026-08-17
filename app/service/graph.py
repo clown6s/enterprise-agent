@@ -97,12 +97,8 @@ def build_from_chunks(chunks: list[str], doc_id: str = "") -> int:
         raw = ""
         for attempt in range(2):
             try:
-                raw = llm.chat(
-                    "", _TRIPLE_PROMPT.format(text=b[:4000]),
-                    model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE,
-                    key=config.DASHSCOPE_KEY, temperature=0.1,
-                    extra={"enable_thinking": False},
-                )
+                raw = llm.verify_chat("", _TRIPLE_PROMPT.format(text=b[:4000]),
+                                      temperature=0.1)
                 break
             except Exception:
                 continue
