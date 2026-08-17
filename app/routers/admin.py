@@ -606,6 +606,22 @@ def promote_pending_cases(authorization: str | None = Header(default=None)):
     return _ok(feedback.promote_pending())
 
 
+@router.get("/api/rag/admin/pending")
+def pending_list(authorization: str | None = Header(default=None)):
+    """待审队列列表"""
+    if not _auth(authorization):
+        return _unauthorized()
+    return _ok(feedback.list_pending())
+
+
+@router.delete("/api/rag/admin/pending")
+def pending_clear(authorization: str | None = Header(default=None)):
+    """清空待审队列"""
+    if not _auth(authorization):
+        return _unauthorized()
+    return _ok({"cleared": feedback.clear_pending()})
+
+
 @router.get("/api/rag/admin/documents")
 def documents_view(authorization: str | None = Header(default=None)):
     if not _auth(authorization):

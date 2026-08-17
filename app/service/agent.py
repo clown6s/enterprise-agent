@@ -401,11 +401,22 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
     r = route(query, has_history=bool(turns))
     yield "route", r
     if r == "CHAT":
-        # 流式中文偶发逐字带空格（"你好 ！ 请问"）→ 收齐后清理再整体下发
+        # 真流式：逐 chunk 下发（此前收齐后整体下发——闲聊无校验需求，
+        # 纯损失）。增量 CJK 清理：留 4 字尾部缓冲，跨 chunk 的
+        # "字 标点"粘连在下一段修正（流式中文逐字带空格的实况）
         user_prompt = (f"{history.history_block(turns)}\n{query}" if turns else query)
-        parts = [c for c in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
-                                             user_prompt)]
-        yield "token", guards.clean_cjk_spacing("".join(parts))
+        carry = ""
+        for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+                                     user_prompt):
+            text = carry + chunk
+            carry = ""
+            if len(text) >= 6:
+                carry = text[-4:]
+                text = text[:-4]
+            if text:
+                yield "token", guards.clean_cjk_spacing(text)
+        if carry:
+            yield "token", guards.clean_cjk_spacing(carry)
         yield "sources", []
         yield "done", "[DONE]"
         return

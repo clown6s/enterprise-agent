@@ -163,10 +163,15 @@ def load_pending(chat_id: str) -> dict | None:
     try:
         conn = _pending_conn()
         with conn.cursor() as cur:
-            cur.execute("SELECT params, emp FROM sop_pending WHERE chat_id=%s", (chat_id,))
+            cur.execute("SELECT params, emp, created_at FROM sop_pending WHERE chat_id=%s",
+                        (chat_id,))
             row = cur.fetchone()
         conn.close()
         if not row:
+            return None
+        # 过期清理：24 小时未确认的待确认单自动作废（曾无过期，僵尸单堆积）
+        if row[2] and (datetime.now() - row[2]).total_seconds() > 86400:
+            clear_pending(chat_id)
             return None
         return {"params": json.loads(row[0]), "emp": json.loads(row[1])}
     except Exception:

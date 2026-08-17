@@ -39,6 +39,30 @@ def _hash_query(query: str) -> str:
     return hashlib.sha256(query.encode("utf-8")).hexdigest()[:64]
 
 
+def list_pending() -> list[dict]:
+    """待审队列列表（管理后台）"""
+    if not os.path.exists(_PENDING_FILE):
+        return []
+    out = []
+    with open(_PENDING_FILE, encoding="utf-8") as f:
+        for line in f:
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def clear_pending() -> int:
+    """清空待审队列，返回清除条数"""
+    n = len(list_pending())
+    try:
+        os.remove(_PENDING_FILE)
+    except OSError:
+        pass
+    return n
+
+
 def promote_pending() -> dict:
     """
     待审用例一键转正（👎 带纠正的队列）→ 正式回归用例：
