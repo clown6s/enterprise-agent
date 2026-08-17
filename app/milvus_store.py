@@ -38,9 +38,17 @@ def create_collection_v2(drop_existing: bool = False) -> bool:
     已存在且不 drop → 直接 True。失败返回 False（软依赖）。"""
     name = config.MILVUS_COLLECTION
     try:
+        # 数据库幂等就绪：先连默认库确保 rag_service 存在，再切过去
+        # （重新部署后的裸 Milvus 没有业务库——首摄自动建库）
         if not connections.has_connection("default"):
             connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
-                                db_name=config.MILVUS_DB)
+                                db_name="default")
+        if config.MILVUS_DB not in utility.list_databases():
+            utility.create_database(config.MILVUS_DB)
+            print(f"[milvus] 数据库 {config.MILVUS_DB} 已创建")
+        connections.disconnect("default")
+        connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
+                            db_name=config.MILVUS_DB)
         if utility.has_collection(name):
             if not drop_existing:
                 return True
