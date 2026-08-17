@@ -24,6 +24,24 @@ def embed(text: str) -> list[float]:
     return data[0]["embedding"]
 
 
+def embed_batch(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+    """批量嵌入：一次请求多条（上传管线用——曾逐条串行，200 chunk 的文档
+    要 200 次 HTTP 调用）。返回与输入等长的向量列表，顺序对应。"""
+    out: list[list[float]] = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        resp = httpx.post(
+            f"{config.SILICONFLOW_BASE}/embeddings",
+            headers={"Authorization": f"Bearer {config.SILICONFLOW_KEY}"},
+            json={"model": config.EMBED_MODEL, "input": batch,
+                  "dimensions": config.EMBED_DIM},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        out.extend(d["embedding"] for d in resp.json()["data"])
+    return out
+
+
 def rerank(query: str, documents: list[str], top_n: int | None = None) -> list[tuple[int, float]]:
     """
     query 与 documents 的重排分数。

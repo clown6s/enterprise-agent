@@ -10,8 +10,10 @@ _MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # 50MB 上限（曾无限制，超大文�
 
 
 @router.post("/api/rag/documents/upload")
-async def upload(file: UploadFile = File(...), title: str = "", tags: str = ""):
-    data = await file.read()
+def upload(file: UploadFile = File(...), title: str = "", tags: str = ""):
+    # sync def：FastAPI 自动放线程池执行——曾 async def 里同步跑解析/OCR/嵌入，
+    # 上传大文档期间整个事件循环被阻塞，8080 所有 API（含 SSE 问答）卡死
+    data = file.file.read()
     if len(data) > _MAX_UPLOAD_BYTES:
         return {"success": False,
                 "message": f"文件超过 {_MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限，请拆分后上传。",
@@ -22,4 +24,5 @@ async def upload(file: UploadFile = File(...), title: str = "", tags: str = ""):
     return {"success": True, "message": None,
             "data": {"documentId": result["documentId"],
                      "fileName": result["fileName"],
-                     "fileSize": len(data)}}
+                     "fileSize": len(data),
+                     "duplicate": result.get("duplicate", False)}}

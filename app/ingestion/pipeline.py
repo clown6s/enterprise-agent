@@ -2,13 +2,18 @@
 """
 摄入管线：解析 → 切分 → 嵌入 → Milvus 入库（sparse_bm25 由服务端自动生成）。
 
-管线 v1：
-- 切分：按段落聚合到 max_chars，长段落按句号断；docx 的「## 标题」行作为块边界前缀
+管线 v2：
+- 切分：按段落聚合到 max_chars，长段落按句号断；「## 标题」行作为块边界前缀
+- 嵌入：批量请求（32 条/批）——曾逐条串行，200 chunk 的文档 200 次 HTTP
+- 图谱构建：后台线程——曾同步阻塞上传响应（大文档要等数分钟）
+- 去重：内容 sha256 注册表——曾同一文件传两次生成两套 chunk，污染知识库
 - 全程落日志 logs/ingestion.jsonl（摄入可观测）
 """
+import hashlib
 import json
 import os
 import re
+import threading
 import uuid
 from datetime import datetime
 
@@ -17,6 +22,7 @@ from ..service import graph
 from . import parse
 
 _LOG = os.path.join(config.LOG_DIR, "ingestion.jsonl")
+_INGESTED_FILE = os.path.join(config.LOG_DIR, "ingested.jsonl")   # 内容 sha256 注册表
 
 MAX_CHARS = 600       # 单 chunk 上限
 OVERLAP = 90          # 断点重叠（15%），语义不割裂
@@ -83,6 +89,54 @@ def _embed_with_retry(text: str, retries: int = 2) -> list[float]:
     raise last  # type: ignore[misc]
 
 
+def _embed_batch_with_retry(texts: list[str], retries: int = 2) -> list[list[float]]:
+    """批量嵌入重试（整批失败才重试——曾逐条串行，200 chunk=200 次调用）"""
+    last: Exception | None = None
+    for _ in range(retries):
+        try:
+            return embeddings.embed_batch(texts)
+        except Exception as e:
+            last = e
+    raise last  # type: ignore[misc]
+
+
+def _find_duplicate(sha: str) -> dict | None:
+    """按内容 sha256 查已入库文档（重复上传防护——曾同一文件传两次生成
+    两套 chunk，检索命中重复来源，知识库污染）"""
+    try:
+        with open(_INGESTED_FILE, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("sha") == sha:
+                    return e
+    except OSError:
+        pass
+    return None
+
+
+def _record_ingested(sha: str, doc_id: str, filename: str, title: str, chunks: int) -> None:
+    try:
+        os.makedirs(os.path.dirname(_INGESTED_FILE), exist_ok=True)
+        with open(_INGESTED_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": datetime.now().isoformat(), "sha": sha,
+                                "docId": doc_id, "file": filename, "title": title,
+                                "chunks": chunks}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _graph_build_bg(chunks: list[str], doc_id: str, filename: str) -> None:
+    """图谱构建（后台线程）：失败只记日志——软依赖不变，只是不再阻塞上传响应"""
+    try:
+        rels = graph.build_from_chunks(chunks, doc_id)
+        _log("graph_built", file=filename, doc_id=doc_id, graph_rels=rels)
+    except Exception as e:
+        _log("graph_build_failed", file=filename, doc_id=doc_id, error=str(e)[:200])
+
+
 def _log(action: str, **fields) -> None:
     entry = {"ts": datetime.now().isoformat(), "action": action, **fields}
     try:
@@ -94,20 +148,28 @@ def _log(action: str, **fields) -> None:
 
 
 def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
-    """完整摄入：返回 {documentId, fileName, chunks}；失败返回 {error}"""
+    """完整摄入：返回 {documentId, fileName, chunks}；失败返回 {error}。
+    内容相同文件重复上传返回已有 docId（duplicate=True）——不二次入库。"""
+    sha = hashlib.sha256(data).hexdigest()
+    dup = _find_duplicate(sha)
+    if dup:
+        _log("duplicate_skipped", file=filename, sha=sha[:16], doc_id=dup.get("docId"))
+        return {"documentId": dup.get("docId", ""), "fileName": filename,
+                "chunks": dup.get("chunks", 0), "duplicate": True}
     text = parse.parse_bytes(filename, data)
     if not text or not text.strip():
         _log("parse_failed", file=filename, size=len(data))
-        return {"error": f"未从《{filename}》中解析出文本（扫描件 PDF/不支持的格式？）"}
+        return {"error": f"未从《{filename}》中解析出文本（图片无法识别/不支持的格式）"}
     chunks, pages = chunk_text(text, max_chars=MAX_CHARS, overlap=OVERLAP)
     if not chunks:
         return {"error": f"《{filename}》切分后无内容。"}
     doc_id = uuid.uuid4().hex
     doc_title = (title or filename).strip() or "未命名文档"
     try:
+        vecs = _embed_batch_with_retry(chunks)
         rows = [{
             "text": c,
-            "dense": _embed_with_retry(c),
+            "dense": vecs[i],
             "document_id": doc_id,
             "title": doc_title,
             "source": doc_title,
@@ -117,10 +179,13 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         _log("embed_failed", file=filename, error=str(e)[:200])
         return {"error": f"《{filename}》向量化失败（嵌入服务异常），请稍后重试。"}
     ok = milvus_store.insert_documents(rows)
-    # 图谱构建（软依赖：失败/超量只记日志，不阻断摄入）
-    rels = graph.build_from_chunks(chunks, doc_id) if ok else 0
-    _log("ingested", file=filename, doc_id=doc_id, chunks=len(chunks), ok=ok,
-         graph_rels=rels)
+    # 图谱构建转后台线程（曾同步阻塞上传响应——大文档图谱提取多次 LLM 调用，
+    # 上传要等数分钟；软依赖不变：失败只记日志）
+    if ok:
+        threading.Thread(target=_graph_build_bg, args=(chunks, doc_id, filename),
+                         daemon=True).start()
+    _log("ingested", file=filename, doc_id=doc_id, chunks=len(chunks), ok=ok)
     if not ok:
         return {"error": f"《{filename}》向量库写入失败。"}
+    _record_ingested(sha, doc_id, filename, doc_title, len(chunks))
     return {"documentId": doc_id, "fileName": filename, "chunks": len(chunks)}
