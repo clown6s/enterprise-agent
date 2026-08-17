@@ -46,8 +46,12 @@ def chunk_text(text: str, max_chars: int = MAX_CHARS,
     def flush():
         nonlocal buf
         if buf:
-            chunks.append(buf)
-            pages.append(buf_page)
+            # 页码碎片过滤：PDF 页脚页码被单独切块（"212"——dense 相似度
+            # 0.43 污染检索的实况）；纯数字短块丢弃（标题/正常短块保留）
+            text = buf.strip()
+            if len(text) >= 4 or not text.isdigit():
+                chunks.append(buf)
+                pages.append(buf_page)
             buf = ""
 
     for p in paragraphs:

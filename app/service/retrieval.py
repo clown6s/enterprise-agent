@@ -4,11 +4,15 @@
 
 关键点：
 - rerank 分数过滤（低于阈值的候选视为不相关，宁可无来源也不让噪音进上下文）
+- 名词查找类豁免（无问句意图词的查询：裸名词"高血压/宫崎骏"——rerank
+  列表内归一打分，候选越杂分数越塌，裸名词全灭的实况；与相关性闸门
+  豁免同款设计：名词查找按混合检索序直接取，不过滤）
 - 参数自适应：data/tuned_params.json 存在时覆盖默认 top_k/阈值
   （由 app/learn/tune_retrieval.py 网格搜索产生，只接受不劣化变更）
 """
 import json
 import os
+import re
 
 from .. import config, embeddings, milvus_store
 
@@ -16,6 +20,11 @@ _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 _TUNED_FILE = os.path.join(_BASE, "data", "tuned_params.json")
 
 _tuned: dict = {}
+
+# 问句意图词：含任一 → 有明确诉求，rerank 阈值过滤生效；不含 → 名词查找类豁免
+_QUESTION_INTENT = re.compile(
+    r"什么|怎么|如何|为什么|为何|哪些|几个|多少|哪年|哪一|吗|呢|注意|建议|推荐"
+    r"|区别|流程|方法|方式|能否|可以|会不会|能不能|是不是|原因|时候|时间|多久")
 
 
 def _load_tuned() -> dict:
@@ -72,7 +81,13 @@ def retrieve(query: str, *, top_k: int | None = None,
                 continue
             h = hits[idx]
             kept.append({**h, "score": score})
-        return kept
+        if kept:
+            return kept
+        # 名词查找豁免：重排全灭但问句无意图词（裸名词查询——rerank 列表内
+        # 归一打分在候选杂时分数塌陷，裸名词全灭的实况）→ 按混合检索序取
+        if not _QUESTION_INTENT.search(query):
+            return hits[: config.RERANK_TOP_N]
+        return []
     # 无 rerank：不按 min_score 粗筛（RRF 融合分是 0~0.03 量级，与阈值不可比），
     # 直接取前 RERANK_TOP_N 条
     return hits[: config.RERANK_TOP_N]
