@@ -188,6 +188,8 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
     dup = _find_duplicate(sha)
     if dup:
         _log("duplicate_skipped", file=filename, sha=sha[:16], doc_id=dup.get("docId"))
+        # 重复上传也补留底（留底机制上线前的历史文档，重传一次即补齐根备份）
+        _archive_original(sha, filename, data)
         return {"documentId": dup.get("docId", ""), "fileName": filename,
                 "chunks": dup.get("chunks", 0), "duplicate": True}
     text = parse.parse_bytes(filename, data)
