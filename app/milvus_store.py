@@ -290,6 +290,15 @@ def list_documents() -> list[dict]:
     return list(docs.values())
 
 
+def has_document(document_id: str) -> bool:
+    """按 document_id 查是否存在（OCR 入库去重用——曾同一识别内容重复
+    入库产生重复 chunk）"""
+    try:
+        return bool(_iter_rows(_get_client(), f'document_id == "{document_id}"', ["id"]))
+    except Exception:
+        return False
+
+
 def update_document_meta(document_id: str, title: str | None = None,
                          source: str | None = None) -> int:
     """按 document_id 更新全部 chunk 的标题/来源（知识库文档改名治理用）。

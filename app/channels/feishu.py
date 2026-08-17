@@ -160,14 +160,14 @@ class FeishuChannel:
         from ..service import agent
         result = agent.answer(text, chat_id, file_block=file_block, user=open_id,
                               endpoint="feishu/chat")
-        self._last_answers[chat_id] = {
-            "query": text, "answer": result["answer"],
-            "source": (result["sources"] or [None])[0] or "",
-        }
+        last = {"query": text, "answer": result["answer"],
+                "source": (result["sources"] or [None])[0] or ""}
+        card_msg_id = ""
         if result.get("chart"):
             # 数据类回答 → 图表卡（VChart + 原生表格 + 汇总）
-            if not self._reply_card(message_id, self.build_data_card(
-                    result["answer"], result["chart"])):
+            card_msg_id = self._reply_card(message_id, self.build_data_card(
+                result["answer"], result["chart"])) or ""
+            if not card_msg_id:
                 self._reply(message_id, result["answer"])
         else:
             suggestions = []
@@ -175,27 +175,36 @@ class FeishuChannel:
                     and len(result["answer"]) > 50):
                 from ..service import agent as _agent
                 suggestions = _agent.suggest_followups(text, result["answer"])
-            if not self._reply_card(message_id, self.build_answer_card(
-                    result["answer"], result["sources"], suggestions)):
-                self._reply(message_id, result["answer"])   # 卡片失败回退纯文本
+            card_msg_id = self._reply_card(message_id, self.build_answer_card(
+                result["answer"], result["sources"], suggestions)) or ""
+            if not card_msg_id:
+                self._reply(message_id, result["answer"])
+        # 按卡片消息 id 存问答（👍👎 回调用 open_message_id 精确对应——曾按
+        # chat_id 单槽存，连问两个问题后点第一个卡会采纳第二个的答案，污染知识库）
+        if card_msg_id:
+            self._last_answers[card_msg_id] = last
+        else:
+            self._last_answers[chat_id] = last   # 卡片失败回退纯文本
 
     def _handle_suggestion(self, chat_id: str, msg_id: str, q: str, open_id: str = "") -> None:
         """延伸问题异步作答：回复新卡片（带新一轮延伸推荐）"""
         try:
             from ..service import agent
             result = agent.answer(q, chat_id, user=open_id, endpoint="feishu/chat")
-            self._last_answers[chat_id] = {
-                "query": q, "answer": result["answer"],
-                "source": (result["sources"] or [None])[0] or "",
-            }
+            last = {"query": q, "answer": result["answer"],
+                    "source": (result["sources"] or [None])[0] or ""}
             suggestions = []
             if (result.get("route") == "KNOWLEDGE_QA" and result.get("sources")
                     and len(result["answer"]) > 50):
                 suggestions = agent.suggest_followups(q, result["answer"])
-            if msg_id and self._reply_card(msg_id, self.build_answer_card(
-                    result["answer"], result["sources"], suggestions)):
-                return
+            if msg_id:
+                card_msg_id = self._reply_card(msg_id, self.build_answer_card(
+                    result["answer"], result["sources"], suggestions))
+                if card_msg_id:
+                    self._last_answers[card_msg_id] = last   # 按卡片 id 存，反馈不错位
+                    return
             self._reply(msg_id, result["answer"])
+            self._last_answers[chat_id] = last
         except Exception as e:
             print(f"[飞书] 延伸问答异常: {e!r}")
             self._reply(msg_id or "", "抱歉，回答生成失败，请稍后重试。")
@@ -237,27 +246,15 @@ class FeishuChannel:
                     "回复「清除文件」移除。")
 
     def _ocr(self, image_bytes: bytes) -> str:
-        """智谱 glm-4v-flash 图片识别"""
-        import base64
-        if not self.zhipu_key:
-            return ""
-        data_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()
+        """图片识别：走模型注册表 ocr 条目（曾写死智谱 glm-4v-flash——
+        与文档解析的 OCR 两套供应商；注册表统一后换模型只改 .env）"""
+        from .. import llm
         try:
-            resp = httpx.post(
-                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-                headers={"Authorization": f"Bearer {self.zhipu_key}"},
-                json={
-                    "model": "glm-4v-flash",
-                    "messages": [{"role": "user", "content": [
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                        {"type": "text", "text": "识别图片中的所有文字，直接输出文字内容，不要任何解释。"},
-                    ]}],
-                },
-                timeout=60,
-            )
-            resp.raise_for_status()
-            return (resp.json()["choices"][0]["message"]["content"] or "").strip()
-        except (httpx.HTTPError, KeyError, IndexError):
+            return llm.chat_image(
+                "你是一个图片文字识别助手。",
+                "识别图片中的所有文字，直接输出文字内容，不要任何解释。",
+                image_bytes).strip()
+        except Exception:
             return ""
 
     # ---------------- 入库 ----------------
@@ -266,9 +263,14 @@ class FeishuChannel:
         import hashlib
         from .. import embeddings, milvus_store
         qh = hashlib.sha256(text.encode()).hexdigest()[:16]
+        doc_id = f"ocr-{qh}"
+        # 去重：同一识别内容重复入库会产生重复 chunk（与上传管线同款防护）
+        if milvus_store.has_document(doc_id):
+            self._reply(message_id, f"该内容已在知识库中（《图片识别_{qh[:8]}》），无需重复入库。")
+            return
         vec = embeddings.embed(text)
         ok = milvus_store.insert_document(
-            text=text, vector=vec, document_id=f"ocr-{qh}",
+            text=text, vector=vec, document_id=doc_id,
             title=f"图片识别_{qh[:8]}", source="飞书图片OCR")
         self._reply(message_id,
                     "已入库《图片识别_%s》，现在知识库检索可以找到它了。" % qh[:8]
@@ -385,10 +387,11 @@ class FeishuChannel:
             ],
         }
 
-    def _reply_card(self, message_id: str, card: dict) -> bool:
+    def _reply_card(self, message_id: str, card: dict) -> str:
+        """发卡片；成功返回卡片 message_id（反馈回调定位用），失败返回空串"""
         token = self._app_access_token()
         if not token:
-            return False
+            return ""
         try:
             resp = httpx.post(
                 f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply"
@@ -401,14 +404,15 @@ class FeishuChannel:
             )
             if resp.status_code != 200:
                 print(f"[飞书] 卡片发送失败 http={resp.status_code} body={resp.text[:300]}")
-                return False
-            if resp.json().get("code") != 0:
-                print(f"[飞书] 卡片业务拒绝 code={resp.json().get('code')} "
-                      f"msg={resp.json().get('msg')} body={resp.text[:300]}")
-                return False
-            return True
-        except httpx.HTTPError:
-            return False
+                return ""
+            body = resp.json()
+            if body.get("code") != 0:
+                print(f"[飞书] 卡片业务拒绝 code={body.get('code')} "
+                      f"msg={body.get('msg')} body={resp.text[:300]}")
+                return ""
+            return (body.get("data") or {}).get("message_id", "") or ""
+        except (httpx.HTTPError, ValueError):
+            return ""
 
     def _on_card_action(self, trigger: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         """卡片按钮回调 → 反馈闭环（👍 采纳回流 / 👎 自动锁用例）"""
@@ -422,7 +426,10 @@ class FeishuChannel:
             chat_id = (getattr(ctx, "open_chat_id", None)
                        or getattr(ctx, "chat_id", None) or "")
             open_id = getattr(trigger.event.operator, "open_id", "") or ""
-            last = self._last_answers.get(chat_id)
+            # 优先按卡片 message_id 精确定位（曾按 chat_id 单槽——连续问答时
+            # 点旧卡的👍会采纳最新一条答案，反馈错位污染知识库）
+            card_msg_id = getattr(ctx, "open_message_id", None) or ""
+            last = self._last_answers.get(card_msg_id) or self._last_answers.get(chat_id)
             if not last:
                 toast.content = "未找到对应问答记录（可能已过期）"
                 resp.toast = toast
@@ -433,14 +440,15 @@ class FeishuChannel:
                 title = (form.get("title") or "").strip()
                 result = docwizard.generate_with_form(chat_id, title, form.get("points") or "",
                                                       getattr(trigger.event.operator, "open_id", "") or "")
-                if result:
-                    from ..service import docwizard as _dw
-                    url = docwizard._active_docs.get(chat_id, {}).get("doc_id", "")
-                    if url:
-                        msg_id = getattr(trigger.event.context, "open_message_id", None) or ""
-                        self._reply(msg_id, "已生成《" + title + "》云文档（在线可编辑）：" + chr(10)
-                                    + "https://feishu.cn/docx/" + doc_id)
-                toast.content = "已生成，请查看消息回复"
+                # 曾引用未定义的 doc_id → NameError 被外层吞掉，表单生成恒"反馈处理异常"
+                doc_id = docwizard._active_docs.get(chat_id, {}).get("doc_id", "") if result else ""
+                if doc_id:
+                    msg_id = getattr(trigger.event.context, "open_message_id", None) or ""
+                    self._reply(msg_id, "已生成《" + title + "》云文档（在线可编辑）：" + chr(10)
+                                + "https://feishu.cn/docx/" + doc_id)
+                    toast.content = "已生成，请查看消息回复"
+                else:
+                    toast.content = "生成失败，请重试"
             elif action == "suggest":
                 q = ((trigger.event.action.value or {}).get("q") or "").strip()
                 if q:
