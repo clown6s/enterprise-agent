@@ -72,15 +72,25 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
 
     def _events_with_history():
         """流式事件包装：收齐 token 后落多轮历史（与 answer() 中央落库对齐；
-        兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）"""
-        route, parts = "", []
-        for event, data in agent.answer_stream(query, conversation_id,
-                                               user=(user or {}).get("username", "")):
-            if event == "route":
-                route = str(data)
-            elif event == "token":
-                parts.append(str(data))
-            yield event, data
+        兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）。
+        流中断兜底：生成器中途异常时补发错误 token + done，前端不悬死
+        （曾无兜底——LLM 流中断时 SSE 没有 done 事件，前端永远转圈）。"""
+        route, parts, done_sent = "", [], False
+        try:
+            for event, data in agent.answer_stream(query, conversation_id,
+                                                   user=(user or {}).get("username", "")):
+                if event == "done":
+                    done_sent = True
+                if event == "route":
+                    route = str(data)
+                elif event == "token":
+                    parts.append(str(data))
+                yield event, data
+        except Exception as e:
+            print(f"[chat] 流式异常: {e!r}")
+            yield "token", "抱歉，回答生成失败，请稍后重试。"
+        if not done_sent:
+            yield "done", "[DONE]"
         answer = "".join(parts)
         if (route != "GUARD" and answer and answer != guards.NO_ANSWER
                 and not history.is_test_conversation(conversation_id)):

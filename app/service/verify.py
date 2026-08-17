@@ -14,7 +14,7 @@ from datetime import datetime
 
 from .. import config, guards, llm, prompts
 
-# 校验层自动熔断：qwen-plus 连续失败 3 次 → 停用 5 分钟（防延迟雪崩），
+# 校验层自动熔断：校验模型连续失败 3 次 → 停用 5 分钟（防延迟雪崩），
 # 到点自动恢复。校验是增强不是必需——熔断期间答案只过确定性守卫。
 _verify_failures = 0
 _verify_suspended_until = 0.0

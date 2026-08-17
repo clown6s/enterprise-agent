@@ -129,6 +129,14 @@ class FeishuChannel:
     # ---------------- 文本 ----------------
 
     def _handle_text(self, chat_id: str, message_id: str, text: str, open_id: str = "") -> None:
+        try:
+            self._handle_text_inner(chat_id, message_id, text, open_id)
+        except Exception as e:
+            # 生成链路意外异常（LLM 挂/嵌入挂等）→ 兜底回复，不让飞书用户石沉大海
+            print(f"[飞书] 文本处理异常: {e!r}")
+            self._reply(message_id, "抱歉，回答生成失败，请稍后重试。")
+
+    def _handle_text_inner(self, chat_id: str, message_id: str, text: str, open_id: str = "") -> None:
         # 文件上下文指令
         if text.strip() in ("清除文件", "移除文件"):
             removed = self._file_contexts.pop(chat_id, None)
