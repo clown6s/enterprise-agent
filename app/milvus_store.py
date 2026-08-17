@@ -183,13 +183,14 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K,
             limit=top_k,
             expr=expr,
         )
-        hits = _get_client().hybrid_search(
-            config.MILVUS_COLLECTION,
-            reqs=[dense_req, sparse_req],
-            ranker=RRFRanker(),
-            limit=top_k,
-            output_fields=["text", "document_id", "title", "source", "page"],
-        )
+        hits = _search_with_retry(
+            lambda: _get_client().hybrid_search(
+                config.MILVUS_COLLECTION,
+                reqs=[dense_req, sparse_req],
+                ranker=RRFRanker(),
+                limit=top_k,
+                output_fields=["text", "document_id", "title", "source", "page"],
+            ))
         return [
             {
                 "text": h.entity.get("text", ""),
@@ -205,6 +206,18 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K,
         # 失败可见：挂了 vs 没命中必须可区分（此前静默返回空，诊断无从下手）
         print(f"[milvus] 混合检索失败: {e!r}")
         return []
+
+
+def _search_with_retry(fn):
+    """检索重试一次（瞬时抖动：segment compaction/索引切换——ragflow ES
+    侧有重试、infinity 无重试挂死的对照教训；挂死场景有 30s 心跳重连兜底）"""
+    for attempt in (0, 1):
+        try:
+            return fn()
+        except Exception:
+            if attempt == 1:
+                raise
+            time.sleep(0.5)
 
 
 def insert_document(text: str, vector: list[float], document_id: str,
@@ -313,15 +326,16 @@ def delete_by_document_id(document_id: str) -> int:
 def dense_search(vector: list[float], top_k: int, expr: str | None = None) -> list[dict]:
     """纯稠密检索（混合检索异常时的回退）；expr：文档级过滤（ACL 权限）"""
     try:
-        hits = _get_client().search(
-            config.MILVUS_COLLECTION,
-            data=[vector],
-            anns_field="dense",
-            search_params={"metric_type": "COSINE", "params": {"nprobe": 16}},
-            limit=top_k,
-            output_fields=["text", "document_id", "title", "source", "page"],
-            filter=expr,
-        )
+        hits = _search_with_retry(
+            lambda: _get_client().search(
+                config.MILVUS_COLLECTION,
+                data=[vector],
+                anns_field="dense",
+                search_params={"metric_type": "COSINE", "params": {"nprobe": 16}},
+                limit=top_k,
+                output_fields=["text", "document_id", "title", "source", "page"],
+                filter=expr,
+            ))
         return [
             {
                 "text": h.entity.get("text", ""),
