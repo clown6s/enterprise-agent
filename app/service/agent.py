@@ -16,7 +16,7 @@
 import re
 from datetime import datetime
 
-from .. import guards, llm, prompts
+from .. import guards, llm, prompts, tools
 from ..intent import rules as intent_rules
 from ..learn import feedback, gap_discovery
 from ..plan import sop as sop_engine
@@ -107,17 +107,18 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
                 "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
 
     # 文档多轮修改（会话有进行中文档 + 修改指令 → 回写同一份云文档）
-    revised = docwizard.revise(conversation_id, query)
-    if revised:
-        return {"answer": "已更新到云文档（在线可编辑）：\n" + revised,
-                "sources": [], "route": "DOC_WIZARD", "chart": None}
-    # 文档生成（一句话直达云文档；无标题时 Web 端给提示，飞书渠道弹表单卡片）
-    doc = docwizard.try_generate(query, "", conversation_id)
-    if doc:
-        if doc.get("needs_form"):
-            return {"answer": "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。",
+    if tools.is_enabled("doc_wizard"):
+        revised = docwizard.revise(conversation_id, query)
+        if revised:
+            return {"answer": "已更新到云文档（在线可编辑）：\n" + revised,
                     "sources": [], "route": "DOC_WIZARD", "chart": None}
-        return {"answer": doc["answer"], "sources": [], "route": "DOC_WIZARD", "chart": None}
+        # 文档生成（一句话直达云文档；无标题时 Web 端给提示，飞书渠道弹表单卡片）
+        doc = docwizard.try_generate(query, "", conversation_id)
+        if doc:
+            if doc.get("needs_form"):
+                return {"answer": "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。",
+                        "sources": [], "route": "DOC_WIZARD", "chart": None}
+            return {"answer": doc["answer"], "sources": [], "route": "DOC_WIZARD", "chart": None}
 
     # 待确认单的确认/取消（人机协同闸门——先于 SOP 匹配，"确认"不会误入其他路由）
     pending = sop_engine.try_confirm_or_cancel(conversation_id, query)
@@ -126,7 +127,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
                 "route": "SOP", "chart": None}
 
     # SOP 状态机（执行准确层：请假四步走确定性流程 + 提交前确认）
-    sop = sop_engine.match(query)
+    sop = sop_engine.match(query) if tools.is_enabled("leave_action") else None
     if sop:
         result = sop_engine.execute(sop, query, conversation_id)
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
@@ -197,21 +198,22 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
-    revised = docwizard.revise(conversation_id, query)
-    if revised:
-        yield "route", "DOC_WIZARD"
-        yield "token", "已更新到云文档（在线可编辑）：\n" + revised
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
-    doc = docwizard.try_generate(query, "", conversation_id)
-    if doc:
-        yield "route", "DOC_WIZARD"
-        yield "token", (doc["answer"] if not doc.get("needs_form")
-                        else "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。")
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
+    if tools.is_enabled("doc_wizard"):
+        revised = docwizard.revise(conversation_id, query)
+        if revised:
+            yield "route", "DOC_WIZARD"
+            yield "token", "已更新到云文档（在线可编辑）：\n" + revised
+            yield "sources", []
+            yield "done", "[DONE]"
+            return
+        doc = docwizard.try_generate(query, "", conversation_id)
+        if doc:
+            yield "route", "DOC_WIZARD"
+            yield "token", (doc["answer"] if not doc.get("needs_form")
+                            else "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。")
+            yield "sources", []
+            yield "done", "[DONE]"
+            return
 
     pending = sop_engine.try_confirm_or_cancel(conversation_id, query)
     if pending:
@@ -221,7 +223,7 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
-    sop = sop_engine.match(query)
+    sop = sop_engine.match(query) if tools.is_enabled("leave_action") else None
     if sop:
         yield "route", "SOP"
         result = sop_engine.execute(sop, query, conversation_id)

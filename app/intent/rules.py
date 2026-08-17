@@ -11,7 +11,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Callable
 
-from .. import demo_data
+from .. import demo_data, tools
 from ..oa_client import oa
 
 # 结果形态：answer 必填；chart 供渠道端渲染图表卡（无图表为 None）
@@ -25,6 +25,7 @@ class IntentRule:
     pattern: str          # 触发正则
     handler: Handler
     priority: int = 100   # 数值越小越先匹配
+    tool: str = ""        # 关联工具码（skill 表开关管控，空=不受管控）
 
     def matches(self, query: str) -> bool:
         return re.search(self.pattern, query) is not None
@@ -147,18 +148,22 @@ def oa_metrics(query: str) -> Result:
 
 INTENT_RULES: list[IntentRule] = [
     IntentRule("员工人数", r"多少人|有几个人|有几名|几名员工|员工人数|员工总数|人数是多少",
-               headcount, priority=10),
+               headcount, priority=10, tool="employee_directory"),
     IntentRule("员工信息", r"入职|工号|部门|职位|岗位|什么时候|何时|哪一年|薪资|工资",
-               employee_info, priority=20),
-    IntentRule("OA报销", r"报销|花了多少钱|费用明细|开支", oa_expenses, priority=30),
+               employee_info, priority=20, tool="employee_directory"),
+    IntentRule("OA报销", r"报销|花了多少钱|费用明细|开支", oa_expenses, priority=30,
+               tool="oa_expenses"),
     IntentRule("经营数据", r"经营数据|营收|成本|利润|业绩|销售额|经营情况|生意",
-               oa_metrics, priority=40),
+               oa_metrics, priority=40, tool="oa_metrics"),
 ]
 
 
 def match(query: str) -> Result:
-    """按优先级顺序匹配规则表；全部不命中返回 None（走常规 QA/闲聊路径）"""
+    """按优先级顺序匹配规则表；全部不命中返回 None（走常规 QA/闲聊路径）。
+    被管理后台禁用（skill 表 status=0）的工具规则直接跳过。"""
     for rule in sorted(INTENT_RULES, key=lambda r: r.priority):
+        if rule.tool and not tools.is_enabled(rule.tool):
+            continue
         if rule.matches(query):
             result = rule.handler(query)
             if result is not None:
