@@ -35,7 +35,7 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 
 ## 运行与测试
 
-- 启动：`python run.py`（8080）；`scripts/watchdog.py` 单独常驻（系统里有两个 python 进程是正常的）
+- 启动：`python run.py`（8080）；`scripts/watchdog.py` 单独常驻（系统里有两个 python 进程是正常的；watchdog 只管理 8080——OA 服务 7000 由用户手动控制）
 - 依赖：OA 服务（7000，数据源）、Milvus、Neo4j（bolt://10.211.55.5:7687）、MySQL（sys_user 等共享表）、飞书应用
 - 健康检查：`curl localhost:8080/healthz`
 - 回归：`python scripts/run_eval.py regression`（基线 15/15）

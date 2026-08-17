@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-服务看门狗：探活 enterprise-agent(8080, python) 与 oa-approval(7000, OA 服务)，
+服务看门狗：探活 enterprise-agent(8080, python)，
 连续 3 次失败 → 杀端口残留 → 自动拉起 → 飞书 webhook 告警。
-（8080 用 python run.py 拉起，7000 用 OA 的 jar 命令拉起）
+（OA 服务 7000 由用户手动控制，看门狗不干预——2026-08-17 用户明确）
 
 启动：python scripts/watchdog.py（建议 Start-Process 脱离终端）
 日志：logs/watchdog.log
@@ -28,10 +28,6 @@ SERVICES = [
     {"name": "enterprise-agent", "port": 8080, "workdir": BASE,
      "start": ["python", "run.py"],
      "log": r"D:\dsh-data\temp\py-agent.log", "err": r"D:\dsh-data\temp\py-agent-err.log"},
-    {"name": "oa-approval", "port": 7000,
-     "workdir": r"D:\project\oa-approval",
-     "start": ["java", "-jar", r"D:\project\oa-approval\target\oa-approval-1.0.0.jar"],
-     "log": r"D:\dsh-data\temp\oa-service.log", "err": r"D:\dsh-data\temp\oa-service-err.log"},
 ]
 
 state = {s["name"]: {"fails": 0, "cooldown_until": 0.0} for s in SERVICES}
