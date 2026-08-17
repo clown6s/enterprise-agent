@@ -56,6 +56,18 @@ def parse_bytes(filename: str, data: bytes) -> str:
     return ""   # 不支持的类型 → 空文本（调用方回错误）
 
 
+def explain_parse_failure(filename: str, data: bytes) -> str:
+    """空解析结果的失败原因（诊断细化——曾一律报"图片无法识别/不支持的
+    格式"，老 .doc 改扩展名冒充 .docx 无从区分）"""
+    if data[:4] == b"\xd0\xcf\x11\xe0":   # OLE 魔数：老 .doc/.xls 二进制
+        return "检测到老 .doc 二进制格式（仅改扩展名不是真正的 docx）——请用 Word/WPS 打开后「另存为」docx 再上传"
+    if data[:4] == b"PK\x03\x04":         # 真 docx（zip）但解析为空
+        return "docx 解析不出内容（可能是空白文档、特殊加密或纯图片型文档）"
+    if data[:5] == b"%PDF-":
+        return "PDF 解析不出内容（扫描件图片无法识别，或文件损坏）"
+    return "无法识别的文件格式"
+
+
 def _parse_csv(data: bytes) -> str:
     """CSV 解析：逐级编码回退 + 分隔符自检（逗号/制表符/分号）。
     输出行 " | " 拼接（与 docx 表格同一格式，切分不感知差异）。"""
@@ -139,7 +151,9 @@ def _parse_docx(data: bytes) -> str:
                 parts.append("## 图片内容")
                 parts.extend(ocr_parts)
         return "\n".join(parts)
-    except Exception:
+    except Exception as e:
+        # 解析异常必须可见（曾静默返空——上传失败无法区分"格式不对"和"解析 bug"）
+        print(f"[parse] docx 解析失败: {type(e).__name__}: {str(e)[:150]}")
         return ""
 
 

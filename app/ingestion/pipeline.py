@@ -188,8 +188,9 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
                 "chunks": dup.get("chunks", 0), "duplicate": True}
     text = parse.parse_bytes(filename, data)
     if not text or not text.strip():
-        _log("parse_failed", file=filename, size=len(data))
-        return {"error": f"未从《{filename}》中解析出文本（图片无法识别/不支持的格式）"}
+        reason = parse.explain_parse_failure(filename, data)
+        _log("parse_failed", file=filename, size=len(data), reason=reason)
+        return {"error": f"未从《{filename}》中解析出文本：{reason}"}
     chunks, pages = chunk_text(text, max_chars=MAX_CHARS, overlap=OVERLAP)
     if not chunks:
         return {"error": f"《{filename}》切分后无内容。"}
