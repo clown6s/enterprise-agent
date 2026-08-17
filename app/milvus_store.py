@@ -23,14 +23,23 @@ _collection = None
 
 def _ensure_database() -> None:
     """业务库幂等就绪（裸 Milvus 首启自动建库——上传路径不再依赖人工建库；
-    曾只靠迁移脚本建集合，Milvus 重建后首次上传必失败）。"""
-    if not connections.has_connection("default"):
-        connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
-                            db_name="default")
-    if config.MILVUS_DB not in utility.list_databases():
-        utility.create_database(config.MILVUS_DB)
-        print(f"[milvus] 数据库 {config.MILVUS_DB} 已创建")
-    connections.disconnect("default")
+    曾只靠迁移脚本建集合，Milvus 重建后首次上传必失败）。
+    pymilvus 3.x 的 db 管理 API 在 MilvusClient 上（utility.list_databases
+    已被移除——曾在此 AttributeError）。"""
+    try:
+        from pymilvus import MilvusClient
+        client = MilvusClient(uri=f"http://{config.MILVUS_HOST}:{config.MILVUS_PORT}")
+        try:
+            if config.MILVUS_DB not in client.list_databases():
+                client.create_database(config.MILVUS_DB)
+                print(f"[milvus] 数据库 {config.MILVUS_DB} 已创建")
+        finally:
+            client.close()   # 释放 MilvusClient 在 ORM 注册表留下的占位连接，
+                             # 否则与随后的 connections.connect 打架（ConnectionNotExist）
+    except Exception as e:
+        print(f"[milvus] 数据库就绪检查失败（继续尝试直连业务库）: {e!r}")
+    if connections.has_connection("default"):
+        connections.disconnect("default")
     connections.connect(host=config.MILVUS_HOST, port=config.MILVUS_PORT,
                         db_name=config.MILVUS_DB)
 
