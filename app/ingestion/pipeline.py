@@ -102,7 +102,11 @@ def _embed_batch_with_retry(texts: list[str], retries: int = 2) -> list[list[flo
 
 def _find_duplicate(sha: str) -> dict | None:
     """按内容 sha256 查已入库文档（重复上传防护——曾同一文件传两次生成
-    两套 chunk，检索命中重复来源，知识库污染）"""
+    两套 chunk，检索命中重复来源，知识库污染）。
+    注册表命中后必须验证文档还在向量库里（Milvus 重建后注册表残留，
+    曾把重传同文件当重复跳过——库空着却永远传不进去）；全表扫描，任一
+    条记录对应的文档在库即真重复，全残留则清掉并视为新文档。"""
+    stale = False
     try:
         with open(_INGESTED_FILE, encoding="utf-8") as f:
             for line in f:
@@ -110,11 +114,33 @@ def _find_duplicate(sha: str) -> dict | None:
                     e = json.loads(line)
                 except ValueError:
                     continue
-                if e.get("sha") == sha:
+                if e.get("sha") != sha:
+                    continue
+                if milvus_store.has_document(e.get("docId", "")):
                     return e
+                stale = True
     except OSError:
-        pass
+        return None
+    if stale:
+        _prune_stale(sha)
     return None
+
+
+def _prune_stale(sha: str) -> None:
+    """清掉注册表里向量库中已不存在的残留记录（Milvus 重建场景，
+    懒清理：只动当前 sha，不做全量 has_document 检查）"""
+    try:
+        with open(_INGESTED_FILE, encoding="utf-8") as f:
+            entries = [json.loads(l) for l in f if l.strip()]
+        kept = [e for e in entries
+                if not (e.get("sha") == sha
+                        and not milvus_store.has_document(e.get("docId", "")))]
+        if len(kept) != len(entries):
+            with open(_INGESTED_FILE, "w", encoding="utf-8") as f:
+                for e in kept:
+                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
+    except (OSError, ValueError):
+        pass
 
 
 def _record_ingested(sha: str, doc_id: str, filename: str, title: str, chunks: int) -> None:
