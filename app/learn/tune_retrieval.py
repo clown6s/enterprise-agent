@@ -11,8 +11,6 @@ import json
 import os
 import sys
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-
 from ..service.retrieval import current_params, retrieve
 from . import eval_engine
 
@@ -80,4 +78,7 @@ def tune() -> dict:
 
 
 if __name__ == "__main__":
+    # stdout 重配只在直接运行时生效（曾放模块顶层——被 import 时会劫持
+    # 导入方的标准输出，副作用炸弹）
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     tune()
