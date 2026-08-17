@@ -142,19 +142,33 @@ _DIM_CHECKS = [
     (re.compile(r"体重|减肥|肥胖"), re.compile(r"体重|肥胖")),
 ]
 
+# 检索同义词组（查询→资料词汇对齐，按领域分组，发现新不对齐=加一行）：
+# terms=查询侧触发词；expand=资料侧扩展短语（独立检索词，不进主查询；
+# 只放桥接词——曾放"处罚/罚款"类高频词把主查询稀释）
+_SYNONYM_GROUPS = [
+    {"terms": ["报销", "报账"], "expand": "报账 差旅 费用报销"},
+    {"terms": ["请假", "休假", "调休"], "expand": "年假 事假 调休 休假"},
+    {"terms": ["工资", "薪资", "薪酬"], "expand": "薪水 薪酬 待遇"},
+    {"terms": ["斗殴", "打架"], "expand": "结伙 殴打"},
+    {"terms": ["制度", "规定", "规章"], "expand": "办法 条例 规范 规章"},
+    {"terms": ["员工", "同事"], "expand": "职工 人员"},
+    {"terms": ["智能体", "Agent"], "expand": "智能体 Agent"},
+]
 
-def _expand_query(query: str) -> str:
-    """确定性查询扩展：问句里的维度词（饮食/用药/运动…）追加其资料侧
-    同义词——检索词汇对齐（实况：问"饮食注意"，OCR 表格用"食物/高钠/
-    低盐"词汇，BM25 和语义都召不回，只命中"可采纳饮食指导原则"元信息句，
-    闸门拒绝后带来源兜底）。扩展词来自 _DIM_CHECKS 的资料侧模式。"""
+
+def _expand_queries(query: str) -> list[str]:
+    """确定性查询扩展（多查询并联，不拼串——曾把扩展词拼进主查询，
+    高频词如"处罚/罚款/拘留"稀释 BM25：纯"结伙斗殴"检索 GT 排第一，
+    扩展串检索反而掉出前 12 的实况）。返回 ≤2 条扩展检索短语，与主查询
+    并联检索后并集重排。词表 _SYNONYM_GROUPS + _DIM_CHECKS 资料侧。"""
     extra = []
     for q_pat, c_pat in _DIM_CHECKS:
         if q_pat.search(query):
             extra.append(c_pat.pattern.replace("|", " "))
-    if not extra:
-        return query
-    return f"{query} {' '.join(extra)}".strip()
+    for group in _SYNONYM_GROUPS:
+        if any(t in query for t in group["terms"]):
+            extra.append(group["expand"])
+    return extra[:2]
 
 
 def _attention_gap(query: str, context: str) -> bool:
@@ -343,17 +357,17 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     search_query = _resolve_query(query, turns)
     # 检索词=查询扩展版（维度词追加资料侧同义词）；闸门评审仍用 clean 的
     # search_query——扩展词会干扰评审员（"…饮食 低盐 低脂 膳食"vs 答案）
-    hits = retrieval.retrieve(_expand_query(search_query), user=user)
+    hits = retrieval.retrieve(search_query, extra_queries=_expand_queries(search_query), user=user)
     # 检索双保险：改写句空手且与原句不同 → 原句再试（防改写改错）
     if not hits and search_query != query:
-        hits = retrieval.retrieve(_expand_query(query), user=user)
+        hits = retrieval.retrieve(query, extra_queries=_expand_queries(query), user=user)
         if hits:
             search_query = query
     # 口语化改写重试：仍空手且问句值得改写（>4 字）→ 规范问法再试一次
     if not hits and len(re.sub(r"\s+", "", query)) > 4:
         rewritten = _rewrite_query(query)
         if rewritten and rewritten != query:
-            hits = retrieval.retrieve(_expand_query(rewritten), user=user)
+            hits = retrieval.retrieve(rewritten, extra_queries=_expand_queries(rewritten), user=user)
             if hits:
                 search_query = rewritten
     # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
@@ -554,17 +568,17 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     # 知识问答：预检索（空手 → 元问题用历史 / 有文件上下文用文件 → 图谱-only
     # 兜底 → 仍空 → 兜底句式）——与非流式路径同步
     search_query = _resolve_query(query, turns)
-    hits = retrieval.retrieve(_expand_query(search_query), user=user)
+    hits = retrieval.retrieve(search_query, extra_queries=_expand_queries(search_query), user=user)
     # 检索双保险：改写句空手且与原句不同 → 原句再试（防改写改错）
     if not hits and search_query != query:
-        hits = retrieval.retrieve(_expand_query(query), user=user)
+        hits = retrieval.retrieve(query, extra_queries=_expand_queries(query), user=user)
         if hits:
             search_query = query
     # 口语化改写重试：仍空手且问句值得改写（>4 字）→ 规范问法再试一次
     if not hits and len(re.sub(r"\s+", "", query)) > 4:
         rewritten = _rewrite_query(query)
         if rewritten and rewritten != query:
-            hits = retrieval.retrieve(_expand_query(rewritten), user=user)
+            hits = retrieval.retrieve(rewritten, extra_queries=_expand_queries(rewritten), user=user)
             if hits:
                 search_query = rewritten
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""

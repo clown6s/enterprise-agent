@@ -50,9 +50,12 @@ def current_params() -> dict:
 def retrieve(query: str, *, top_k: int | None = None,
              min_score: float | None = None,
              rerank_top_n: int | None = None,
+             extra_queries: list[str] | None = None,
              user: str = "") -> list[dict]:
     """返回 [{text, document_id, title, source, score}]，按相关度降序。
-    user：飞书 open_id/后台用户名——经 doc_acl 转成 Milvus expr 过滤（None=不过滤）。"""
+    user：飞书 open_id/后台用户名——经 doc_acl 转成 Milvus expr 过滤（None=不过滤）。
+    extra_queries：扩展检索短语（同义词桥接）——各自独立检索后与主查询
+    结果并集再重排（曾拼进主查询——高频扩展词稀释 BM25 的实况）。"""
     params = current_params()
     top_k = top_k if top_k is not None else params["top_k"]
     min_score = min_score if min_score is not None else params["min_score"]
@@ -71,8 +74,29 @@ def retrieve(query: str, *, top_k: int | None = None,
         hits = milvus_store.dense_search(vec, top_k, expr=expr)
     if not hits:
         return []
-    # rerank 精排（软依赖：rerank 挂了回退原始顺序+分数过滤）
-    reranked = embeddings.rerank(query, [h["text"] for h in hits],
+    # 扩展短语并联检索：并集去重（按 text），主查询结果保留原序优先
+    for eq in (extra_queries or []):
+        if not eq.strip():
+            continue
+        try:
+            eh = milvus_store.search(embeddings.embed(eq), eq, top_k=top_k, expr=expr)
+        except Exception:
+            continue
+        seen = {h["text"] for h in hits}
+        for h in eh:
+            if h["text"] not in seen:
+                seen.add(h["text"])
+                hits.append(h)
+        if len(hits) >= 20:
+            break   # rerank 候选上限，防扩展灌爆
+    hits = hits[:20]
+    # rerank 精排（软依赖：rerank 挂了回退原始顺序+分数过滤）。
+    # 重排词 = 主查询 + 扩展短语（词汇对齐层：曾用干净主查询重排并集候选，
+    # 饮食表格 chunk 全灭——"饮食"与"食物/膳食"不对齐在重排层同样存在）
+    rerank_q = query
+    if extra_queries:
+        rerank_q = f"{query} {' '.join(e for e in extra_queries if e.strip())}"
+    reranked = embeddings.rerank(rerank_q, [h["text"] for h in hits],
                                  top_n=rerank_top_n or config.RERANK_TOP_N)
     if reranked:
         kept = []
