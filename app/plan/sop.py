@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-SOP 状态机引擎（执行准确的核心）。
+SOP 状态机引擎（执行准确的核心）——组件化：步骤描述符 + 确定性 handler，
+新增 SOP = 定义 steps 顺序 + 每步 handler + 注册表加一行（借鉴 ragflow agent
+component 的结构；曾 SOP 逻辑硬编码在 execute 的 if 分支里，加流程要写整条）。
 
-请假 SOP 四步：查员工 → LLM 提取参数 → 确定性校验 → 提交 OA → 回执。
+请假 SOP：查员工 → LLM 提取参数 → 确定性校验 → 提交前确认 → 提交 OA → 回执。
 关键设计（血泪教训）：
 1. 校验失败是确定性的——失败信息直接输出，禁止让模型包装（模型曾把失败改写成"已提交"）
 2. 每一步落执行审计（logs/execution.jsonl），入参出参可回放
@@ -33,13 +35,17 @@ def _audit(sop: str, step: str, input_: dict, output: str, seconds: float) -> No
         pass
 
 
-# ---------------- SOP 定义 ----------------
+# ---------------- SOP 定义（组件化：步骤描述符 + 确定性 handler） ----------------
+# 借鉴 ragflow agent component：新增 SOP = 定义步骤顺序 + 每个步骤的 handler，
+# 注册表加一行即可——不用再写整条状态机代码（曾 SOP 逻辑硬编码在 execute 分支里）。
 
 @dataclass
 class SopDefinition:
     code: str
     name: str
     keywords: list[str]        # 触发词（含任一即进入 SOP）
+    steps: list[str]           # 步骤名序列（执行顺序）
+    handlers: dict             # 步骤名 → handler(state) → (终止?, 结果)
 
     def matches(self, query: str) -> bool:
         return any(k in query for k in self.keywords)
@@ -49,10 +55,6 @@ class SopDefinition:
 _LEAVE_KEYWORDS = ["提交请假", "帮我请假", "帮我请", "申请年假", "请事假", "请病假", "请年假",
                    "请调休", "请个假", "请一天假", "请两天假", "请三天假", "请半天假",
                    "请假一天", "请假两天", "请假三天"]
-
-LEAVE_SOP = SopDefinition(code="leave_action", name="请假申请", keywords=_LEAVE_KEYWORDS)
-
-SOP_REGISTRY = [LEAVE_SOP]
 
 # ---------------- 管理后台开关接线 ----------------
 # sop 表 enabled 开关（TTL 60s 缓存；曾只存储不消费——后台禁用请假 SOP，
@@ -230,59 +232,71 @@ def try_confirm_or_cancel(chat_id: str, query: str) -> dict | None:
     clear_pending(chat_id)
     if q in _CONFIRM_WORDS:
         _audit("leave_action", "user_confirmed", pending["params"], pending["emp"].get("realName", ""), 0.0)
-        return _submit_leave(pending["params"], pending["emp"])
+        return _finish_submit(pending["params"], pending["emp"])
     return {"answer": "已取消，未提交请假申请。", "route": "SOP"}
 
 
-def _execute_leave(query: str, chat_id: str = "") -> dict:
-    """请假 SOP 主流程：查名册 → 提取 → 校验 →（提交前确认）→ 提交 → 回执"""
-    start_ts = time.time()
-    # 步骤1：查员工名册
-    employees = oa.employees() or []
-    if not employees:
-        return {"answer": "请假服务暂不可用（OA 系统未响应），请稍后再试。", "route": "SOP"}
-    _audit("leave_action", "oa_employee_list", {}, f"{len(employees)}人", time.time() - start_ts)
+# ---------------- 请假 SOP 步骤 handler（每步返回 (终止?, 结果)） ----------------
 
-    # 步骤2：LLM 提取参数（时间锚点注入）
+def _h_load_employees(state: dict) -> tuple[bool, dict | None]:
+    """步骤1：查员工名册（OA 不响应即终止——确定性错误文案）"""
+    start_ts = time.time()
+    employees = oa.employees() or []
+    _audit("leave_action", "oa_employee_list", {}, f"{len(employees)}人", time.time() - start_ts)
+    if not employees:
+        return True, {"answer": "请假服务暂不可用（OA 系统未响应），请稍后再试。", "route": "SOP"}
+    state["employees"] = employees
+    return False, None
+
+
+def _h_extract(state: dict) -> tuple[bool, dict | None]:
+    """步骤2：LLM 提取参数（时间锚点注入）"""
     now = datetime.now()
-    names = "、".join(e.get("realName", "") for e in employees)
+    names = "、".join(e.get("realName", "") for e in state["employees"])
     t0 = time.time()
     raw = llm.chat(
         "", _EXTRACT_PROMPT.format(
             today=now.strftime("%Y-%m-%d"), week="一二三四五六日"[now.weekday()],
             tomorrow=(now + timedelta(days=1)).strftime("%Y-%m-%d"),
             after_tomorrow=(now + timedelta(days=2)).strftime("%Y-%m-%d"),
-            names=names, query=query),
+            names=names, query=state["query"]),
         model=config.VERIFY_MODEL, base=config.DASHSCOPE_BASE, key=config.DASHSCOPE_KEY,
         temperature=0.1,
     )
-    params = _parse_json(raw) or {}
-    _audit("leave_action", "extract", {"query": query}, json.dumps(params, ensure_ascii=False),
-           time.time() - t0)
+    state["params"] = _parse_json(raw) or {}
+    _audit("leave_action", "extract", {"query": state["query"]},
+           json.dumps(state["params"], ensure_ascii=False), time.time() - t0)
+    return False, None
 
-    # 步骤3：确定性校验（失败即终止，不做 LLM 包装）
+
+def _h_validate(state: dict) -> tuple[bool, dict | None]:
+    """步骤3：确定性校验（失败即终止，不做 LLM 包装——防"编造成功"）"""
     t0 = time.time()
-    error = _validate_leave(params, employees)
-    _audit("leave_action", "validate", params, error or "通过", time.time() - t0)
+    error = _validate_leave(state["params"], state["employees"])
+    _audit("leave_action", "validate", state["params"], error or "通过", time.time() - t0)
     if error:
-        # 防"编造成功"：校验失败信息确定性直出，模型没有机会改写成"已提交"
-        return {"answer": error, "route": "SOP"}
+        return True, {"answer": error, "route": "SOP"}
+    state["emp"] = next(e for e in state["employees"]
+                        if e.get("realName") == state["params"]["userName"].strip())
+    return False, None
 
-    emp = next(e for e in employees if e.get("realName") == params["userName"].strip())
 
-    # 提交前确认（人机协同闸门）：落待确认单，等用户"确认"；
-    # 存储失败降级为直接提交——功能不因 MySQL 抖动而断
-    if chat_id and save_pending(chat_id, params, emp):
+def _h_confirm(state: dict) -> tuple[bool, dict | None]:
+    """提交前确认（人机协同闸门）：落待确认单等用户"确认"；
+    存储失败降级为直接提交——功能不因 MySQL 抖动而断"""
+    params, emp = state["params"], state["emp"]
+    if state["chat_id"] and save_pending(state["chat_id"], params, emp):
         _audit("leave_action", "pending_confirm", params, emp.get("realName", ""), 0.0)
-        return {"answer": (f"请确认请假申请：{emp.get('realName')}，"
-                           f"{params['startTime']} 至 {params['endTime']}，"
-                           f"事由：{params['reason'].strip()}。\n"
-                           f"回复「确认」提交，回复「取消」放弃。"), "route": "SOP"}
-    return _submit_leave(params, emp)
+        return True, {"answer": (f"请确认请假申请：{emp.get('realName')}，"
+                                 f"{params['startTime']} 至 {params['endTime']}，"
+                                 f"事由：{params['reason'].strip()}。\n"
+                                 f"回复「确认」提交，回复「取消」放弃。"), "route": "SOP"}
+    return False, None
 
 
-def _submit_leave(params: dict, emp: dict) -> dict:
-    """步骤4-5：提交 OA + 回执（参数已通过确定性校验；确认闸门之后或降级直提）"""
+def _h_submit(state: dict) -> tuple[bool, dict | None]:
+    """步骤4：提交 OA（参数已通过确定性校验；确认闸门之后或降级直提）"""
+    params, emp = state["params"], state["emp"]
     start_date = datetime.fromisoformat(params["startTime"])
     end_date = datetime.fromisoformat(params["endTime"])
     payload = {
@@ -299,22 +313,57 @@ def _submit_leave(params: dict, emp: dict) -> dict:
     _audit("leave_action", "oa_leave_submit", payload,
            json.dumps(resp, ensure_ascii=False)[:200], time.time() - t0)
     if not resp or resp.get("code") != 200:
-        return {"answer": "请假提交失败：OA 系统未受理，请稍后再试。", "route": "SOP"}
-    apply_no = resp.get("data") or ""
+        return True, {"answer": "请假提交失败：OA 系统未受理，请稍后再试。", "route": "SOP"}
+    state["apply_no"] = resp.get("data") or ""
+    return False, None
 
-    # 回执（数据全来自 OA 返回，模型只做措辞包装）
+
+def _h_receipt(state: dict) -> tuple[bool, dict | None]:
+    """步骤5：回执（数据全来自 OA 返回，模型只做措辞包装）"""
+    emp = state["emp"]
     receipt_prompt = (
         "用户已成功提交请假申请。请用一句话回复用户，必须包含以下信息：\n"
-        f"申请单号：{apply_no}；姓名：{emp.get('realName')}；"
-        f"时间：{params['startTime']} 至 {params['endTime']}；"
-        f"事由：{params['reason'].strip()}。\n"
+        f"申请单号：{state['apply_no']}；姓名：{emp.get('realName')}；"
+        f"时间：{state['params']['startTime']} 至 {state['params']['endTime']}；"
+        f"事由：{state['params']['reason'].strip()}。\n"
         "只输出这句话，不要编造其他信息（如审批人、预计通过时间）。")
     receipt = llm.chat("", receipt_prompt, model=config.MAIN_MODEL,
                        base=config.MAIN_BASE, key=config.MAIN_KEY)
-    return {"answer": receipt.strip(), "route": "SOP"}
+    return True, {"answer": receipt.strip(), "route": "SOP"}
+
+
+def _finish_submit(params: dict, emp: dict) -> dict:
+    """确认后/降级直提的收尾：提交 → 回执（try_confirm_or_cancel 复用）"""
+    state = {"params": params, "emp": emp, "chat_id": ""}
+    stop, result = _h_submit(state)
+    if stop:
+        return result
+    return _h_receipt(state)[1]
+
+
+_LEAVE_HANDLERS = {
+    "load_employees": _h_load_employees,
+    "extract": _h_extract,
+    "validate": _h_validate,
+    "confirm": _h_confirm,
+    "submit": _h_submit,
+    "receipt": _h_receipt,
+}
+
+LEAVE_SOP = SopDefinition(
+    code="leave_action", name="请假申请", keywords=_LEAVE_KEYWORDS,
+    steps=["load_employees", "extract", "validate", "confirm", "submit", "receipt"],
+    handlers=_LEAVE_HANDLERS)
+
+SOP_REGISTRY = [LEAVE_SOP]
 
 
 def execute(sop: SopDefinition, query: str, chat_id: str = "") -> dict:
-    if sop.code == "leave_action":
-        return _execute_leave(query, chat_id)
-    return {"answer": "该流程暂未实现。", "route": "SOP"}
+    """通用 SOP 执行器：按步骤描述符顺序执行，步骤返回 (终止?, 结果)。
+    新增 SOP = 定义 steps 顺序 + 每步确定性 handler + 注册表加一行。"""
+    state = {"query": query, "chat_id": chat_id}
+    for step_name in sop.steps:
+        stop, result = sop.handlers[step_name](state)
+        if stop:
+            return result
+    return {"answer": "该流程未完成。", "route": "SOP"}
