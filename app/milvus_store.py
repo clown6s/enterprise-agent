@@ -14,6 +14,7 @@ search() 用混合检索：稠密向量（语义召回）+ BM25（关键词召�
 create_collection_v2() 建集合（含 BM25 函数字段与 HNSW/稀疏索引）；
 旧集合（documents）仅作迁移源，见 scripts/migrate_v2.py。
 """
+import re
 import threading
 import time
 
@@ -290,9 +291,16 @@ def list_documents() -> list[dict]:
     return list(docs.values())
 
 
+# document_id 合法字符白名单（expr 注入防线：曾直接 f-string 拼 Milvus
+# 表达式——doc_id 含引号可破坏 expr 删掉别的文档）
+_SAFE_DOC_ID = re.compile(r"^[0-9a-zA-Z\-_]{1,128}$")
+
+
 def has_document(document_id: str) -> bool:
     """按 document_id 查是否存在（OCR 入库去重用——曾同一识别内容重复
     入库产生重复 chunk）"""
+    if not _SAFE_DOC_ID.match(document_id or ""):
+        return False
     try:
         return bool(_iter_rows(_get_client(), f'document_id == "{document_id}"', ["id"]))
     except Exception:
@@ -304,6 +312,8 @@ def update_document_meta(document_id: str, title: str | None = None,
     """按 document_id 更新全部 chunk 的标题/来源（知识库文档改名治理用）。
     返回更新条数；失败返回 0。"""
     if not title and not source:
+        return 0
+    if not _SAFE_DOC_ID.match(document_id or ""):
         return 0
     try:
         rows = _iter_rows(_get_client(), f'document_id == "{document_id}"', ["*"])
@@ -324,9 +334,11 @@ def update_document_meta(document_id: str, title: str | None = None,
 
 def delete_by_document_id(document_id: str) -> int:
     """按 document_id 删除全部 chunk（知识库删文档用）"""
+    if not _SAFE_DOC_ID.match(document_id or ""):
+        return 0
     try:
         res = _get_client().delete(config.MILVUS_COLLECTION,
-                               filter=f'document_id == "{document_id}"')
+                                   filter=f'document_id == "{document_id}"')
         return int(res.get("delete_count", 0))
     except Exception:
         return 0

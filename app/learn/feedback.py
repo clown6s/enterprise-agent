@@ -104,10 +104,17 @@ def enqueue_review(query: str, answer: str, sources: str = "") -> bool:
     """
     审核入队：低把握答案（兜底句式触发 / 图谱-only 兜底）自动进人工审核队列，
     管理后台"答案审核"页审批。软依赖——入队失败只记日志不影响回答。
-    """
+    同问法已有 PENDING 记录则跳过（曾重复入队——同一问法每次被拒插一条，
+    队列被同一问题刷爆）。"""
     try:
         conn = _conn()
         with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM answer_review WHERE query=%s AND status='PENDING' LIMIT 1",
+                (query[:500],))
+            if cur.fetchone():
+                conn.close()
+                return False
             cur.execute(
                 "INSERT INTO answer_review (query, answer, sources, employee_id, user, status) "
                 "VALUES (%s, %s, %s, 0, 'system', 'PENDING')",
@@ -142,6 +149,10 @@ def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dic
     # 曾用哈希标题"问答采纳-0cae5983"，机器名无法溯源，治理实况）。
     # 锚定句是展示层，剥掉再入库——否则新答案引用它再被锚定 → 双重锚定（实况）
     from .. import guards
+    # 回流投毒防线：采纳内容进知识库前必须过注入检查（曾无检查——
+    # 先发一条含注入的问答再点👍，注入内容入库毒化所有检索）
+    if guards.contains_injection(f"{query}\n{answer}"):
+        return {"adoptId": qh, "query": query, "error": "内容含异常指令，已拒绝采纳"}
     doc_id = f"adopt-{qh[:16]}"
     # 重复采纳去重：同一问法点两次👍会生成同 doc_id 两套 chunk，污染检索
     if milvus_store.has_document(doc_id):
