@@ -47,13 +47,16 @@ _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
 
 def route(query: str, has_history: bool = False) -> str:
     """意图路由（正则启发式，不调路由模型——模型路由不可靠已被验证过）。
-    has_history：指代词/元问题 + 有对话历史 → 不追问，走知识问答
-    （指代走改写补全；"什么意思"走历史作答分支）。"""
-    if _CHAT_WORDS.search(query.strip()):
+    has_history：追问形态（指代/衔接/省略三类，与 _is_followup 同口径）+
+    有对话历史 → 不追问，走知识问答（指代走改写补全；"什么意思"走历史作答）。
+    曾只放行指代与元问题——"怎么办"（省略句）有历史仍被打发去 CLARIFY，
+    与追问统一解析口径不一致（不变量测试抓出的实况）。"""
+    q = query.strip()
+    if _CHAT_WORDS.search(q):
         return "CHAT"
-    if _CLARIFY_GUARD.search(query.strip()) and not _DATA_DAYS.search(query):
-        if has_history and (_REFERENTS.search(query.strip())
-                            or _META_QUESTION.search(query.strip())):
+    if _CLARIFY_GUARD.search(q) and not _DATA_DAYS.search(q):
+        if has_history and (_REFERENTS.search(q) or _META_QUESTION.search(q)
+                            or _CONNECTORS.match(q) or _QUESTION_ELIDE.match(q)):
             return "KNOWLEDGE_QA"
         return "CLARIFY"
     return "KNOWLEDGE_QA"

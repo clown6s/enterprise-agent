@@ -5,6 +5,9 @@ from .base import DomainPlugin
 PLUGIN = DomainPlugin(
     code="enterprise",
     name="企业法律",
+    # 金额量级单位：经营/财务资料常见"X 万/X 亿"——不变量测试抓到的缺口：
+    # 万/亿 不在单位表时"报销 99 万"这类编造数字逃过术语核对
+    num_units=["万", "亿"],
     synonym_groups=[
         # terms=查询侧触发词；expand=资料侧扩展短语（独立检索词，只放
         # 桥接词——曾放"处罚/罚款"类高频词把主查询稀释的实况）

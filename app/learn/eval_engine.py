@@ -29,11 +29,13 @@ def run_answer_case(case: dict) -> dict:
     query = case["query"]
     expect = case.get("expect", {})
     conversation_id = f"eval-{case.get('id', 'case')}"
-    # 追问类用例预置多轮历史（eval 会话本身不落历史防污染；追问逻辑
-    # 需要上一轮内容——清空后重建，防重复跑分历史堆积）
+    # 每用例独立会话：先清空再按需预置历史。曾只在有 history 字段时清空——
+    # 无历史用例的会话里残留早期版本跑分写下的轮次（旧代码不跳 eval 会话），
+    # has_history 恒 True，追问路由改变后 guard-010 被残史带偏到
+    # KNOWLEDGE_QA 的实况。清空无条件执行（历史字段=预置内容，非清空条件）
+    from ..service import history as _history
+    _history.clear_conversation(conversation_id)
     if case.get("history"):
-        from ..service import history as _history
-        _history.clear_conversation(conversation_id)
         for t in case["history"]:
             _history.save_turn(conversation_id, t.get("q", ""), t.get("a", ""))
     start = time.time()

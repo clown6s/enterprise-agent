@@ -157,6 +157,14 @@ def expand(query: str, limit: int = 20) -> str:
         return ""
     if not rows:
         return ""
+    # 兜底相关性闸门（确定性）：查询的实质词（≥3 字候选）一个都没命中、
+    # 命中的全是 ≤2 字短词 → 图谱内容与查询实质无关，视为无结果。
+    # 曾"新员工入职需要带什么材料"命中民法典"材料"节点（2 字），模型
+    # 时凑数时拒绝（非确定，回归时挂时过）——确定性拒绝后由兜底句式接管
+    long_cands = [c for c in candidates if len(c) >= 3]
+    matched = {r["src"] for r in rows}
+    if long_cands and not (matched & set(long_cands)):
+        return ""
     # 按（源，关系链）分组，转自然语言
     grouped: dict[tuple[str, str], set[str]] = {}
     for r in rows:

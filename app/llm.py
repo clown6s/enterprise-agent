@@ -54,8 +54,13 @@ def chat_chain(system: str, user: str, *,
     for purpose in purposes:
         m = model_config(purpose)
         try:
+            opts = {}
+            if m.get("extra"):
+                opts["extra"] = m["extra"]
+            if "timeout" in m:
+                opts["timeout"] = m["timeout"]
             return chat(system, user, model=m["model"], base=m["base"], key=m["key"],
-                        extra=m.get("extra"), **kw)
+                        **opts, **kw)
         except Exception as e:
             last = e
             print(f"[llm] {purpose} 调用失败，降级下一棒: {e!r}")
@@ -71,8 +76,9 @@ def chat_stream_chain(system: str, user: str, *,
         m = model_config(purpose)
         started = False
         try:
+            opts = {"timeout": m["timeout"]} if "timeout" in m else {}
             for chunk in chat_stream(system, user, model=m["model"], base=m["base"],
-                                     key=m["key"]):
+                                     key=m["key"], **opts):
                 started = True
                 yield chunk
             return
@@ -136,9 +142,11 @@ def chat(system: str, user: str, *,
          base: str = config.MAIN_BASE,
          key: str = config.MAIN_KEY,
          temperature: float = 0.7,
-         extra: dict | None = None) -> str:
+         extra: dict | None = None,
+         timeout: float = 120) -> str:
     """一次性对话，返回完整文本；失败抛异常（调用方决定兜底策略）。
-    extra：附加请求参数（如 {"enable_thinking": False} 关闭思考模式省延迟）。"""
+    extra：附加请求参数（如 {"enable_thinking": False} 关闭思考模式省延迟）。
+    timeout：超时秒数（注册表条目可按用途声明，降级链据此控制换棒时机）。"""
     _t0 = time.time()
     payload = {
         "model": model,
@@ -152,7 +160,7 @@ def chat(system: str, user: str, *,
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
         json=payload,
-        timeout=120,
+        timeout=timeout,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -164,7 +172,8 @@ def chat(system: str, user: str, *,
 def chat_stream(system: str, user: str, *,
                 model: str = config.MAIN_MODEL,
                 base: str = config.MAIN_BASE,
-                key: str = config.MAIN_KEY) -> Iterator[str]:
+                key: str = config.MAIN_KEY,
+                timeout: float = 180) -> Iterator[str]:
     """
     流式对话生成器：每次 yield 一段增量文本。
     流式协议是 SSE：每行 "data: {json}"，[DONE] 结束。
@@ -181,7 +190,7 @@ def chat_stream(system: str, user: str, *,
             "temperature": 0.7,
             "stream": True,
         },
-        timeout=180,
+        timeout=timeout,
     ) as resp:
         resp.raise_for_status()
         for line in resp.iter_lines():

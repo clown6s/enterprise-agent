@@ -126,7 +126,7 @@
     "id": "auto-unhelpful-9013355e12",
     "query": "新员工入职需要带什么材料",
     "expect": {
-      "answer_not_contain": [
+      "answer_contain": [
         "暂无法回答"
       ],
       "max_seconds": 60

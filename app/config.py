@@ -34,23 +34,28 @@ ZHIPU_BASE = _env("ZHIPU_BASE", "https://open.bigmodel.cn/api/paas/v4")
 # extra：厂商特有参数随条目声明（thinking 关闭等），调用方不再传厂商参数
 # （曾 enable_thinking 硬编码在调用点，换厂商会把百炼参数发给智谱）
 MODEL_REGISTRY = {
-    "main": {"model": MAIN_MODEL, "base": MAIN_BASE, "key": MAIN_KEY},
+    # timeout：主力 60s 挂起即降级（曾硬超时 120s 才换棒，用户等 2 分钟+的
+    # 实况：qwen3-max 挂起 120s → GLM 接管 20s，答案断言全过但超时限）
+    "main": {"model": MAIN_MODEL, "base": MAIN_BASE, "key": MAIN_KEY, "timeout": 60},
     # 生成降级链第二棒：主力失败时接管生成（llm.chat_chain 按序尝试）
     "main_fallback": {"model": _env("MODEL_MAIN_FALLBACK", "glm-4.6"),
                       "base": _env("MODEL_MAIN_FALLBACK_BASE", ZHIPU_BASE),
                       "key": _env("MODEL_MAIN_FALLBACK_KEY") or ZHIPU_KEY,
-                      "extra": {"thinking": {"type": "disabled"}}},
+                      "extra": {"thinking": {"type": "disabled"}},
+                      "timeout": 90},
     # 校验=独立裁判（与生成不同厂商：系统性偏见要两个厂商同时犯才漏）。
     # 2026-08-18 探针后从 qwen3-max 切 glm-4.6：核查/评审全过，反例判定
     # 更果断（1 分 vs 基线擦边 3 分），延迟 ~2s，价格 $0.6/M 入 $2.2/M 出
     "verify": {"model": _env("MODEL_VERIFY", "glm-4.6"),
                "base": _env("MODEL_VERIFY_BASE", ZHIPU_BASE),
                "key": _env("MODEL_VERIFY_KEY") or ZHIPU_KEY,
-               "extra": {"thinking": {"type": "disabled"}}},
+               "extra": {"thinking": {"type": "disabled"}},
+               "timeout": 30},
     # 校验链第二棒：智谱挂了回退旧裁判（qwen3-max）
     "verify_fallback": {"model": "qwen3-max", "base": DASHSCOPE_BASE,
                         "key": DASHSCOPE_KEY,
-                        "extra": {"enable_thinking": False}},
+                        "extra": {"enable_thinking": False},
+                        "timeout": 30},
     # 图片→文字（PDF/docx 内嵌图 chunk 用，qwen-vl 多模态）
     "ocr": {"model": _env("MODEL_OCR", "qwen-vl-plus"),
             "base": _env("MODEL_OCR_BASE", DASHSCOPE_BASE),

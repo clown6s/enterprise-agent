@@ -9,7 +9,8 @@
 run.py                  # 启动入口：python run.py（--reload 热重载）→ 8080
 app/
   config.py             # .env 加载（根目录 .env，不是 app/.env）
-  llm.py                # qwen3-max 主力 + qwen-plus 校验层（手写 httpx OpenAI 兼容客户端）
+  llm.py                # LLM 注册表 + 降级链（chat_chain/chat_stream_chain/verify_chat）
+                        # 手写 httpx OpenAI 兼容客户端；校验=智谱 GLM-4.6 独立裁判
   prompts.py            # 提示词集中管理（系统/校验/图谱收紧规则；改提示词必须跑回归）
   embeddings.py         # BGE-M3 嵌入 + SiliconFlow bge-reranker-v2-m3 重排
   milvus_store.py       # 混合检索（dense + sparse_bm25，RRF）
@@ -66,11 +67,12 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 - 凭据（MySQL root 密码含特殊字符）：走文件传递，**绝不内联到 shell 命令**
 - 不要用"政务/纪检/信访"类措辞，用"合规/企业"等中性词
 
-## 状态（2026-08-17）
+## 状态（2026-08-18）
 
-- 功能全部完成：回归 17/17、检索 100%/MRR 0.92，飞书真机验证过（回答卡/数据卡/云文档/OCR）
+- 功能全部完成：回归 23/23、检索 100%/MRR 0.92，飞书真机验证过（回答卡/数据卡/云文档/OCR）
+- 2026-08-18 上午批次：① 跨文档拼接防线（find_mismatched_numbers 句级出处绑定，body 剥全部数字定位 + 校验提示词 spliced 段 + 高置信硬删）；② 校验换智谱 GLM-4.6（探针 scripts/probe_glm.py 取证：反例判定更果断、价格更优）+ LLM 降级链机制（chat_chain/chat_stream_chain，生成链 main→main_fallback 异厂商故障隔离，校验链 verify→verify_fallback 智谱挂了回退 qwen3-max；厂商参数 extra 随注册表条目声明，调用点不再传厂商参数）；③ 领域插件化 app/domains/（DomainPlugin 协议，行业知识与主流程解耦，.env DOMAIN_PLUGINS 开关）
 - 校验链已按"兜底句式清理 → 缺失术语硬删除 → 鉴伪断言 → 空标题清理 → 格式修复"顺序接线（含延伸服务套话拦截、提示注入拦截、graph_only 收紧规则注入校验提示词）
 - 2026-08-17 晚批次（用户全权委托）：文档解析「## 标题」块边界真实现；Milvus 检索失败日志；提示注入防护（查询级拦截+上下文级清洗）；人机协同（低把握答案自动进审核队列 + 请假 SOP 提交前确认）；工具注册表（skill 表开关 TTL 生效）；多轮对话历史（指代消解+历史作答）；检索 ACL 过滤（doc_acl → expr，user 标识从飞书/Web 贯通审计与反馈）
 - 2026-08-17 深夜批次：① Milvus 全量迁 MilvusClient API（pymilvus 3.0，requirements 锁 >=3.0.1,<3.1）+ 服务端重启自动重连 + document_id 标量索引 + client 超时 + 检索重试；② 后台首页监控全真实数据（dashboard noAnswer/feishu/adoptions、usage JSONL 多日、kb-health 双计数修复、kb-stats 真实探活/4096）；③ 借鉴 ragflow 落地：LLM 工厂注册表（MODEL_REGISTRY，加用途改 .env）、PDF 版面识别（字号判标题「## 」）、图片 OCR chunk（PDF/docx 内嵌图 → qwen-vl，扫描件可入库）、CSV 支持（编码回退+分隔符自检）、PDF 乱码拒绝、SOP 组件化（steps+handlers+通用执行器）；④ 上传链路四修：upload 端点线程池化（曾阻塞事件循环）、sha256 去重注册表、图谱构建后台化、embed_batch 批量嵌入
-- **Milvus 当前为空**（探针数据已清）。验收待用户上传文档后执行：回归 22/22 + 检索评测 + 图谱构建检查（回归不能提前跑——用户明确：文档没上传跑回归是白跑）
-- 遗留（用户明确延期）：① 部署上线；② 飞书通讯录 scopes 需用户在飞书后台勾选发布（身份层暂用 demo_data 8 人；acl.resolve_employee 恒 None 待映射）
+- 验收已完成（用户上传文档后）：回归 23/23 + 检索评测 100%/MRR 0.9167 + guards 矩阵 18/18 + 图谱构建正常
+- 待办：① ACL 身份映射（飞书 scopes 已开通、手机号匹配；Web 侧 sys_user 加 employee_id 待做）；② 不变量测试套件；③ 部署上线（用户明确先不用管）

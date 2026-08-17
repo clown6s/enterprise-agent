@@ -6,22 +6,34 @@
 
 直接 HTTP 调用，不需要独立 sidecar 进程——少一层部署。
 """
+import time
+
 import httpx
 
 from . import config
 
 
-def embed(text: str) -> list[float]:
-    resp = httpx.post(
-        f"{config.SILICONFLOW_BASE}/embeddings",
-        headers={"Authorization": f"Bearer {config.SILICONFLOW_KEY}"},
-        json={"model": config.EMBED_MODEL, "input": [text],
-              "dimensions": config.EMBED_DIM},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()["data"]
-    return data[0]["embedding"]
+def embed(text: str, retries: int = 2) -> list[float]:
+    """文本 → 向量；瞬时网络抖动自动重试（检索路径曾无重试——SiliconFlow
+    一次 ReadTimeout 整轮检索空手走兜底，有资料却答"暂无法回答"的实况）。"""
+    last: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            resp = httpx.post(
+                f"{config.SILICONFLOW_BASE}/embeddings",
+                headers={"Authorization": f"Bearer {config.SILICONFLOW_KEY}"},
+                json={"model": config.EMBED_MODEL, "input": [text],
+                      "dimensions": config.EMBED_DIM},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()["data"]
+            return data[0]["embedding"]
+        except Exception as e:
+            last = e
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))
+    raise last
 
 
 def embed_batch(texts: list[str], batch_size: int = 32) -> list[list[float]]:
