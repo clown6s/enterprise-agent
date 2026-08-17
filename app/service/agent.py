@@ -20,13 +20,15 @@ from .. import guards, llm, prompts, tools
 from ..intent import rules as intent_rules
 from ..learn import feedback, gap_discovery
 from ..plan import sop as sop_engine
-from . import docwizard, graph, retrieval, verify
+from . import docwizard, graph, history, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
 
 # ---------------- 意图与关键词模式 ----------------
 
 # 短实体名词查询（"宫崎骏"3 字）不追问：让检索兜底（无结果走 NO_ANSWER）
 _CLARIFY_GUARD = re.compile(r"这个|那个|它|他|她|怎么办|怎么弄|怎么用|什么意思")
+# 指代词：有对话历史可消解时不再追问（无历史仍走追问澄清）
+_REFERENTS = re.compile(r"这个|那个|它|他|她|上述|前面|刚刚|刚才")
 _CHAT_WORDS = re.compile(
     r"^(你好|您好|hi|hello|谢谢|你是谁|你能做什么|你叫什么|在吗|早上好|晚上好|再见|拜拜|辛苦|谢谢啦|好的|OK|ok)"
 )
@@ -35,11 +37,14 @@ _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
 
 # ---------------- 路由与工具函数 ----------------
 
-def route(query: str) -> str:
-    """意图路由（正则启发式，不调路由模型——模型路由不可靠已被验证过）"""
+def route(query: str, has_history: bool = False) -> str:
+    """意图路由（正则启发式，不调路由模型——模型路由不可靠已被验证过）。
+    has_history：指代词 + 有对话历史 → 不追问，走知识问答（历史消解指代）。"""
     if _CHAT_WORDS.search(query.strip()):
         return "CHAT"
     if _CLARIFY_GUARD.search(query.strip()) and not _DATA_DAYS.search(query):
+        if has_history and _REFERENTS.search(query.strip()):
+            return "KNOWLEDGE_QA"
         return "CLARIFY"
     return "KNOWLEDGE_QA"
 
@@ -66,6 +71,9 @@ def answer(query: str, conversation_id: str = "", file_block: str = "") -> dict:
     _t0 = _t.time()
     result = _answer_inner(query, conversation_id, file_block)
     _record_audit(query, result, _t.time() - _t0)
+    # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）
+    if result.get("route") != "GUARD" and result.get("answer") != guards.NO_ANSWER:
+        history.save_turn(conversation_id, query, result["answer"])
     return result
 
 
@@ -133,43 +141,54 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "") -
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
                 "route": "SOP", "chart": None}
 
-    r = route(query)
+    turns = history.recent_turns(conversation_id)
+    r = route(query, has_history=bool(turns))
     if r == "CHAT":
+        user_prompt = (f"{history.history_block(turns)}\n{query}" if turns else query)
         return {"answer": guards.clean_cjk_spacing(
-                    llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), query)),
+                    llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), user_prompt)),
                 "sources": [], "route": "CHAT", "chart": None}
     if r == "CLARIFY":
         return {"answer": "抱歉，我没太理解你的问题。可以再具体一点吗？比如补充对象、时间或背景。",
                 "sources": [], "route": "CLARIFY", "chart": None}
 
-    # 知识问答：预检索 →（空手/上下文被注入清洗删空 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
+    # 知识问答：预检索 →（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）→ 生成 → 校验
     hits = retrieval.retrieve(query)
     # 上下文注入清洗：知识库文档可投毒——含注入句式的句子确定性删除
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
+    hblock = history.history_block(turns)
     if not context.strip():
+        if hblock:
+            # 检索空手但有对话历史：历史消解指代/延续话题（校验依据=历史本身）
+            raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+                           f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
+            final = verify.verify(raw, hblock)
+            _maybe_enqueue_review(conversation_id, query, final)
+            return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         graph_ctx = guards.strip_injection_sentences(graph.expand(query))
         if graph_ctx:
             # 图谱-only：上下文只有图谱关联，校验层加图谱收紧规则
             context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
                        + graph_ctx)
-            user_prompt = f"【资料】\n{context}\n\n【用户问题】\n{query}"
+            user_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                           else f"【资料】\n{context}\n\n【用户问题】\n{query}")
             if file_block:
                 user_prompt = (f"【文件上下文】\n{guards.strip_injection_sentences(file_block)}\n\n"
                                + user_prompt)
             raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
                            user_prompt)
-            final = verify.verify(raw, context, graph_only=True)
+            final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context, graph_only=True)
             _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": guards.NO_ANSWER, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     sources = sorted({h["source"] for h in hits if h.get("source")})
-    raw = llm.chat(
-        prompts.SYSTEM_PROMPT.format(date=_today_line()),
-        f"【资料】\n{context}\n\n【用户问题】\n{query}",
-    )
-    final = verify.verify(raw, context)
+    gen_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                  else f"【资料】\n{context}\n\n【用户问题】\n{query}")
+    raw = llm.chat(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
+    # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
+    final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context)
     return {"answer": final, "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
 
 
@@ -232,11 +251,14 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
-    r = route(query)
+    turns = history.recent_turns(conversation_id)
+    r = route(query, has_history=bool(turns))
     yield "route", r
     if r == "CHAT":
-        # DeepSeek 流式中文偶发逐字带空格（"你好 ！ 请问"）→ 收齐后清理再整体下发
-        parts = [c for c in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()), query)]
+        # 流式中文偶发逐字带空格（"你好 ！ 请问"）→ 收齐后清理再整体下发
+        user_prompt = (f"{history.history_block(turns)}\n{query}" if turns else query)
+        parts = [c for c in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+                                             user_prompt)]
         yield "token", guards.clean_cjk_spacing("".join(parts))
         yield "sources", []
         yield "done", "[DONE]"
@@ -247,20 +269,36 @@ def answer_stream(query: str, conversation_id: str = ""):
         yield "done", "[DONE]"
         return
 
-    # 知识问答：预检索（空手/上下文被注入清洗删空 → 图谱-only 兜底 → 仍空 → 兜底句式）
+    # 知识问答：预检索（空手 → 有历史用历史作答 → 图谱-only 兜底 → 仍空 → 兜底句式）
     hits = retrieval.retrieve(query)
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
+    hblock = history.history_block(turns)
     if not context.strip():
+        if hblock:
+            # 检索空手但有对话历史：历史消解指代/延续话题（校验依据=历史本身）
+            parts = []
+            for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+                                          f"【资料】\n{hblock}\n\n【用户问题】\n{query}"):
+                parts.append(chunk)
+            final = verify.verify("".join(parts), hblock)
+            _maybe_enqueue_review(conversation_id, query, final)
+            yield "token", final
+            yield "sources", []
+            yield "done", "[DONE]"
+            return
         graph_ctx = guards.strip_injection_sentences(graph.expand(query))
         if graph_ctx:
             context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
                        + graph_ctx)
+            user_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                           else f"【资料】\n{context}\n\n【用户问题】\n{query}")
             parts = []
             for chunk in llm.chat_stream(
                     prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
-                    f"【资料】\n{context}\n\n【用户问题】\n{query}"):
+                    user_prompt):
                 parts.append(chunk)
-            final = verify.verify("".join(parts), context, graph_only=True)
+            final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context,
+                                  graph_only=True)
             _maybe_enqueue_review(conversation_id, query, final)   # 图谱-only：低把握答案进人工审核
             yield "token", final
             yield "sources", []
@@ -275,13 +313,13 @@ def answer_stream(query: str, conversation_id: str = ""):
     sources = sorted({h["source"] for h in hits if h.get("source")})
 
     # 流式链路同样先收齐全文再校验再下发（"无依据内容不出门"原则）
+    gen_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
+                  else f"【资料】\n{context}\n\n【用户问题】\n{query}")
     parts = []
-    for chunk in llm.chat_stream(
-        prompts.SYSTEM_PROMPT.format(date=_today_line()),
-        f"【资料】\n{context}\n\n【用户问题】\n{query}",
-    ):
+    for chunk in llm.chat_stream(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt):
         parts.append(chunk)
-    final = verify.verify("".join(parts), context)
+    # 校验依据含历史：指代回答引用上一轮事实时不被误判为"资料外"
+    final = verify.verify("".join(parts), f"{context}\n{hblock}" if hblock else context)
     yield "token", final
     yield "sources", sources
     yield "done", "[DONE]"

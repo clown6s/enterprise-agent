@@ -17,8 +17,8 @@ from typing import Iterator
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import mysql_store
-from ..service import agent
+from .. import guards, mysql_store
+from ..service import agent, history
 
 router = APIRouter()
 
@@ -68,8 +68,23 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
         return _unauthorized()
     query = body.get("query") or ""
     conversation_id = body.get("conversationId") or ""
+
+    def _events_with_history():
+        """流式事件包装：收齐 token 后落多轮历史（与 answer() 中央落库对齐；
+        兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流）"""
+        route, parts = "", []
+        for event, data in agent.answer_stream(query, conversation_id):
+            if event == "route":
+                route = str(data)
+            elif event == "token":
+                parts.append(str(data))
+            yield event, data
+        answer = "".join(parts)
+        if route != "GUARD" and answer and answer != guards.NO_ANSWER:
+            history.save_turn(conversation_id, query, answer)
+
     return StreamingResponse(
-        _sse(agent.answer_stream(query, conversation_id)),
+        _sse(_events_with_history()),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
