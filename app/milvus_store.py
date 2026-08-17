@@ -13,12 +13,16 @@ search() 用混合检索：稠密向量（语义召回）+ BM25（关键词召�
 create_collection_v2() 建集合（含 BM25 函数字段与 HNSW/稀疏索引）；
 旧集合（documents）仅作迁移源，见 scripts/migrate_v2.py。
 """
+import time
+
 from pymilvus import (AnnSearchRequest, Collection, CollectionSchema, DataType,
                       FieldSchema, Function, FunctionType, RRFRanker, connections, utility)
 
 from . import config
 
 _collection = None
+_last_ping: dict = {"ts": 0.0}
+_PING_TTL = 30   # 连接心跳间隔（秒）
 
 
 def _ensure_database() -> None:
@@ -45,9 +49,23 @@ def _ensure_database() -> None:
 
 
 def _col() -> Collection:
-    """懒连接单例：首次调用自动建库建集合再加载（软依赖——失败记日志，
-    异常由各调用方兜底，服务不崩）。"""
+    """懒连接单例：首次调用自动建库建集合再加载；30s TTL 心跳检测
+    Milvus 服务端重启后的陈旧连接并自动重连——曾无重连，服务端重启后
+    应用永远空检索直到自身重启（部署事故同款模式）。"""
     global _collection
+    now = time.time()
+    if _collection is not None and now - _last_ping["ts"] > _PING_TTL:
+        try:
+            _collection.num_entities   # 轻量心跳
+            _last_ping["ts"] = now
+        except Exception:
+            print("[milvus] 连接失效，自动重连")
+            _collection = None
+            if connections.has_connection("default"):
+                try:
+                    connections.disconnect("default")
+                except Exception:
+                    pass
     if _collection is None:
         try:
             _ensure_database()
@@ -57,6 +75,7 @@ def _col() -> Collection:
             print(f"[milvus] 库/集合就绪失败: {e!r}")
         _collection = Collection(config.MILVUS_COLLECTION)
         _collection.load()
+        _last_ping["ts"] = time.time()
     return _collection
 
 
@@ -92,8 +111,7 @@ def create_collection_v2(drop_existing: bool = False) -> bool:
                                    "params": {"M": 16, "efConstruction": 200}})
         col.create_index("sparse_bm25", {"index_type": "SPARSE_INVERTED_INDEX",
                                          "metric_type": "BM25"})
-        col.load()
-        print(f"[milvus] 集合 {name} 已创建并加载（dense={config.EMBED_DIM}维）")
+        print(f"[milvus] 集合 {name} 已创建（dense={config.EMBED_DIM}维，加载由 _col 统一负责）")
         return True
     except Exception as e:
         print(f"[milvus] 集合创建失败: {e!r}")
