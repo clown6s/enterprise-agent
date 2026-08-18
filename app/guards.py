@@ -285,7 +285,12 @@ def find_missing_terms(answer: str, context: str) -> list[str]:
     上下文，"140 mmHg"（模型写法）在"140/90mmHg"（资料写法）里判缺失，
     校验模型据此把有据数字剥掉（"收缩压均 > 和/或 舒张压均 >"实况）。
     """
-    ctx = re.sub(r"\s+", "", context).lower()
+    ctx = _norm(context)
+    # 上下文中的长英文词（≥4 字母）集合：英文术语的碎片豁免比对池——
+    # 答案 "AI-Agents-in-Depth-zh-CN.pdf" 被 findall 切成
+    # "AI-Agents-in-Depth-zh-CN"/"pdf" 多段，"pdf" 是上下文文件名的子串，
+    # 单独判缺失是误报（sweep 实况）
+    ctx_terms = {t for t in re.findall(r"[a-z][a-z0-9._/-]{3,}", ctx) if t}
     missing = []
     seen = set()
     for pattern in _TERM_PATTERNS:
@@ -301,6 +306,10 @@ def find_missing_terms(answer: str, context: str) -> list[str]:
                 continue
             inner = term[1:-1] if term.startswith("《") and term.endswith("》") else ""
             if inner and _norm(inner) in ctx:
+                continue
+            # 英文碎片豁免：术语是上下文长英文词的子串（文件名切片/pdf 等）
+            t = _norm(term)
+            if t.isascii() and any(t in w for w in ctx_terms):
                 continue
             missing.append(term)
     return missing[:12]
@@ -578,5 +587,8 @@ def clean_cjk_spacing(text: str) -> str:
 
 
 def _norm(s: str) -> str:
-    """比较用归一化：去空白 + 全角转半角（术语核对口径）"""
-    return re.sub(r"\s+", "", s).lower()
+    """比较用归一化：全角转半角（NFKC）+ 去空白 + 小写。
+    曾只去空白——答案"II"vs 资料"Ⅱ"（罗马数字全角）判缺失的 sweep 实况，
+    docstring 声称全角转半角但实现一直没做"""
+    import unicodedata
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", s)).lower()

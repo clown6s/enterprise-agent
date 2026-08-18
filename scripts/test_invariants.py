@@ -206,7 +206,14 @@ check("grants 裸逗号串解析", _acl._parse_grants("employee:3,employee:4") =
 check("grants 垃圾串不炸", _acl._parse_grants("{not-json") == set())
 check("grants 空/None", _acl._parse_grants("") == set() and _acl._parse_grants(None) == set())
 
-# 19. 坏插件跳过不崩（插件加载失败 → 空列表，主流程照跑）
+# 19. 术语核对口径：全角/半角归一 + 英文碎片豁免（sweep r6 实况）
+check("全角罗马数字归一", guards.find_missing_terms("II 级", "Ⅱ级心衰") == [])
+check("英文文件名碎片豁免", guards.find_missing_terms(
+    "AI-Agents-in-Depth-zh-CN.pdf", "[来源: AI-Agents-in-Depth-zh-CN.pdf]") == [])
+check("真缺失英文术语仍报", "Richard" in guards.find_missing_terms(
+    "Richard Sutton 提出", "强化学习奠基人之一"))
+
+# 20. 坏插件跳过不崩（插件加载失败 → 空列表，主流程照跑）
 _orig_env = config._env
 try:
     config._env = lambda k, d=None: ("nonexistent_xyz" if k == "DOMAIN_PLUGINS"
