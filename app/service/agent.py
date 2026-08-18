@@ -227,15 +227,16 @@ def _try_graph_fallback(query: str, turns: list[dict], fb: str,
         return None
     context = ("## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n"
                + graph_ctx)
-    hblock = history.history_block(turns)
-    user_prompt = (f"【资料】\n{context}\n\n{hblock}\n【用户问题】\n{query}" if hblock
-                   else f"【资料】\n{context}\n\n【用户问题】\n{query}")
+    # 图谱兜底生成不注入【对话历史】：历史在追问统一解析层已消费（调用方传的
+    # query 是补全后的 search_query），图谱关系作答是自包含的。曾注入历史被
+    # 模型整块回显成答案正文（"心衰如何诊断"实况），且 vctx 含历史使校验层
+    # 无从拦截（历史是合法依据）——回显源头直接拿掉
+    user_prompt = f"【资料】\n{context}\n\n【用户问题】\n{query}"
     if fb:
         user_prompt = f"【文件上下文】\n{fb}\n\n" + user_prompt
     raw = llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
                    user_prompt)
-    final = verify.verify(raw, f"{context}\n{hblock}" if hblock else context,
-                          graph_only=True, query=query)
+    final = verify.verify(raw, context, graph_only=True, query=query)
     if final == guards.NO_ANSWER:
         return None
     final = "以下内容基于知识图谱关联（无文档来源，仅供参考）：\n" + final
@@ -467,7 +468,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             final = verify.verify(raw, fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
-        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             return graph_fb
         gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
@@ -503,7 +504,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         if recovered:
             return recovered
         # 图谱兜底二段：噪音 chunk 挡住时图谱关系仍有答案价值（曾直接兜底）
-        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             return graph_fb
         # 恢复也失败：记知识缺口（曾闸门拒绝不进缺口聚类——知识库健康度
@@ -681,7 +682,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
             yield "sources", []
             yield "done", "[DONE]"
             return
-        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             yield "token", graph_fb["answer"]
             yield "sources", graph_fb["sources"]
@@ -732,7 +733,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
             yield "done", "[DONE]"
             return
         # 图谱兜底二段（与非流式同口径）
-        graph_fb = _try_graph_fallback(query, turns, fb, conversation_id)
+        graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             yield "token", graph_fb["answer"]
             yield "sources", graph_fb["sources"]

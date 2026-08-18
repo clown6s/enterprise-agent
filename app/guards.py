@@ -489,6 +489,27 @@ def strip_no_answer_hedge(text: str) -> str:
     return result
 
 
+# 提示词回显拦截：模型偶发把【对话历史】注入块整段抄进答案正文——
+# "心衰如何诊断"图谱兜底实况：答案原样回显"【对话历史…】问：…答：…"，
+# 且 vctx 含历史使校验层无从拦截（历史是合法依据）。确定性硬删：
+# 含"【对话历史"的行与"问：/答："开头的行全部移除（回答规范不用该格式），
+# 删空回兜底句式。源头已同时拿掉（图谱兜底生成不再注入历史），
+# 此守卫防其余注入路径复发。
+_HISTORY_ECHO_LINE = re.compile(r"^[ \t]*(【对话历史|问：|答：)")
+_HISTORY_ECHO_ANY = "【对话历史"
+
+
+def strip_history_echo(text: str) -> str:
+    if not text or (_HISTORY_ECHO_ANY not in text
+                    and not _HISTORY_ECHO_LINE.search(text)):
+        return text
+    kept = [l for l in text.split("\n") if not _HISTORY_ECHO_LINE.match(l)]
+    result = "\n".join(kept).strip()
+    if not result:
+        return NO_ANSWER
+    return result if result != text else text
+
+
 # ---------------- 7. 提示注入拦截 ----------------
 
 INJECTION_BLOCKED = "抱歉，检测到异常指令内容，无法处理该请求。"
