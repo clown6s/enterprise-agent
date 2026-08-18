@@ -236,6 +236,43 @@ def delete_capability(body: dict, authorization: str | None = Header(default=Non
     return _ok(None)
 
 
+# ---------------- NL2SQL 表注册（query_schema，表级权限） ----------------
+
+@router.get("/api/rag/admin/query-schema")
+def list_query_schema(authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    import json as _json
+    rows = _query("SELECT id, table_name, description, columns_json, grants, status "
+                  "FROM query_schema")
+    out = []
+    for r in rows:
+        try:
+            cols = _json.loads(r[3] or "[]")
+        except ValueError:
+            cols = []
+        out.append({"id": r[0], "table": r[1], "description": r[2] or "",
+                    "columns": cols, "grants": r[4] or "", "status": r[5]})
+    return _ok(out)
+
+
+@router.post("/api/rag/admin/query-schema/save")
+def save_query_schema(body: dict, authorization: str | None = Header(default=None)):
+    """登记/更新可查询表：columns=[{name, desc, sample}]；grants 同 doc_acl
+    口径（空=全员可见，非空=employee:ID 名单）；status 0=停用。"""
+    if not _auth(authorization):
+        return _unauthorized()
+    from ..service import nlsql
+    table = (body.get("table") or "").strip()
+    if not table or not isinstance(body.get("columns"), list):
+        return {"success": False, "message": "table/columns 必填", "data": None}
+    nlsql.register_table(table, body.get("description") or "",
+                         body["columns"], body.get("grants") or "")
+    if not body.get("status", 1):
+        _exec("UPDATE query_schema SET status=0 WHERE table_name=%s", (table,))
+    return _ok(None)
+
+
 # ---------------- 字段级权限（field_acl，PII 列管控） ----------------
 
 @router.get("/api/rag/admin/field-acl")
