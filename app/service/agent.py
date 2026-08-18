@@ -16,7 +16,7 @@
 import re
 from datetime import datetime
 
-from .. import embeddings, guards, llm, milvus_store, prompts, tools
+from .. import capabilities, embeddings, guards, llm, milvus_store, prompts, tools
 from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
                        synonym_groups)
 from ..intent import rules as intent_rules
@@ -44,7 +44,8 @@ _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
 # NL2SQL 预闸：事实型问法才尝试表查询（"什么是心律失常"这类知识问题不触发，
 # 省一次模型调用；表查询不可答时照样漏回知识问答）
 _FACT_QUERY = re.compile(
-    r"产品|价格|多少钱|哪些|几个|多少|数量|金额|汇总|统计|电话|手机|品类|售价|库存")
+    r"产品|价格|多少钱|哪些|几个|多少|数量|金额|汇总|统计|电话|手机|品类|售价|库存"
+    r"|特点|信息|详情|介绍|怎么样|如何|多大|多长")
 
 
 # ---------------- 路由与工具函数 ----------------
@@ -411,8 +412,8 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     if guards.contains_injection(query):
         return {"answer": guards.INJECTION_BLOCKED, "sources": [], "route": "GUARD", "chart": None}
 
-    # 意图规则表优先（确定性直答）
-    intent = intent_rules.match(query)
+    # 能力总线优先（数据驱动注册表：内置种子规则 + 后台覆盖，确定性直答）
+    intent = capabilities.dispatch(query)
     if intent:
         return {"answer": guards.fix_output(intent["answer"]), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
@@ -610,8 +611,8 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "done", "[DONE]"
         return
 
-    # 意图规则表最优先：命中即确定性直答（路由标记 = KNOWLEDGE_QA）
-    intent = intent_rules.match(query)
+    # 能力总线最优先（与非流式同口径——双路径同步）
+    intent = capabilities.dispatch(query)
     if intent:
         yield "route", "KNOWLEDGE_QA"
         yield "token", guards.fix_output(intent["answer"])

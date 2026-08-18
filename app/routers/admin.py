@@ -193,6 +193,49 @@ def save_user_identity(body: dict, authorization: str | None = Header(default=No
     return _ok(None)
 
 
+# ---------------- 能力总线（capability 表，路由数据驱动） ----------------
+
+@router.get("/api/rag/admin/capabilities")
+def list_capabilities(authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    from .. import capabilities
+    return _ok(capabilities.list_capabilities())
+
+
+@router.post("/api/rag/admin/capabilities/save")
+def save_capability(body: dict, authorization: str | None = Header(default=None)):
+    """保存能力配置：code 必须是内置规则名（handler 引用）；pattern 触发正则、
+    priority 越小越先匹配、status 0=停用。保存后 30s 内生效。"""
+    if not _auth(authorization):
+        return _unauthorized()
+    from .. import capabilities
+    code = (body.get("code") or "").strip()
+    pattern = (body.get("pattern") or "").strip()
+    if not code or not pattern:
+        return {"success": False, "message": "code/pattern 必填", "data": None}
+    known = {r["code"] for r in capabilities.list_capabilities()}
+    if code not in known:
+        return {"success": False, "message": f"未知能力 code（可选：{'、'.join(sorted(known))}）",
+                "data": None}
+    capabilities.save_capability(code, pattern, int(body.get("priority") or 100),
+                                 int(body.get("status", 1)), body.get("tool") or "")
+    return _ok(None)
+
+
+@router.post("/api/rag/admin/capabilities/delete")
+def delete_capability(body: dict, authorization: str | None = Header(default=None)):
+    """删除覆盖配置 → 回退内置种子默认"""
+    if not _auth(authorization):
+        return _unauthorized()
+    from .. import capabilities
+    code = (body.get("code") or "").strip()
+    if not code:
+        return {"success": False, "message": "缺少 code", "data": None}
+    capabilities.delete_capability(code)
+    return _ok(None)
+
+
 # ---------------- 仪表盘 / 审计 ----------------
 
 @router.get("/api/rag/admin/audit/dashboard")

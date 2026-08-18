@@ -25,6 +25,9 @@ _SQL_KEYWORDS = {
     "asc", "like", "in", "not", "null", "count", "sum", "avg", "max", "min",
     "group", "having", "between", "is", "distinct", "on", "join", "left", "right",
     "inner", "case", "when", "then", "else", "end", "like", "offset", "concat",
+    # 常用只读函数（白名单外函数一律拒——宁可漏回 KB 也不放行未审计能力）
+    "length", "round", "coalesce", "ifnull", "date_format", "substr", "substring",
+    "upper", "lower", "trim", "format", "if", "abs", "now", "curdate", "datediff",
 }
 _BLOCKED_WORDS = ("insert", "update", "delete", "drop", "alter", "create", "exec",
                   "grant", "union", "truncate", "replace", "into", "set")
@@ -34,7 +37,7 @@ _GEN_PROMPT = """你是数据库查询生成器。根据下面的表结构描述
 
 规则：
 1. 只读查询，只允许 SELECT
-2. 只使用提供的表与列，不得臆测不存在的表/列
+2. 只使用提供的表与列，不得臆测不存在的表/列；聚合表达式必须用 AS 起别名
 3. 所有字面值（人名/数字/日期/字符串）一律用 %s 占位放入 params，不要拼进 SQL
 4. 无法确定查什么时输出 {{"sql_template": "", "params": []}}
 
@@ -142,8 +145,17 @@ def _validate(sql: str, params: list, tables: list[dict]) -> str | None:
     registered = {t["table"].lower() for t in tables}
     if not used or not used <= registered:
         return None
-    # 列白名单：模板中的裸标识符（非关键字/非表名/非别名）必须注册过
+    # 列白名单：模板中每个裸标识符必须可解释为 关键字/注册表名/注册列名/
+    # AS 别名（安全扫描抓出曾只算 allowed_cols 从未使用——列检查是死代码；
+    # 占位符先剥掉，否则 %s 的 s 会被当单字母标识符误拒）
     allowed_cols = {c["name"].lower() for t in tables for c in t["columns"]}
+    low_clean = low.replace("%s", " ")
+    aliases = set(re.findall(r"\bas\s+([a-z_][a-z0-9_]*)", low_clean))
+    for tok in re.findall(r"[a-z_][a-z0-9_]*", low_clean):
+        if (tok in _SQL_KEYWORDS or tok in registered or tok in allowed_cols
+                or tok in aliases):
+            continue
+        return None
     if "%s" not in tpl and params:
         return None
     if tpl.count("%s") != len(params or []):
@@ -156,9 +168,10 @@ def _validate(sql: str, params: list, tables: list[dict]) -> str | None:
     return tpl
 
 
-def _fmt_rows(rows: list[tuple], cols: list[str], labels: dict[str, str]) -> str:
+def _fmt_rows(rows: list[tuple], cols: list[str], labels: dict[str, str],
+              label_fn=None) -> str:
     """结果行 → 确定性文本（列值全来自真实数据行；列名转注册的中文描述）"""
-    heads = [labels.get(c.lower(), c) for c in cols]
+    heads = [(label_fn(c) if label_fn else labels.get(c.lower(), c)) for c in cols]
     if not rows:
         return "查询结果为空。"
     if len(rows) == 1 and len(cols) <= 2:
@@ -207,4 +220,15 @@ def try_answer(query: str, user: str = "") -> str | None:
         print(f"[nlsql] 执行失败: {e!r} | {final_sql}")
         return None
     labels = {c["name"].lower(): (c.get("desc") or c["name"]) for t in tables for c in t["columns"]}
-    return _fmt_rows(rows, cols, labels)
+
+    def _label(col: str) -> str:
+        key = col.lower()
+        if key in labels:
+            return labels[key]
+        # 模型可能自造 product_description 类别名——尾缀匹配回注册列
+        for k, v in labels.items():
+            if key.endswith(k):
+                return v
+        return col
+
+    return _fmt_rows(rows, cols, labels, _label)

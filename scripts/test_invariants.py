@@ -213,7 +213,21 @@ check("英文文件名碎片豁免", guards.find_missing_terms(
 check("真缺失英文术语仍报", "Richard" in guards.find_missing_terms(
     "Richard Sutton 提出", "强化学习奠基人之一"))
 
-# 20. 坏插件跳过不崩（插件加载失败 → 空列表，主流程照跑）
+# 20. NL2SQL 合规五关校验器（安全扫描抓出过列白名单是死代码——锁死）：
+from app.service import nlsql as _nlsql
+_nlsql_tables = [{"table": "product",
+                  "columns": [{"name": "name"}, {"name": "price"}, {"name": "category"}]}]
+_v = lambda s, p=[]: _nlsql._validate(s, p, _nlsql_tables)  # noqa: E731
+check("SQL 校验:正常查询放行", bool(_v("SELECT * FROM product")))
+check("SQL 校验:未注册列拒绝", _v("SELECT secret FROM product") is None)
+check("SQL 校验:写语句拒绝", _v("DELETE FROM product") is None)
+check("SQL 校验:分号多语句拒绝", _v("SELECT * FROM product; DROP TABLE product") is None)
+check("SQL 校验:UNION 越权拒绝", _v("SELECT * FROM product UNION SELECT * FROM sys_user") is None)
+check("SQL 校验:未注册表拒绝", _v("SELECT password_hash FROM sys_user") is None)
+check("SQL 校验:占位不匹配拒绝", _v("SELECT * FROM product WHERE name=%s") is None)
+check("SQL 校验:别名聚合放行", bool(_v("SELECT COUNT(*) AS c FROM product")))
+
+# 21. 坏插件跳过不崩（插件加载失败 → 空列表，主流程照跑）
 _orig_env = config._env
 try:
     config._env = lambda k, d=None: ("nonexistent_xyz" if k == "DOMAIN_PLUGINS"

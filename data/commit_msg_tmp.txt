@@ -1,0 +1,30 @@
+能力总线（数据驱动路由）+ 三原则全局扫描安全修复
+
+一、能力总线（app/capabilities.py，智能路由架构 2/3）：
+- capability 表：每行 code/pattern/priority/status/tool，与内置种子规则
+  按 code 合并（TTL 30s），后台可调触发正则/优先级/停用，零代码
+- dispatch 取代 intent_rules.match（双路径同步）；admin 加列表/保存/
+  删除端点（保存端非法正则拒存）
+- 探针：加"我们有多少同事"触发词立即生效、删除覆盖回退种子、停用生效
+
+二、全局三原则扫描（安全攻击测试 + 深扫），抓出并修复 4 处：
+1. 【安全】NL2SQL 列白名单是死代码——docstring 声称检查但 allowed_cols
+   从未使用，"SELECT secret FROM product" 可放行 → 列级标识符强制校验
+   （关键字/注册表/注册列/AS 别名四类可解释，其余拒绝）+ 常用只读
+   函数白名单 + %s 占位先剥除防 s 字母误拒
+2. 【安全】能力总线 DB 正则非法会炸路由（re.error 未捕获）→
+   save 端编译校验拒存 + dispatch 端异常按不命中处理
+3. 【智能】指代追问进 NL2SQL 预闸缺口（"它有什么特点"漏回 KB 兜底）→
+   _FACT_QUERY 扩展特点/信息/详情/介绍/怎么样/如何
+4. 【精准】NL2SQL 结果列标签——模型自造 product_description 别名时
+   显示英文列名 → 尾缀匹配回注册列中文描述
+
+三、安全攻击测试矩阵（全过）：8 类问句级注入（删表/DROP/INSERT/分号/
+UNION/未注册表/未注册列）+ 9 类校验器直攻（含写语句/多语句/越权表列/
+占位不匹配）+ 权限过滤（salary_view 受限表对未授权用户不可见）+ 员工
+电话名单外确定性接管（不报全员通讯录）。
+
+验证：回归 25/25、不变量 53/53（+8 条 SQL 校验契约）、矩阵 18/18、
+检索 100%/MRR 0.9167。
+
+Co-Authored-By: Claude <noreply@anthropic.com>
