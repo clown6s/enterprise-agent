@@ -96,9 +96,44 @@ def change_password(body: dict, authorization: str | None = Header(default=None)
 def list_users(authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
-    rows = _query("SELECT id, username, display_name, role, status FROM sys_user")
-    return _ok([{"id": r[0], "username": r[1], "displayName": r[2], "role": r[3], "status": r[4]}
+    # 身份列由 acl 懒迁移保证存在（与 rag-admin 共用表，加列加性变更）
+    from ..service import acl
+    acl._ensure_columns()
+    rows = _query("SELECT id, username, display_name, role, status, "
+                  "employee_id, mobile FROM sys_user")
+    return _ok([{"id": r[0], "username": r[1], "displayName": r[2], "role": r[3],
+                 "status": r[4], "employeeId": r[5], "mobile": r[6] or ""}
                 for r in rows])
+
+
+@router.post("/api/rag/admin/auth/users/identity")
+def save_user_identity(body: dict, authorization: str | None = Header(default=None)):
+    """绑定账号身份：employeeId（数字员工 id，doc_acl 受众口径）+
+    mobile（飞书手机号匹配落点）。employeeId 空/0 = 解绑；必须存在于
+    数字员工表（防拼错产生悬空绑定）。"""
+    if not _auth(authorization):
+        return _unauthorized()
+    from ..service import acl
+    acl._ensure_columns()
+    uid = body.get("id")
+    emp = body.get("employeeId")
+    mobile = (body.get("mobile") or "").strip()
+    if not uid:
+        return {"success": False, "message": "缺少用户 id", "data": None}
+    emp_val = None
+    if emp not in (None, "", 0):
+        if not str(emp).isdigit():
+            return {"success": False, "message": "employeeId 必须为数字", "data": None}
+        rows = _query("SELECT id FROM digital_employee WHERE id=%s", (int(emp),))
+        if not rows:
+            return {"success": False, "message": "数字员工不存在", "data": None}
+        emp_val = int(emp)
+    _exec("UPDATE sys_user SET employee_id=%s, mobile=%s WHERE id=%s",
+          (emp_val, mobile or None, uid))
+    # 身份变了清缓存（否则最长 60s 旧映射生效）
+    with acl._lock:
+        acl._emp_cache.clear()
+    return _ok(None)
 
 
 # ---------------- 仪表盘 / 审计 ----------------
