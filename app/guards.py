@@ -294,8 +294,15 @@ def find_missing_terms(answer: str, context: str) -> list[str]:
             if term in seen:
                 continue
             seen.add(term)
-            if _norm(term) not in ctx:
-                missing.append(term)
+            # 书名号术语剥括号再比对：答案写《中华人民共和国治安管理处罚法》，
+            # 资料 chunk 里是裸书名（无书名号）或带下划线文件名——括号是排版，
+            # 内核是书名（sweep 实况：合法引用被当无依据术语）
+            if _norm(term) in ctx:
+                continue
+            inner = term[1:-1] if term.startswith("《") and term.endswith("》") else ""
+            if inner and _norm(inner) in ctx:
+                continue
+            missing.append(term)
     return missing[:12]
 
 
