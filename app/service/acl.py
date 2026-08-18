@@ -7,9 +7,10 @@
 
 身份映射（2026-08-18 落地，此前恒 None）：
 - Web 渠道：user = 后台用户名 → sys_user.employee_id（后台用户管理页维护）
-- 飞书渠道：user = open_id（ou_ 前缀）→ 通讯录 API 手机号 →
-  sys_user.mobile 匹配同一账号 → employee_id
-- 映射结果缓存 60s（负结果也缓存，防每条消息打飞书 API）
+- 飞书渠道：user = open_id（ou_ 前缀）→ feishu_employee.employee_id 直查
+  （rag-admin 维护的飞书员工表，open_id 主数据；曾设计通讯录 API
+  手机号匹配，发现表已存在后废弃——零 API 依赖更稳）
+- 映射结果缓存 60s（负结果也缓存，防每条消息查库）
 
 安全语义：
 - doc_acl 无任何行 → 不过滤（expr=None，行为与从前一致）
@@ -20,21 +21,19 @@ import json
 import threading
 import time
 
-import httpx
-
 _TTL = 60
 
 _lock = threading.Lock()
 _cache: dict = {"ts": 0.0, "state": None}
 # 身份映射缓存：user → (ts, employee_id)（None 也是有效值=未知身份）
 _emp_cache: dict[str, tuple[float, int | None]] = {}
-# 飞书 tenant_access_token（通讯录 API 用，与 app token 是不同端点）
-_tenant_token: dict = {"token": "", "expire": 0.0}
 
 
 def _ensure_columns() -> None:
-    """sys_user 补 employee_id/mobile 列（与 rag-admin 共用表——加列是加性
-    变更，前端不感知；列已存在/表不可用都跳过，软依赖）"""
+    """身份列懒迁移（与 rag-admin 共用表——加列是加性变更，前端不感知；
+    列已存在/表不可用都跳过，软依赖）：
+    - sys_user.employee_id / mobile：Web 账号 → 数字员工绑定
+    - feishu_employee.employee_id：飞书 open_id → 数字员工绑定"""
     try:
         import pymysql
         from .. import config
@@ -43,64 +42,21 @@ def _ensure_columns() -> None:
                                database=config.MYSQL_DB, charset="utf8mb4",
                                connect_timeout=3)
         with conn.cursor() as cur:
-            cur.execute("SHOW COLUMNS FROM sys_user LIKE 'employee_id'")
-            if not cur.fetchone():
-                cur.execute("ALTER TABLE sys_user ADD COLUMN employee_id INT NULL")
-            cur.execute("SHOW COLUMNS FROM sys_user LIKE 'mobile'")
-            if not cur.fetchone():
-                cur.execute("ALTER TABLE sys_user ADD COLUMN mobile VARCHAR(32) NULL")
+            for table, cols in (("sys_user", ["employee_id", "mobile"]),
+                                ("feishu_employee", ["employee_id"])):
+                for col in cols:
+                    cur.execute(f"SHOW COLUMNS FROM {table} LIKE '{col}'")
+                    if not cur.fetchone():
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} "
+                                    f"{'VARCHAR(32)' if col == 'mobile' else 'INT'} NULL")
         conn.commit()
         conn.close()
     except Exception:
         pass
 
 
-def _tenant_access_token() -> str:
-    """飞书 tenant_access_token（通讯录 API 鉴权；与 channels 的 app token
-    是不同端点——acl 不 import channels 防循环依赖）"""
-    if _tenant_token["token"] and time.time() < _tenant_token["expire"] - 60:
-        return _tenant_token["token"]
-    from .. import config
-    try:
-        resp = httpx.post(
-            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            json={"app_id": config._env("FEISHU_APP_ID"),
-                  "app_secret": config._env("FEISHU_APP_SECRET")},
-            timeout=10,
-        )
-        data = resp.json()
-        if data.get("code") == 0:
-            _tenant_token["token"] = data["tenant_access_token"]
-            _tenant_token["expire"] = time.time() + data.get("expire", 7200)
-    except (httpx.HTTPError, ValueError):
-        pass
-    return _tenant_token["token"]
-
-
-def _feishu_mobile(open_id: str) -> str:
-    """open_id → 手机号（通讯录 scope：contact:user.base:readonly，已开通）。
-    失败/无手机号返回空串（调用方按未知身份处理）"""
-    token = _tenant_access_token()
-    if not token:
-        return ""
-    try:
-        resp = httpx.get(
-            f"https://open.feishu.cn/open-apis/contact/v3/users/{open_id}",
-            params={"user_id_type": "open_id"},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-        data = resp.json()
-        if data.get("code") != 0:
-            return ""
-        user = (data.get("data") or {}).get("user") or {}
-        return user.get("mobile") or ""
-    except (httpx.HTTPError, ValueError):
-        return ""
-
-
-def _emp_by_column(column: str, value: str) -> int | None:
-    """sys_user.{column}=value → employee_id（NULL 视为未绑定）"""
+def _emp_by_column(table: str, column: str, value: str) -> int | None:
+    """{table}.{column}=value → employee_id（NULL 视为未绑定）"""
     import pymysql
     from .. import config
     conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
@@ -109,7 +65,7 @@ def _emp_by_column(column: str, value: str) -> int | None:
                            connect_timeout=3)
     try:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT employee_id FROM sys_user "
+            cur.execute(f"SELECT employee_id FROM {table} "
                         f"WHERE {column}=%s AND employee_id IS NOT NULL LIMIT 1", (value,))
             row = cur.fetchone()
         return int(row[0]) if row else None
@@ -119,8 +75,11 @@ def _emp_by_column(column: str, value: str) -> int | None:
 
 def resolve_employee(user: str) -> int | None:
     """user → 数字员工 id（doc_acl 的 employee:ID 口径）。
-    飞书 open_id 以 ou_ 开头 → 通讯录手机号匹配；其余按后台用户名匹配。
-    映射结果缓存 60s（含负结果）；任何失败返回 None（未知身份）。"""
+    飞书 open_id 以 ou_ 开头 → feishu_employee 表直查（2026-08-18 定案：
+    曾设计通讯录 API 手机号匹配——发现 rag-admin 已有 feishu_employee 表
+    持 open_id 主数据，直绑零 API 依赖，手机号方案废弃）；其余按后台
+    用户名查 sys_user。映射结果缓存 60s（含负结果）；失败返回 None
+    （未知身份，安全默认只看全员文档）。"""
     user = (user or "").strip()
     if not user:
         return None
@@ -132,11 +91,9 @@ def resolve_employee(user: str) -> int | None:
     emp = None
     try:
         if user.startswith("ou_"):
-            mobile = _feishu_mobile(user)
-            if mobile:
-                emp = _emp_by_column("mobile", mobile)
+            emp = _emp_by_column("feishu_employee", "open_id", user)
         else:
-            emp = _emp_by_column("username", user)
+            emp = _emp_by_column("sys_user", "username", user)
     except Exception:
         emp = None
     _emp_cache[user] = (now, emp)
