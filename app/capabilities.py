@@ -70,9 +70,10 @@ def _merged() -> list[intent_rules.IntentRule]:
         return _cache["rows"]
 
 
-def dispatch(query: str):
+def dispatch(query: str, user: str = ""):
     """按优先级遍历合并后的能力表；命中且 handler 有结果即返回，否则 None。
     与 intent_rules.match 同语义（handler 返回 None 继续下一规则）。
+    user 透传 handler（字段级权限等身份相关判定）。
     正则异常按不命中处理（后台配了非法正则不该炸路由——安全扫描补的护栏）"""
     import re as _re
     from . import tools
@@ -84,7 +85,7 @@ def dispatch(query: str):
         except _re.error:
             hit = False
         if hit:
-            result = rule.handler(query)
+            result = rule.handler(query, user)
             if result is not None:
                 return result
     return None

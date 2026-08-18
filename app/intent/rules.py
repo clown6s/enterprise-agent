@@ -75,7 +75,7 @@ def _info_text(r: dict) -> str:
     return f"{r['name']}（{r['dept']} {r['position']}），{r['entry']} 入职，工号 {r['employee_no']}"
 
 
-def headcount(query: str) -> Result:
+def headcount(query: str, user: str = "") -> Result:
     """人数统计（含部门级："研发部有几个人"）——employee 表实时数据"""
     rows = employee_store.all_active()
     if rows is None:
@@ -88,7 +88,7 @@ def headcount(query: str) -> Result:
                       + _directory_text(), "chart": None}
 
 
-def employee_info(query: str) -> Result:
+def employee_info(query: str, user: str = "") -> Result:
     """个人信息问法（入职/工号/部门/职位…），姓名必须在问句中出现"""
     names = employee_store.names()
     if names is None:
@@ -101,18 +101,20 @@ def employee_info(query: str) -> Result:
                       else "\n".join(_info_text(h) for h in hits)), "chart": None}
 
 
-def employee_contact(query: str) -> Result:
+def employee_contact(query: str, user: str = "") -> Result:
     """联系方式问法（电话/手机/号码…）：姓名必须在问句中出现——
     不报全员通讯录（隐私）；未录入明确说未录入（不编造）。
     名单外姓名也要确定性接管（答"未在目录"）——曾漏到图谱兜底，
-    "张三的电话"被图谱"电话"节点接住答出无关内容的实况。"""
+    "张三的电话"被图谱"电话"节点接住答出无关内容的实况。
+    字段级权限：employee.mobile 有限制时未授权用户视同未录入。"""
+    from ..service import acl
     names = employee_store.names()
     if names is None:
         return _UNAVAILABLE
     name = next((n for n in names if n in query), None)
     if name:
         r = employee_store.by_name(name)
-        if r and r.get("mobile"):
+        if r and r.get("mobile") and acl.field_visible("employee", "mobile", user):
             return {"answer": f"{name}的电话是 {r['mobile']}。", "chart": None}
         return {"answer": f"{name}的电话尚未录入员工目录，可联系管理员在后台维护。", "chart": None}
     # 名单没命中但有姓名形态片段（2-4 字）→ 明确答复，不漏给图谱/KB
@@ -124,7 +126,7 @@ def employee_contact(query: str) -> Result:
     return None
 
 
-def oa_expenses(query: str) -> Result:
+def oa_expenses(query: str, user: str = "") -> Result:
     """报销数据：带姓名查该员工，否则全员；流程制度问法不碰数据"""
     if _PROCESS_WORDS.search(query):
         return None
@@ -170,7 +172,7 @@ def oa_expenses(query: str) -> Result:
     return {"answer": text, "chart": chart}
 
 
-def oa_metrics(query: str) -> Result:
+def oa_metrics(query: str, user: str = "") -> Result:
     """经营数据：营收/成本/利润 + 图表卡"""
     if _PROCESS_WORDS.search(query):
         return None

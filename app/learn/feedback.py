@@ -198,9 +198,12 @@ def _case_exists(query: str) -> bool:
 def record_unhelpful(query: str, answer: str, correction: str = "", user: str = "admin") -> dict:
     """
     👎 反馈处理：
+    - 采纳直答层的负向闭环：👎 命中已采纳问答 → 失败计数 +1，满 2 停用回慢路径
     - 无纠正文本 → 自动锁一条回归用例：该问法不得再回兜底句式（当前答案确实是兜底才有效力）
     - 有纠正文本 → 进待审队列（人工把纠正提炼成断言后转正式用例）
     """
+    from . import adopted as adopted_qa
+    adopted_qa.penalize(query)
     if correction and correction.strip():
         with open(_PENDING_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps({

@@ -144,6 +144,69 @@ def _load_state() -> dict:
     return {"restricted": restricted, "all_docs": docs}
 
 
+def field_visible(table: str, column: str, user: str) -> bool:
+    """字段级权限（PII 列如员工电话）：field_acl 有限制行且用户不在
+    grants 名单 → False；无限制行/表不可用 → True（默认可见——表级
+    grants 是外层防线）。安全默认方向与 doc_acl 一致。"""
+    try:
+        import pymysql
+        from .. import config
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                               user="root", password=config.MYSQL_PASSWORD,
+                               database=config.MYSQL_DB, charset="utf8mb4",
+                               connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS field_acl ("
+                "id INT AUTO_INCREMENT PRIMARY KEY,"
+                "table_name VARCHAR(64) NOT NULL,"
+                "column_name VARCHAR(64) NOT NULL,"
+                "grants TEXT,"
+                "status TINYINT DEFAULT 1,"
+                "UNIQUE KEY uq_tc (table_name, column_name))")
+            cur.execute("SELECT grants FROM field_acl "
+                        "WHERE table_name=%s AND column_name=%s AND status=1",
+                        (table, column))
+            row = cur.fetchone()
+        conn.close()
+        if not row:
+            return True
+        emp = resolve_employee(user)
+        ids = _parse_grants(row[0] or "")
+        return not ids or emp in ids
+    except Exception:
+        return True
+
+
+def save_field_acl(table: str, column: str, grants: str, status: int = 1) -> None:
+    """后台维护字段级权限（grants 同 doc_acl 口径）"""
+    try:
+        import pymysql
+        from .. import config
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                               user="root", password=config.MYSQL_PASSWORD,
+                               database=config.MYSQL_DB, charset="utf8mb4",
+                               connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS field_acl ("
+                "id INT AUTO_INCREMENT PRIMARY KEY,"
+                "table_name VARCHAR(64) NOT NULL,"
+                "column_name VARCHAR(64) NOT NULL,"
+                "grants TEXT,"
+                "status TINYINT DEFAULT 1,"
+                "UNIQUE KEY uq_tc (table_name, column_name))")
+            cur.execute(
+                "INSERT INTO field_acl (table_name, column_name, grants, status) "
+                "VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "grants=VALUES(grants), status=VALUES(status)",
+                (table, column, grants or "", status))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def allowed_expr(user: str) -> str | None:
     """用户 → Milvus 过滤 expr；None=不过滤。软依赖：任何失败返回 None。"""
     try:

@@ -127,7 +127,10 @@ def _visible_tables(user: str) -> list[dict]:
         except ValueError:
             continue
         if isinstance(cols, list) and all(isinstance(c, dict) for c in cols):
-            out.append({"table": name, "description": desc or "", "columns": cols})
+            # 字段级权限过滤：PII 列（如员工电话）对未授权用户直接不可见
+            cols = [c for c in cols if acl.field_visible(name, c.get("name", ""), user)]
+            if cols:
+                out.append({"table": name, "description": desc or "", "columns": cols})
     return out
 
 

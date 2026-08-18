@@ -127,6 +127,9 @@
     "query": "新员工入职需要带什么材料",
     "expect": {
       "answer_contain": [
+        "身份证"
+      ],
+      "answer_not_contain": [
         "暂无法回答"
       ],
       "max_seconds": 60

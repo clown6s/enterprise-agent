@@ -20,9 +20,10 @@ from .. import capabilities, embeddings, guards, llm, milvus_store, prompts, too
 from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
                        synonym_groups)
 from ..intent import rules as intent_rules
+from ..learn import adopted as adopted_qa
 from ..learn import feedback, gap_discovery, synonyms
 from ..plan import sop as sop_engine
-from . import acl, docwizard, graph, history, nlsql, retrieval, verify
+from . import acl, docwizard, graph, history, multihop, nlsql, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
 
 # ---------------- 意图与关键词模式 ----------------
@@ -412,8 +413,27 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     if guards.contains_injection(query):
         return {"answer": guards.INJECTION_BLOCKED, "sources": [], "route": "GUARD", "chart": None}
 
+    # 采纳升级直答层：👍 验证过的问答直接返回（秒回零 LLM；👎 满 2 次
+    # 自动停用回慢路径——与词汇对齐同款负向闭环）
+    hit = adopted_qa.lookup(query)
+    if hit:
+        return {"answer": hit["answer"],
+                "sources": [hit["source"]] if hit.get("source") else [],
+                "route": "KNOWLEDGE_QA", "chart": None}
+
+    # 多跳编排（在能力总线之前）：复合问题拆解分派后合并——曾能力总线
+    # 的单规则正则命中复合问句的一部分（"职位"截胡"李娜职位+报销"），
+    # 复合问题必须整体拆解。非复合问句走这里只多一次正则检查（零成本）
+    try:
+        mh_ans = multihop.try_answer(query, user=user)
+    except Exception:
+        mh_ans = None
+    if mh_ans:
+        return {"answer": guards.fix_output(mh_ans), "sources": [],
+                "route": "KNOWLEDGE_QA", "chart": None}
+
     # 能力总线优先（数据驱动注册表：内置种子规则 + 后台覆盖，确定性直答）
-    intent = capabilities.dispatch(query)
+    intent = capabilities.dispatch(query, user)
     if intent:
         return {"answer": guards.fix_output(intent["answer"]), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
@@ -611,8 +631,29 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "done", "[DONE]"
         return
 
-    # 能力总线最优先（与非流式同口径——双路径同步）
-    intent = capabilities.dispatch(query)
+    # 采纳升级直答层（与非流式同口径）
+    hit = adopted_qa.lookup(query)
+    if hit:
+        yield "route", "KNOWLEDGE_QA"
+        yield "token", hit["answer"]
+        yield "sources", [hit["source"]] if hit.get("source") else []
+        yield "done", "[DONE]"
+        return
+
+    # 多跳编排（与非流式同口径：能力总线之前，防单规则截胡复合问句）
+    try:
+        mh_ans = multihop.try_answer(query, user=user)
+    except Exception:
+        mh_ans = None
+    if mh_ans:
+        yield "route", "KNOWLEDGE_QA"
+        yield "token", guards.fix_output(mh_ans)
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
+
+    # 能力总线（与非流式同口径——双路径同步）
+    intent = capabilities.dispatch(query, user)
     if intent:
         yield "route", "KNOWLEDGE_QA"
         yield "token", guards.fix_output(intent["answer"])

@@ -236,6 +236,33 @@ def delete_capability(body: dict, authorization: str | None = Header(default=Non
     return _ok(None)
 
 
+# ---------------- 字段级权限（field_acl，PII 列管控） ----------------
+
+@router.get("/api/rag/admin/field-acl")
+def list_field_acl(authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    rows = _query("SELECT id, table_name, column_name, grants, status FROM field_acl")
+    return _ok([{"id": r[0], "table": r[1], "column": r[2], "grants": r[3] or "",
+                 "status": r[4]} for r in rows])
+
+
+@router.post("/api/rag/admin/field-acl/save")
+def save_field_acl(body: dict, authorization: str | None = Header(default=None)):
+    """字段级权限：如 employee.mobile 设 grants=employee:6,7 → 仅管理层可查电话。
+    grants 空 = 全员可见。NL2SQL 列过滤与意图 handler 双处生效。"""
+    if not _auth(authorization):
+        return _unauthorized()
+    from ..service import acl
+    table = (body.get("table") or "").strip()
+    column = (body.get("column") or "").strip()
+    if not table or not column:
+        return {"success": False, "message": "table/column 必填", "data": None}
+    acl.save_field_acl(table, column, body.get("grants") or "",
+                       int(body.get("status", 1)))
+    return _ok(None)
+
+
 # ---------------- 仪表盘 / 审计 ----------------
 
 @router.get("/api/rag/admin/audit/dashboard")
