@@ -23,6 +23,7 @@ from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
 from ..learn import adopted as adopted_qa
 from ..learn import feedback, gap_discovery, synonyms
 from ..plan import sop as sop_engine
+from ..plan import approvals as _approvals  # noqa: F401  导入即注册（报销/出差/采购/合同 SOP 挂进注册表）
 from . import acl, docwizard, graph, history, multihop, nlsql, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
 
@@ -471,10 +472,12 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": guards.fix_output(pending["answer"]), "sources": [],
                 "route": "SOP", "chart": None}
 
-    # SOP 状态机（执行准确层：请假四步走确定性流程 + 提交前确认）
-    # 双重开关：skill 表（工具级） + sop 表（管理后台 SOP 页开关）
-    sop = (sop_engine.match(query)
-           if (tools.is_enabled("leave_action") and sop_engine.is_enabled()) else None)
+    # SOP 状态机（执行准确层：审批类流程走确定性步骤 + 提交前确认）
+    # 双重开关：skill 表（工具级） + sop 表（管理后台 SOP 页开关）——按命中的
+    # SOP 自身 code 查（2026-08-19 多 SOP 化：曾写死 leave_action，新 SOP 开关失灵）
+    _sop_def = sop_engine.match(query)
+    sop = (_sop_def if _sop_def and tools.is_enabled(_sop_def.code)
+           and sop_engine.is_enabled(_sop_def.code) else None)
     if sop:
         result = sop_engine.execute(sop, query, conversation_id)
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
@@ -691,8 +694,9 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "done", "[DONE]"
         return
 
-    sop = (sop_engine.match(query)
-           if (tools.is_enabled("leave_action") and sop_engine.is_enabled()) else None)
+    _sop_def = sop_engine.match(query)
+    sop = (_sop_def if _sop_def and tools.is_enabled(_sop_def.code)
+           and sop_engine.is_enabled(_sop_def.code) else None)
     if sop:
         yield "route", "SOP"
         result = sop_engine.execute(sop, query, conversation_id)

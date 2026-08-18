@@ -19,6 +19,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Callable
 
 from .. import config, llm
 
@@ -48,6 +49,8 @@ class SopDefinition:
     keywords: list[str]        # 触发词（含任一即进入 SOP）
     steps: list[str]           # 步骤名序列（执行顺序）
     handlers: dict             # 步骤名 → handler(state) → (终止?, 结果)
+    finish: Callable | None = None   # 确认后的提交收尾 params,emp → result（待确认单分发用）
+    confirm_detail: Callable | None = None   # params → 确认单详情文案（请假=起止日期等）
 
     def matches(self, query: str) -> bool:
         return any(k in query for k in self.keywords)
@@ -63,29 +66,33 @@ _LEAVE_KEYWORDS = ["提交请假", "帮我请假", "帮我请", "申请年假", 
 # 运行时照常触发）。keywords 运行时仍用代码内触发词（改动是危险操作，
 # 后台 keywords 字段为展示用途）。
 
-_enabled_cache: dict = {"ts": 0.0, "val": True}
+_enabled_cache: dict = {"ts": 0.0, "val": {}}
 _ENABLED_TTL = 60
 
 
-def is_enabled() -> bool:
-    """sop 表 enabled 开关（无记录=启用，表不可用=启用——软依赖）"""
-    global _enabled_cache
+def is_enabled(code: str = "leave_action") -> bool:
+    """sop 表 enabled 开关（无记录=启用，表不可用=启用——软依赖）。
+    2026-08-19 泛化：按 code 查（曾写死 leave_action，新 SOP 开关失灵）"""
     now = time.time()
     if now - _enabled_cache["ts"] > _ENABLED_TTL:
-        try:
-            import pymysql
-            conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-                                   password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-                                   charset="utf8mb4", connect_timeout=3)
-            with conn.cursor() as cur:
-                cur.execute("SELECT enabled FROM sop WHERE code='leave_action'")
-                row = cur.fetchone()
-            conn.close()
-            _enabled_cache["val"] = row is None or bool(row[0])
-        except Exception:
-            _enabled_cache["val"] = True
+        _enabled_cache["val"] = {}
         _enabled_cache["ts"] = now
-    return _enabled_cache["val"]
+    if code in _enabled_cache["val"]:
+        return _enabled_cache["val"][code]
+    try:
+        import pymysql
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
+                               password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
+                               charset="utf8mb4", connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute("SELECT enabled FROM sop WHERE code=%s", (code,))
+            row = cur.fetchone()
+        conn.close()
+        val = row is None or bool(row[0])
+    except Exception:
+        val = True
+    _enabled_cache["val"][code] = val
+    return val
 
 
 def match(query: str) -> SopDefinition | None:
@@ -172,18 +179,29 @@ def _pending_conn():
                            charset="utf8mb4", connect_timeout=3)
 
 
-def save_pending(chat_id: str, params: dict, emp: dict) -> bool:
-    """保存待确认请假单；失败返回 False（调用方降级直接提交）"""
+def save_pending(chat_id: str, params: dict, emp: dict, sop_code: str = "leave_action") -> bool:
+    """保存待确认单（业务码区分哪条 SOP；2026-08-19 泛化——曾只存请假，
+    确认分发硬编码请假提交）；失败返回 False（调用方降级直接提交）"""
     try:
         conn = _pending_conn()
         with conn.cursor() as cur:
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS sop_pending ("
                 "chat_id VARCHAR(64) PRIMARY KEY, params TEXT NOT NULL, emp TEXT NOT NULL,"
+                "sop_code VARCHAR(32) DEFAULT 'leave_action',"
                 "created_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+            # 老表补列（CREATE IF NOT EXISTS 不动已存在表）
+            cur.execute("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s "
+                        "AND TABLE_NAME='sop_pending' AND COLUMN_NAME='sop_code'",
+                        (config.MYSQL_DB,))
+            if cur.fetchone()[0] == 0:
+                cur.execute("ALTER TABLE sop_pending ADD COLUMN sop_code VARCHAR(32) "
+                            "DEFAULT 'leave_action'")
             cur.execute(
-                "REPLACE INTO sop_pending (chat_id, params, emp, created_at) VALUES (%s,%s,%s,NOW())",
-                (chat_id, json.dumps(params, ensure_ascii=False), json.dumps(emp, ensure_ascii=False)))
+                "REPLACE INTO sop_pending (chat_id, params, emp, sop_code, created_at) "
+                "VALUES (%s,%s,%s,%s,NOW())",
+                (chat_id, json.dumps(params, ensure_ascii=False),
+                 json.dumps(emp, ensure_ascii=False), sop_code))
         conn.commit()
         conn.close()
         return True
@@ -196,17 +214,18 @@ def load_pending(chat_id: str) -> dict | None:
     try:
         conn = _pending_conn()
         with conn.cursor() as cur:
-            cur.execute("SELECT params, emp, created_at FROM sop_pending WHERE chat_id=%s",
-                        (chat_id,))
+            cur.execute("SELECT params, emp, sop_code, created_at FROM sop_pending "
+                        "WHERE chat_id=%s", (chat_id,))
             row = cur.fetchone()
         conn.close()
         if not row:
             return None
         # 过期清理：24 小时未确认的待确认单自动作废（曾无过期，僵尸单堆积）
-        if row[2] and (datetime.now() - row[2]).total_seconds() > 86400:
+        if row[3] and (datetime.now() - row[3]).total_seconds() > 86400:
             clear_pending(chat_id)
             return None
-        return {"params": json.loads(row[0]), "emp": json.loads(row[1])}
+        return {"params": json.loads(row[0]), "emp": json.loads(row[1]),
+                "sop_code": row[2] or "leave_action"}
     except Exception:
         return None
 
@@ -224,7 +243,9 @@ def clear_pending(chat_id: str) -> None:
 
 def try_confirm_or_cancel(chat_id: str, query: str) -> dict | None:
     """待确认单的确认/取消入口：命中返回 {answer, route}，否则 None。
-    "确认"这类词只在有待确认单时生效，无单时落回闲聊等正常路由。"""
+    "确认"这类词只在有待确认单时生效，无单时落回闲聊等正常路由。
+    2026-08-19 泛化：按 sop_code 在注册表找该 SOP 的 finish 提交——
+    曾写死请假 _finish_submit，报销等新 SOP 确认会误提成请假单。"""
     q = (query or "").strip()
     if not chat_id or q not in _CONFIRM_WORDS | _CANCEL_WORDS:
         return None
@@ -233,9 +254,14 @@ def try_confirm_or_cancel(chat_id: str, query: str) -> dict | None:
         return None
     clear_pending(chat_id)
     if q in _CONFIRM_WORDS:
-        _audit("leave_action", "user_confirmed", pending["params"], pending["emp"].get("realName", ""), 0.0)
-        return _finish_submit(pending["params"], pending["emp"])
-    return {"answer": "已取消，未提交请假申请。", "route": "SOP"}
+        sop_code = pending.get("sop_code") or "leave_action"
+        finish = next((s.finish for s in SOP_REGISTRY if s.code == sop_code and s.finish), None)
+        _audit(sop_code, "user_confirmed", pending["params"],
+               pending["emp"].get("realName", ""), 0.0)
+        if not finish:
+            return {"answer": "该流程的提交通道未配置，请稍后再试。", "route": "SOP"}
+        return finish(pending["params"], pending["emp"])
+    return {"answer": "已取消，未提交申请。", "route": "SOP"}
 
 
 # ---------------- 请假 SOP 步骤 handler（每步返回 (终止?, 结果)） ----------------
@@ -352,15 +378,28 @@ def _h_validate(state: dict) -> tuple[bool, dict | None]:
 
 
 def _h_confirm(state: dict) -> tuple[bool, dict | None]:
-    """提交前确认（人机协同闸门）：落待确认单等用户"确认"；
-    存储失败降级为直接提交——功能不因 MySQL 抖动而断"""
+    """提交前确认（人机协同闸门）：落待确认单等用户"确认"（带业务码）；
+    存储失败降级为直接提交——功能不因 MySQL 抖动而断。
+    2026-08-19 泛化：确认文案按 SOP 自身的 name/confirm_detail 拼——
+    曾写死请假（startTime/endTime/"请假申请"），新 SOP 复用直接 KeyError。"""
     params, emp = state["params"], state["emp"]
-    if state["chat_id"] and save_pending(state["chat_id"], params, emp):
-        _audit("leave_action", "pending_confirm", params, emp.get("realName", ""), 0.0)
-        return True, {"answer": (f"请确认请假申请：{emp.get('realName')}，"
-                                 f"{params['startTime']} 至 {params['endTime']}，"
-                                 f"事由：{params['reason'].strip()}。\n"
-                                 f"回复「确认」提交，回复「取消」放弃。"), "route": "SOP"}
+    if state["chat_id"] and save_pending(state["chat_id"], params, emp, state["sop"]):
+        _audit(state["sop"], "pending_confirm", params, emp.get("realName", ""), 0.0)
+        defn = next((s for s in SOP_REGISTRY if s.code == state["sop"]), None)
+        detail = ""
+        if defn and defn.confirm_detail:
+            try:
+                detail = defn.confirm_detail(params)
+            except Exception:
+                detail = ""
+        reason = (params.get("reason") or "").strip()
+        text = f"请确认{defn.name if defn else '申请'}：{emp.get('realName')}"
+        if detail:
+            text += f"，{detail}"
+        if reason:
+            text += f"，事由：{reason}"
+        text += "。\n回复「确认」提交，回复「取消」放弃。"
+        return True, {"answer": text, "route": "SOP"}
     return False, None
 
 
@@ -445,15 +484,24 @@ _LEAVE_HANDLERS = {
 LEAVE_SOP = SopDefinition(
     code="leave_action", name="请假申请", keywords=_LEAVE_KEYWORDS,
     steps=["load_employees", "extract", "validate", "confirm", "submit", "receipt"],
-    handlers=_LEAVE_HANDLERS)
+    handlers=_LEAVE_HANDLERS,
+    finish=_finish_submit,   # 待确认单分发：确认后提交请假单
+    confirm_detail=lambda p: f"{p.get('startTime', '')} 至 {p.get('endTime', '')}")
 
 SOP_REGISTRY = [LEAVE_SOP]
 
 
+def register(definition: SopDefinition) -> None:
+    """注册一条新 SOP（审批类 SOP 在 app/plan/approvals.py 定义并注册）。
+    曾 SOP_REGISTRY 写死单列表——新流程只能改这里，注册函数化后各业务自行挂载。"""
+    SOP_REGISTRY.append(definition)
+
+
 def execute(sop: SopDefinition, query: str, chat_id: str = "") -> dict:
     """通用 SOP 执行器：按步骤描述符顺序执行，步骤返回 (终止?, 结果)。
-    新增 SOP = 定义 steps 顺序 + 每步确定性 handler + 注册表加一行。"""
-    state = {"query": query, "chat_id": chat_id}
+    新增 SOP = 定义 steps 顺序 + 每步确定性 handler + 注册表加一行。
+    state["sop"] 供 confirm 步骤落待确认单时区分业务码。"""
+    state = {"query": query, "chat_id": chat_id, "sop": sop.code}
     for step_name in sop.steps:
         stop, result = sop.handlers[step_name](state)
         if stop:

@@ -26,12 +26,16 @@ class Tool:
     description: str
 
 
-# 现有确定性工具全量登记（描述供未来发现机制/后台展示用）
+# 现有确定性工具全量登记（描述供未来发现机制/后台展示用）。
+# 2026-08-19 去 OA 化：员工目录/报销/经营三条退役（并入 NL2SQL 数据面）；
+# 审批类 SOP 按 code 逐一登记——skill 表空时只有登记过的默认启用，
+# 曾新 SOP 未登记 is_enabled 全 False 被整条关死的实况。
 TOOLS: list[Tool] = [
-    Tool("employee_directory", "员工目录", "公司人数统计与员工信息查询"),
-    Tool("oa_expenses", "报销数据", "按人/按天查询报销明细与汇总"),
-    Tool("oa_metrics", "经营数据", "营收/成本/利润经营数据查询"),
-    Tool("leave_action", "请假申请", "请假 SOP（查名册→提取→校验→确认→提交 OA）"),
+    Tool("leave_action", "请假申请", "请假 SOP（查名册→提取→校验→确认→写库）"),
+    Tool("expense_action", "报销申请", "报销 SOP（提取→校验→确认→写库→审批流）"),
+    Tool("travel_action", "出差申请", "出差 SOP（目的地/日期→校验→确认→写库）"),
+    Tool("purchase_action", "采购申请", "采购 SOP（物品/数量/金额→校验→确认→写库）"),
+    Tool("contract_action", "合同用印申请", "合同用印 SOP（合同/对方/金额→校验→确认→写库）"),
     Tool("doc_wizard", "文档生成", "一句话生成/多轮修改云文档"),
 ]
 
