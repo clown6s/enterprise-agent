@@ -1,8 +1,8 @@
-四审批 SOP 上线：报销/出差/采购/合同用印（去 OA 化第二批）
+审批闭环自建：飞书对话审批 + 后台审批看板（去 OA 化第三批，T48）
 
-- app/plan/approvals.py：ApprovalDef 组件化定义四类审批（提取提示词+确定性校验+落库列映射+回执模板），_build_sop 组装注册——加新审批=加一个 def 不写状态机
-- sop.py 泛化三处：待确认单带业务码（sop_pending.sop_code，确认按码分发 finish）、确认文案按 SOP 自身 name/confirm_detail 拼（曾写死请假文案，新 SOP KeyError）、is_enabled 按 code 查（曾写死 leave_action）
-- 四张申请表+审批链配置就绪（expense 部门负责人→财务、travel 部门负责人、purchase 部门负责人→财务、contract 部门负责人→管理员）
-- tools.py 登记四新工具（skill 表空时未登记默认禁用——曾新 SOP 全被开关关死的实况）
-- 探针闭环验证：提交→确认单→确认→落库（申请号/申请人/部门/审批人解析/status=1 全对）
+- app/plan/approval.py：审批动作层（通过/拒绝 → oa_approval_record + 状态机推进；多级审批按 oa_approval_flow 逐级转交；越权/重复操作/缺审批人三护栏）；try_approval_command 对话审批入口（同意/拒绝+单号，仅一笔可省略单号）
+- 飞书：通讯录同步（启动自动拉取 upsert feishu_employee，已拉到 zzp/张志鹏 2 人）+ send_to_user 主动推送；提交成功后通知审批人
+- agent 双路径接审批指令层（待确认单之后、SOP 之前）
+- 后台：/approvals 看板 + /approvals/act 端点（操作人身份=sys_user.employee_id，未绑定拒操作）；前端 ApprovalBoard 页
+- 探针验证：两级审批链（王强→赵敏）转交/终态/审批记录/越权护栏全对
 - 回归 26/26、不变量 53/53

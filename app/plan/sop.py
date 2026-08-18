@@ -446,6 +446,13 @@ def _h_submit(state: dict) -> tuple[bool, dict | None]:
                time.time() - t0)
         return True, {"answer": "请假提交失败：员工目录服务未受理，请稍后再试。", "route": "SOP"}
     _audit("leave_action", "leave_insert", payload, apply_no, time.time() - t0)
+    # 飞书通知审批人（软依赖：无绑定静默跳过）
+    if payload["approverId"]:
+        from . import approval as _approval
+        _approval.notify_approver(payload["approverId"], "leave",
+                                  {"apply_no": apply_no, "user_name": payload["userName"],
+                                   "leave_type": payload["leaveType"], "days": payload["days"],
+                                   "reason": payload["reason"]})
     state["apply_no"] = apply_no
     return False, None
 

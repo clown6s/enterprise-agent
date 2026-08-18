@@ -237,6 +237,13 @@ def _do_insert(d: ApprovalDef, params: dict, emp: dict) -> dict:
         _sop._audit(d.code, "insert", params, f"DB 失败: {e!r}", time.time() - t0)
         return {"answer": f"{d.name}提交失败：服务未受理，请稍后再试。", "route": "SOP"}
     _sop._audit(d.code, "insert", params, apply_no, time.time() - t0)
+    # 飞书通知审批人（软依赖：无绑定静默跳过，审批人可主动查待审批单）
+    if approver:
+        from . import approval as _approval
+        _approval.notify_approver(approver, d.business_type,
+                                  {"apply_no": apply_no, "user_name": emp.get("realName"),
+                                   **{col: values[i + 4] for i, (key, (col, _)) in
+                                      enumerate(d.fields.items())}})
     return {"apply_no": apply_no}
 
 

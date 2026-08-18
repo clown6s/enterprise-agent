@@ -198,6 +198,49 @@ def save_user_identity(body: dict, authorization: str | None = Header(default=No
 # 能力总线 2026-08-19 退役：/capabilities 三端点随机制删除（员工/报销/经营
 # 规则并入 NL2SQL 数据面，query-schema 注册即用，路由数据驱动由本端点承担）
 
+
+# ---------------- 审批看板（去 OA 化后自建审批闭环） ----------------
+
+@router.get("/api/rag/admin/approvals")
+def list_approvals(business_type: str = "", status: int | None = None,
+                   authorization: str | None = Header(default=None)):
+    """申请单看板：business_type 空=全部业务；status 空=全部状态"""
+    if not _auth(authorization):
+        return _unauthorized()
+    from ..plan import approval as approval_flow
+    return _ok(approval_flow.list_applications(business_type or "", status))
+
+
+@router.post("/api/rag/admin/approvals/act")
+def act_approval(body: dict, authorization: str | None = Header(default=None)):
+    """审批动作：{business_type, apply_id, action(1通过/2拒绝), comment}。
+    操作人身份取登录账号绑定的 employee_id（sys_user.employee_id 列）——
+    未绑定时拒绝（审批人身份必须可追溯，不允许后台账号无身份代审）"""
+    session = _auth(authorization)
+    if not session:
+        return _unauthorized()
+    from ..plan import approval as approval_flow
+    biz = (body.get("business_type") or "").strip()
+    try:
+        apply_id = int(body.get("apply_id") or 0)
+        action = int(body.get("action") or 0)
+    except (TypeError, ValueError):
+        return {"success": False, "message": "apply_id/action 非法", "data": None}
+    if not biz or not apply_id or action not in (1, 2):
+        return {"success": False, "message": "参数不完整", "data": None}
+    # 登录账号 → employee_id（_auth 会话里无此列，直查 sys_user）
+    emp_id = None
+    for row in _query("SELECT employee_id FROM sys_user WHERE username=%s",
+                      (session.get("username"),)):
+        emp_id = row[0]
+    if not emp_id:
+        return {"success": False, "message": "当前账号未绑定员工身份，无法审批（后台-账号身份绑定）",
+                "data": None}
+    result = approval_flow.act_on_application(biz, apply_id, emp_id, action,
+                                              (body.get("comment") or "").strip())
+    return {"success": result["ok"], "message": result["message"], "data": None}
+
+
 _SAFE_TABLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
 
 

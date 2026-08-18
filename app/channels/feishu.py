@@ -59,6 +59,16 @@ class FeishuChannel:
                             event_handler=dispatcher)
         t = threading.Thread(target=self._run, name="feishu-ws", daemon=True)
         t.start()
+        # 通讯录同步（后台线程：不阻塞 WS 启动；失败软依赖）
+        threading.Thread(target=self._sync_once, name="feishu-sync", daemon=True).start()
+
+    def _sync_once(self) -> None:
+        try:
+            n = self.sync_contacts()
+            if n:
+                print(f"[飞书] 通讯录同步 {n} 人")
+        except Exception as e:
+            print(f"[飞书] 通讯录同步异常: {e!r}")
 
     def _run(self) -> None:
         try:
@@ -85,6 +95,79 @@ class FeishuChannel:
         except httpx.HTTPError:
             pass
         return None
+
+    # ---------------- 通讯录同步 ----------------
+
+    def sync_contacts(self) -> int:
+        """拉取通讯录成员 → feishu_employee 表（幂等 upsert，返回同步人数）。
+        人工绑定的 employee_id/role_manual 不覆盖——同步只更新基础字段。
+        账号的 mobile 在通讯录为空时无法自动匹配 employee，由后台身份页手动绑。
+        scope 不足/API 失败返回 0（软依赖，不炸渠道）"""
+        token = self._app_access_token()
+        if not token:
+            return 0
+        users: list[dict] = []
+        page_token = ""
+        try:
+            while True:
+                url = ("https://open.feishu.cn/open-apis/contact/v3/users"
+                       f"?user_id_type=open_id&department_id=0&page_size=50"
+                       + (f"&page_token={page_token}" if page_token else ""))
+                resp = httpx.get(url, headers={"Authorization": f"Bearer {token}"},
+                                 timeout=10)
+                data = resp.json()
+                if data.get("code") != 0:
+                    print(f"[飞书] 通讯录拉取失败: {data.get('code')} {data.get('msg')}")
+                    return 0
+                d = data.get("data") or {}
+                for u in d.get("items") or []:
+                    users.append({
+                        "open_id": u.get("open_id") or "",
+                        "name": u.get("name") or "",
+                        "job_title": u.get("job_title") or "",
+                        "dept_ids": json.dumps(u.get("department_ids") or [],
+                                              ensure_ascii=False),
+                    })
+                if not d.get("has_more") or not d.get("page_token"):
+                    break
+                page_token = d["page_token"]
+        except (httpx.HTTPError, ValueError):
+            return 0
+        if not users:
+            return 0
+        try:
+            import pymysql
+            from .. import config
+            conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                                   user="root", password=config.MYSQL_PASSWORD,
+                                   database=config.MYSQL_DB, charset="utf8mb4",
+                                   connect_timeout=3)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS feishu_employee ("
+                    "open_id VARCHAR(64) PRIMARY KEY,"
+                    "name VARCHAR(64) DEFAULT '',"
+                    "job_title VARCHAR(128) DEFAULT '',"
+                    "dept_ids TEXT,"
+                    "role VARCHAR(32) DEFAULT 'employee',"
+                    "role_manual TINYINT DEFAULT 0,"
+                    "synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                    "employee_id INT DEFAULT NULL)")
+                for u in users:
+                    cur.execute(
+                        "INSERT INTO feishu_employee (open_id, name, job_title, dept_ids, "
+                        "synced_at) VALUES (%s,%s,%s,%s,NOW()) "
+                        "ON DUPLICATE KEY UPDATE name=VALUES(name), "
+                        "job_title=VALUES(job_title), dept_ids=VALUES(dept_ids), "
+                        "synced_at=NOW()",
+                        (u["open_id"], u["name"], u["job_title"], u["dept_ids"]))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[飞书] 通讯录落库失败: {e!r}")
+            return 0
+        return len(users)
 
     # ---------------- 消息入口（SDK 线程） ----------------
 
@@ -500,6 +583,29 @@ class FeishuChannel:
             )
         except httpx.HTTPError as e:
             print(f"[飞书] 回复失败 messageId={message_id}: {e}")
+
+    def send_to_user(self, open_id: str, text: str) -> bool:
+        """给指定用户发消息（审批通知等主动推送；需 im:message 权限）。
+        成功 True；渠道未启用/token 失败/API 报错 False（软依赖）"""
+        if not self.enabled():
+            return False
+        token = self._app_access_token()
+        if not token:
+            return False
+        try:
+            resp = httpx.post(
+                "https://open.feishu.cn/open-apis/im/v1/messages"
+                "?receive_id_type=open_id",
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"},
+                json={"receive_id": open_id, "msg_type": "text",
+                      "content": json.dumps({"text": text[:6000]}, ensure_ascii=False)},
+                timeout=15,
+            )
+            return resp.json().get("code") == 0
+        except httpx.HTTPError as e:
+            print(f"[飞书] 推送给 {open_id} 失败: {e}")
+            return False
 
 
 channel = FeishuChannel()
