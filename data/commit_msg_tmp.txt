@@ -1,8 +1,6 @@
-审批闭环自建：飞书对话审批 + 后台审批看板（去 OA 化第三批，T48）
+去 OA 化收官：demo 数据清理 + 回归补 SOP 用例 + 文档更新（T49）
 
-- app/plan/approval.py：审批动作层（通过/拒绝 → oa_approval_record + 状态机推进；多级审批按 oa_approval_flow 逐级转交；越权/重复操作/缺审批人三护栏）；try_approval_command 对话审批入口（同意/拒绝+单号，仅一笔可省略单号）
-- 飞书：通讯录同步（启动自动拉取 upsert feishu_employee，已拉到 zzp/张志鹏 2 人）+ send_to_user 主动推送；提交成功后通知审批人
-- agent 双路径接审批指令层（待确认单之后、SOP 之前）
-- 后台：/approvals 看板 + /approvals/act 端点（操作人身份=sys_user.employee_id，未绑定拒操作）；前端 ApprovalBoard 页
-- 探针验证：两级审批链（王强→赵敏）转交/终态/审批记录/越权护栏全对
-- 回归 26/26、不变量 53/53
+- 清李四/家里有事测试请假单 110 行、王强假手机号、四申请表探针残留、审批记录（用户点名确认）
+- 回归 26→29：报销校验拦截（0 元，负号采样抖动改稳形态）/出差日期倒挂/报销提交待确认
+- CLAUDE.md 更新：目录结构（去 intent/oa_client，加 nlsql/approvals/approval）+ 2026-08-19 去 OA 化状态
+- 回归 29/29、不变量 53/53、guards 矩阵 18/18，8080 已重启

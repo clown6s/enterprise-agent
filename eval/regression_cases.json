@@ -333,5 +333,41 @@
       ],
       "max_seconds": 60
     }
+  },
+  {
+    "id": "guard-023-报销SOP校验拦截",
+    "query": "帮我报销，王强报销 0 元打车费",
+    "expect": {
+      "route": "SOP",
+      "answer_contain": [
+        "校验未通过"
+      ],
+      "max_seconds": 30
+    }
+  },
+  {
+    "id": "guard-024-出差SOP日期倒挂",
+    "query": "帮我出差，赵敏8月25日去北京，8月20日回来，开会",
+    "expect": {
+      "route": "SOP",
+      "answer_contain": [
+        "校验未通过"
+      ],
+      "max_seconds": 30
+    }
+  },
+  {
+    "id": "guard-025-报销SOP提交待确认",
+    "query": "帮我报销，李娜办公用品 100 元，买文具",
+    "expect": {
+      "route": "SOP",
+      "answer_contain": [
+        "请确认报销申请"
+      ],
+      "answer_not_contain": [
+        "校验未通过"
+      ],
+      "max_seconds": 30
+    }
   }
 ]

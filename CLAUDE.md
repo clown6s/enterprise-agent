@@ -17,16 +17,18 @@ app/
   guards.py             # 确定性守卫：NO_ANSWER 兜底 / 格式修复 / 术语核对 / 缺失术语删除 +
                         # 套话拦截 / 鉴伪断言删除 / 空标题清理 / CJK 清理
   demo_data.py          # 员工目录演示数据（8 人）
-  oa_client.py          # OA 数据源客户端（报销/经营数据；必须 Bearer 前缀）
-  intent/rules.py       # 意图规则表：新增确定性意图 = 加一行 IntentRule
+  employee_store.py     # 员工目录数据层（MySQL employee 表，30s TTL）
   service/agent.py      # 编排核心：answer() + answer_stream() 双路径（只做路由，不做校验）
   service/verify.py     # 答案校验链：小模型核查 + 熔断 + 确定性守卫顺序（勿调换）
   service/retrieval.py  # 预检索 + 上下文构建
   service/graph.py      # Neo4j 图谱-only 兜底（无向两跳遍历）
   service/docwizard.py  # 文档生成：触发词→标题→LLM→飞书云文档直出 + 多轮修改回写
-  plan/sop.py           # 请假 SOP 状态机（查员工→提取→校验→提交OA→回执）
+  service/nlsql.py      # NL2SQL 数据面（query_schema 注册表 + 五关校验 + 中文标签）
+  plan/sop.py           # SOP 状态机引擎（组件化：SopDefinition steps+handlers）
+  plan/approvals.py     # 审批类 SOP 定义（报销/出差/采购/合同用印，ApprovalDef 组件）
+  plan/approval.py      # 审批动作层（通过/拒绝 → 审批记录 + 多级状态机推进 + 对话审批入口）
   learn/                # 自我优化：反馈回流 / 缺口聚类 / 用量追踪 / 校验熔断
-  channels/feishu.py    # 飞书：lark-oapi WS + 卡片 + 图片 OCR + docx
+  channels/feishu.py    # 飞书：lark-oapi WS + 卡片 + 图片 OCR + 通讯录同步 + 主动推送
   routers/              # auth / chat(SSE) / health / feedback / admin / ingestion
 scripts/
   watchdog.py           # 探活 8080/7000，挂了自动拉起（独立 python 进程常驻）
@@ -70,6 +72,18 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 - git 提交信息含引号/括号走 `-F` 文件传递（内联多行信息会被 shell 截断，pathspec 报错实况）
 - 回归单条挂先判两类再动手：① 外部 API 抖动（重跑该条确认，别急着改代码）；② 断言前提漂移（KB 内容变了/断言锁的是旧错误行为——翻断言锁正确行为，不删用例）
 - 不要用"政务/纪检/信访"类措辞，用"合规/企业"等中性词
+
+## 状态（2026-08-19）
+
+- 去 OA 化完成（OA 服务 7000 停用，数据同库 rag_service，零迁移）：
+  - 能力总线退役：员工3条+OA报销/经营2条规则全并入 NL2SQL 数据面（biz_expense/biz_metric_daily 注册 query_schema），capabilities/intent 模块删除
+  - 身份体系统一：employee 表=员工主数据（dept_id→sys_dept 外键，6 部门），员工-角色绑定指向 employee（sys_employee 演示账号体系退役）
+  - 审批三件套：oa_leave_application 复用 + oa_approval_flow 扩 4 业务审批链（expense/travel/purchase/contract）+ oa_approval_record
+  - 四审批 SOP：报销/出差/采购/合同用印（ApprovalDef 组件化，加新审批=加一个 def；共享查名册/提取/校验/确认闸门/审批人解析/审计）
+  - 审批闭环自建：飞书对话审批（同意/拒绝+单号）+ 飞书通知推送 + 后台审批看板页
+  - 飞书通讯录同步：启动自动拉取 upsert feishu_employee（拉得 zzp/张志鹏 2 账号，绑定走后台账号身份页）
+- 写业务动作直写本库申请表（业务库即 rag_service），审批人解析=oa_approval_flow 配置（部门负责人/角色Key）；读走 NL2SQL——问法不碰代码
+- 回归 26/26、不变量 53/53、guards 矩阵 18/18
 
 ## 状态（2026-08-18）
 
