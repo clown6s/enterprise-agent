@@ -79,4 +79,4 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 - 2026-08-17 晚批次（用户全权委托）：文档解析「## 标题」块边界真实现；Milvus 检索失败日志；提示注入防护（查询级拦截+上下文级清洗）；人机协同（低把握答案自动进审核队列 + 请假 SOP 提交前确认）；工具注册表（skill 表开关 TTL 生效）；多轮对话历史（指代消解+历史作答）；检索 ACL 过滤（doc_acl → expr，user 标识从飞书/Web 贯通审计与反馈）
 - 2026-08-17 深夜批次：① Milvus 全量迁 MilvusClient API（pymilvus 3.0，requirements 锁 >=3.0.1,<3.1）+ 服务端重启自动重连 + document_id 标量索引 + client 超时 + 检索重试；② 后台首页监控全真实数据（dashboard noAnswer/feishu/adoptions、usage JSONL 多日、kb-health 双计数修复、kb-stats 真实探活/4096）；③ 借鉴 ragflow 落地：LLM 工厂注册表（MODEL_REGISTRY，加用途改 .env）、PDF 版面识别（字号判标题「## 」）、图片 OCR chunk（PDF/docx 内嵌图 → qwen-vl，扫描件可入库）、CSV 支持（编码回退+分隔符自检）、PDF 乱码拒绝、SOP 组件化（steps+handlers+通用执行器）；④ 上传链路四修：upload 端点线程池化（曾阻塞事件循环）、sha256 去重注册表、图谱构建后台化、embed_batch 批量嵌入
 - 验收已完成（用户上传文档后）：回归 23/23 + 检索评测 100%/MRR 0.9167 + guards 矩阵 18/18 + 图谱构建正常
-- 待办：① ACL 身份映射（飞书 scopes 已开通、手机号匹配；Web 侧 sys_user 加 employee_id 待做）；② 不变量测试套件；③ 部署上线（用户明确先不用管）
+- 待办：① 部署上线（用户明确先不用管）；② 飞书真机验证 ACL 身份映射（需给用户账号绑 mobile+employee_id，通讯录 API 手机号匹配链路真机跑一遍）；③ sweep 全量干净结果（r5 挂后台，结果在 logs/sweep_20260818_r5.log）
