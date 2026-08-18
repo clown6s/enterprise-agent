@@ -175,7 +175,7 @@ class FeishuChannel:
             if (result.get("route") == "KNOWLEDGE_QA" and result.get("sources")
                     and len(result["answer"]) > 50):
                 from ..service import agent as _agent
-                suggestions = _agent.suggest_followups(text, result["answer"])
+                suggestions = _agent.suggest_followups(text, result["answer"], open_id)
             card_msg_id = self._reply_card(message_id, self.build_answer_card(
                 result["answer"], result["sources"], suggestions)) or ""
             if not card_msg_id:
@@ -198,7 +198,7 @@ class FeishuChannel:
             suggestions = []
             if (result.get("route") == "KNOWLEDGE_QA" and result.get("sources")
                     and len(result["answer"]) > 50):
-                suggestions = agent.suggest_followups(q, result["answer"])
+                suggestions = agent.suggest_followups(q, result["answer"], open_id)
             if msg_id:
                 card_msg_id = self._reply_card(msg_id, self.build_answer_card(
                     result["answer"], result["sources"], suggestions))

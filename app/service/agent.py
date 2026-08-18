@@ -16,13 +16,13 @@
 import re
 from datetime import datetime
 
-from .. import guards, llm, prompts, tools
+from .. import embeddings, guards, llm, milvus_store, prompts, tools
 from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
                        synonym_groups)
 from ..intent import rules as intent_rules
 from ..learn import feedback, gap_discovery, synonyms
 from ..plan import sop as sop_engine
-from . import docwizard, graph, history, retrieval, verify
+from . import acl, docwizard, graph, history, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
 
 # ---------------- 意图与关键词模式 ----------------
@@ -280,19 +280,49 @@ def _anchor_short_query(query: str, answer: str, source: str) -> str:
     return f"根据《{src}》一文：\n{answer}"
 
 
-def suggest_followups(query: str, answer: str) -> list[str]:
+def _content_words(q: str) -> list[str]:
+    """问句内容词（延伸推荐预检用）：去疑问词/虚词后的 2-8 字片段"""
+    q = re.sub(r"(是多少|有哪些|是什么|多少|如何|怎么|怎样|什么|哪些|为什么|为何"
+               r"|吗|呢|请问|的|了|是|有|在)", " ", q or "")
+    return [t for t in re.findall(r"[一-龥]{2,8}|[A-Za-z]{2,}", q)]
+
+
+def suggest_followups(query: str, answer: str, user: str = "") -> list[str]:
     """答案延伸推荐：根据问题+答案生成 2 个自然的追问（飞书卡片按钮用，
-    点击即追问）。软依赖：失败返回空列表。"""
+    点击即追问）。软依赖：失败返回空列表。
+    推荐预检（确定性）：候选追问的判别词（追问里有、原问题里没有的内容词
+    及其 2-3 字片段）必须出现在检索命中文本里，否则不推荐——曾推荐
+    "心衰如何诊断"而资料只有 NYHA 分级+治疗原则（点击必兜底）的实况。
+    误杀方向宁缺毋滥：资料有答案但写法不同 → 少一个按钮，不伤主答案。"""
     try:
         raw = llm.chat_chain(
             "", "根据下面的问题与回答，提出 2 个用户最可能接着问的相关问题。"
+                "只提与回答内容直接相关的话题，不要提回答里没有涉及的内容。"
                 "每行一个，只输出问题本身（≤20 字），不要编号和解释：\n\n"
                 f"【问题】\n{query}\n\n【回答】\n{answer[:1500]}",
             temperature=0.3).strip()
         out = []
+        base = " ".join(_content_words(query))
         for line in raw.splitlines():
             line = re.sub(r"^[\d.\-、*\s]+", "", line).strip()
-            if line and len(line) <= 30 and line not in out:
+            if not line or len(line) > 30 or line in out:
+                continue
+            discr = [w for w in _content_words(line) if w not in base]
+            if not discr:
+                continue   # 无新内容词（纯指代/复述原问题）不推荐
+            keys: set[str] = set()
+            for w in discr:
+                keys.add(w)
+                for n in (3, 2):
+                    keys.update(w[i:i + n] for i in range(len(w) - n + 1))
+            try:
+                vec = embeddings.embed(line)
+                hits = milvus_store.search(vec, line, top_k=3,
+                                           expr=acl.allowed_expr(user))
+            except Exception:
+                continue
+            texts = "".join(h["text"] for h in hits)
+            if any(k in texts for k in keys):
                 out.append(line)
             if len(out) >= 2:
                 break
