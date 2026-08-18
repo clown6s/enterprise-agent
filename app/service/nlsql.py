@@ -45,6 +45,9 @@ _GEN_PROMPT = """你是数据库查询生成器。根据下面的表结构描述
 4. 无法确定查什么时输出 {{"sql_template": "", "params": []}}
 5. 今天日期是 {today}。"最近 N 天"用参数化区间条件写：expense_date >= CURDATE() - INTERVAL %s DAY，
    params 填数字 N（不要自己算日期，跨月容易算错——曾模型自算日期导致查错窗口）
+6. 跨表问法（"某人的部门的报销"= 先定位部门再查该部门数据）用 JOIN：
+   ON 条件只允许用【表结构】中含义相同的关联列（如 employee.dept = biz_expense.dept_name），
+   表别名用单字母（employee e / biz_expense b），JOIN 后必须保留 WHERE/LIMIT
 
 【表结构】
 {schema}
@@ -159,6 +162,10 @@ def _validate(sql: str, params: list, tables: list[dict]) -> str | None:
     allowed_cols = {c["name"].lower() for t in tables for c in t["columns"]}
     low_clean = low.replace("%s", " ")
     aliases = set(re.findall(r"\bas\s+([a-z_][a-z0-9_]*)", low_clean))
+    # JOIN 裸别名（JOIN employee e ON e.dept=... 里 e 无 AS——
+    # 曾跨表问法"李娜部门的报销"生成的 JOIN 被第三关误拒）
+    aliases |= set(re.findall(
+        r"\b(?:from|join)\s+[a-z_][a-z0-9_]*\s+([a-z_][a-z0-9_]*)\b", low_clean))
     for tok in re.findall(r"[a-z_][a-z0-9_]*", low_clean):
         if (tok in _SQL_KEYWORDS or tok in registered or tok in allowed_cols
                 or tok in aliases):
@@ -220,6 +227,17 @@ def try_answer(query: str, user: str = "") -> str | None:
     final_sql = _validate(sql, params, tables)
     if not final_sql:
         return None
+    def _cast_param(p) -> int | float | str:
+        """参数智能转类型：纯数字转 int/float（LIMIT %s 不接受字符串参数——
+        曾"谁的报销最多"生成 ORDER BY ... LIMIT %s，'1' 字符串直接语法报错）；
+        日期/人名等保持字符串"""
+        s = str(p)
+        if re.fullmatch(r"-?\d+", s):
+            return int(s)
+        if re.fullmatch(r"-?\d+\.\d+", s):
+            return float(s)
+        return s
+
     try:
         import pymysql
         conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
@@ -227,7 +245,21 @@ def try_answer(query: str, user: str = "") -> str | None:
                                database=config.MYSQL_DB, charset="utf8mb4",
                                connect_timeout=3)
         with conn.cursor() as cur:
-            cur.execute(final_sql, [str(p) for p in params])
+            typed_params = [_cast_param(p) for p in params]
+            try:
+                cur.execute(final_sql, typed_params)
+            except pymysql.err.OperationalError as e:
+                # collation 冲突兜底（1267）：库里两代 collation 并存
+                # （OA 时代表 utf8mb4_0900_ai_ci vs 主体 utf8mb4_unicode_ci），
+                # JOIN 的 = 比较直接炸——ON 右侧列显式 COLLATE 重试
+                # （表统一 collation 需 DBA 点头，代码层先治类兜底）
+                if e.args[0] == 1267 and " join " in final_sql.lower():
+                    fixed = re.sub(r"(\bon\b\s+[^=]+)=\s*([a-z_][\w.]*)",
+                                   r"\1= \2 COLLATE utf8mb4_unicode_ci",
+                                   final_sql, flags=re.I)
+                    cur.execute(fixed, typed_params)
+                else:
+                    raise
             rows = cur.fetchall()
             cols = [d[0] for d in cur.description]
         conn.close()
@@ -236,7 +268,9 @@ def try_answer(query: str, user: str = "") -> str | None:
         return None
     labels = {c["name"].lower(): (c.get("desc") or c["name"]) for t in tables for c in t["columns"]}
     # 聚合别名回退（模型起的 total_count/sum_amount 等别名尾缀匹配不上注册列
-    # 时的中文标签——"公司有多少人"曾输出"total_count：8。"的实况）
+    # 时的中文标签——"公司有多少人"曾输出"total_count：8。"的实况）。
+    # 双向匹配：尾缀（total_count→count）或前缀（total_sales→total）——
+    # 曾只做尾缀，"查询所有销售额"的 SUM(revenue) AS total_sales 漏网输出英文
     _AGG_LABELS = {"count": "数量", "sum": "合计", "avg": "平均",
                    "max": "最大值", "min": "最小值", "total": "合计"}
 
@@ -248,9 +282,9 @@ def try_answer(query: str, user: str = "") -> str | None:
         for k, v in labels.items():
             if key.endswith(k):
                 return v
-        # 再回退聚合函数后缀（total_count → 数量）
+        # 再回退聚合函数名（注册列尾缀优先：total_revenue→营收 而非 合计）
         for k, v in _AGG_LABELS.items():
-            if key == k or key.endswith("_" + k):
+            if key == k or key.endswith("_" + k) or key.startswith(k + "_"):
                 return v
         return col
 

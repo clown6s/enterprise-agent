@@ -96,12 +96,17 @@ def _resolve_level_approver(business_type: str, level: int, dept_id) -> int | No
 
 
 def summary_text(business_type: str, row: dict) -> str:
-    """申请摘要（通知/审批卡片用），列值全来自真实数据行"""
+    """申请摘要（通知/审批卡片用），列值全来自真实数据行。
+    列名转中文——曾直接拼英文列名，"leave_type：1，days：1.0"飞书实况"""
+    _COL_CN = {"leave_type": "请假类型", "days": "天数", "expense_type": "类型",
+               "amount": "金额", "destination": "目的地", "start_date": "出发日期",
+               "end_date": "返回日期", "item_name": "物品", "quantity": "数量",
+               "contract_name": "合同", "counterparty": "对方", "reason": "事由"}
     parts = []
     for col in _SUMMARY_COLS.get(business_type, ()):
         v = row.get(col)
         if v not in (None, ""):
-            parts.append(f"{col}：{v}")
+            parts.append(f"{_COL_CN.get(col, col)}：{v}")
     return "，".join(parts)
 
 
