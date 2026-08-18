@@ -64,8 +64,8 @@ def tune() -> dict:
     # 只接受严格更优：平局不换参（缩小 top_k 在评测集上无差异，但会削弱未见查询的召回面）
     if best_hr <= current_hr:
         print(f"[保持] 最优组合 {best_top_k}/{best_th}（{best_hr:.2%}）不优于当前"
-              f"（{current_hr:.2%}），参数不变。网格平局说明瓶颈在召回而非阈值"
-              f"（缺 BM25 混合检索）。")
+              f"（{current_hr:.2%}），参数不变。网格平局说明评测集内参数已达最优"
+              f"（瓶颈在未见查询的召回面）。")
         payload["top_k"] = current["top_k"]
         payload["min_score"] = current["min_score"]
     else:
