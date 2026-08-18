@@ -22,7 +22,7 @@ from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
 from ..intent import rules as intent_rules
 from ..learn import feedback, gap_discovery, synonyms
 from ..plan import sop as sop_engine
-from . import acl, docwizard, graph, history, retrieval, verify
+from . import acl, docwizard, graph, history, nlsql, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
 
 # ---------------- 意图与关键词模式 ----------------
@@ -41,6 +41,10 @@ _CHAT_WORDS = re.compile(
     r"^(你好|您好|hi|hello|谢谢|你是谁|你能做什么|你叫什么|在吗|早上好|晚上好|再见|拜拜|辛苦|谢谢啦|好的|OK|ok)"
 )
 _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
+# NL2SQL 预闸：事实型问法才尝试表查询（"什么是心律失常"这类知识问题不触发，
+# 省一次模型调用；表查询不可答时照样漏回知识问答）
+_FACT_QUERY = re.compile(
+    r"产品|价格|多少钱|哪些|几个|多少|数量|金额|汇总|统计|电话|手机|品类|售价|库存")
 
 
 # ---------------- 路由与工具函数 ----------------
@@ -413,6 +417,18 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": guards.fix_output(intent["answer"]), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
 
+    # NL2SQL 表查询层：已注册表的事实型问法自动生成 SQL（合规五关校验
+    # 后才执行，权限按 query_schema.grants 过滤）；不可答返回 None 漏回
+    # 知识问答。预闸限定事实型问法——避免每条知识问答都多一次模型调用
+    if _FACT_QUERY.search(query):
+        try:
+            sql_ans = nlsql.try_answer(query, user=user)
+        except Exception:
+            sql_ans = None
+        if sql_ans:
+            return {"answer": guards.fix_output(sql_ans), "sources": [],
+                    "route": "KNOWLEDGE_QA", "chart": None}
+
     # 文档多轮修改（会话有进行中文档 + 修改指令 → 回写同一份云文档）
     if tools.is_enabled("doc_wizard"):
         revised = docwizard.revise(conversation_id, query)
@@ -604,6 +620,19 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "sources", []
         yield "done", "[DONE]"
         return
+
+    # NL2SQL 表查询层（与非流式同口径——双路径同步）
+    if _FACT_QUERY.search(query):
+        try:
+            sql_ans = nlsql.try_answer(query, user=user)
+        except Exception:
+            sql_ans = None
+        if sql_ans:
+            yield "route", "KNOWLEDGE_QA"
+            yield "token", guards.fix_output(sql_ans)
+            yield "sources", []
+            yield "done", "[DONE]"
+            return
 
     if tools.is_enabled("doc_wizard"):
         revised = docwizard.revise(conversation_id, query)

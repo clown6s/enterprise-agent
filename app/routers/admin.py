@@ -106,6 +106,63 @@ def list_users(authorization: str | None = Header(default=None)):
                 for r in rows])
 
 
+# ---------------- 员工目录（employee 表，问答/请假/身份的数据源） ----------------
+
+@router.get("/api/rag/admin/employees/directory")
+def list_directory(authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    from .. import employee_store
+    employee_store._ensure_table()
+    rows = _query("SELECT id, name, dept, position, entry, employee_no, mobile, status "
+                  "FROM employee ORDER BY id")
+    return _ok([{"id": r[0], "name": r[1], "dept": r[2] or "", "position": r[3] or "",
+                 "entry": r[4] or "", "employeeNo": r[5] or "", "mobile": r[6] or "",
+                 "status": r[7]}
+                for r in rows])
+
+
+@router.post("/api/rag/admin/employees/directory/save")
+def save_directory(body: dict, authorization: str | None = Header(default=None)):
+    """新增/更新员工（name 必填；id 非空则更新）。写后清缓存——问答下次
+    查询即新数据（30s TTL 缓存机制）。"""
+    if not _auth(authorization):
+        return _unauthorized()
+    from .. import employee_store
+    employee_store._ensure_table()
+    name = (body.get("name") or "").strip()
+    if not name:
+        return {"success": False, "message": "姓名必填", "data": None}
+    uid = body.get("id")
+    if uid:
+        _exec("UPDATE employee SET name=%s, dept=%s, position=%s, entry=%s, "
+              "employee_no=%s, mobile=%s, status=%s WHERE id=%s",
+              (name, body.get("dept") or "", body.get("position") or "",
+               body.get("entry") or "", body.get("employeeNo") or "",
+               body.get("mobile") or "", 1 if body.get("status", 1) else 0, uid))
+    else:
+        _exec("INSERT INTO employee (name, dept, position, entry, employee_no, mobile) "
+              "VALUES (%s, %s, %s, %s, %s, %s)",
+              (name, body.get("dept") or "", body.get("position") or "",
+               body.get("entry") or "", body.get("employeeNo") or "",
+               body.get("mobile") or ""))
+    employee_store.clear_cache()
+    return _ok(None)
+
+
+@router.post("/api/rag/admin/employees/directory/delete")
+def delete_directory(body: dict, authorization: str | None = Header(default=None)):
+    if not _auth(authorization):
+        return _unauthorized()
+    from .. import employee_store
+    uid = body.get("id")
+    if not uid:
+        return {"success": False, "message": "缺少员工 id", "data": None}
+    _exec("DELETE FROM employee WHERE id=%s", (uid,))
+    employee_store.clear_cache()
+    return _ok(None)
+
+
 @router.post("/api/rag/admin/auth/users/identity")
 def save_user_identity(body: dict, authorization: str | None = Header(default=None)):
     """绑定账号身份：employeeId（数字员工 id，doc_acl 受众口径）+

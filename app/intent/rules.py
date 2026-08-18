@@ -11,7 +11,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Callable
 
-from .. import demo_data, tools
+from .. import demo_data, employee_store, tools
 from ..oa_client import oa
 
 # 结果形态：answer 必填；chart 供渠道端渲染图表卡（无图表为 None）
@@ -57,23 +57,71 @@ def _fnum(v) -> float:
         return 0.0
 
 
-def headcount(query: str) -> Result:
-    """人数统计（含部门级："研发部有几个人"）"""
-    dept = next((d for d in demo_data.DEPTS if d in query), None)
+_UNAVAILABLE = {"answer": "员工目录暂不可用，请稍后再试。", "chart": None}
+
+
+def _directory_text(dept: str | None = None) -> str:
+    """员工目录文本（从 employee 表拼，格式与种子时代 demo_data 一致）"""
+    rows = employee_store.all_active()
+    if rows is None:
+        return ""
     if dept:
-        count = sum(1 for e in demo_data.EMPLOYEES if e["dept"] == dept)
-        return {"answer": f"{dept}共有 {count} 人：\n" + demo_data.directory(dept), "chart": None}
-    return {"answer": f"根据员工目录，公司共有 {len(demo_data.EMPLOYEES)} 位员工：\n"
-                      + demo_data.directory(), "chart": None}
+        rows = [r for r in rows if r["dept"] == dept]
+    return "\n".join(f"- {r['name']}（{r['dept']} {r['position']}）{r['entry']} 入职"
+                     for r in rows)
+
+
+def _info_text(r: dict) -> str:
+    return f"{r['name']}（{r['dept']} {r['position']}），{r['entry']} 入职，工号 {r['employee_no']}"
+
+
+def headcount(query: str) -> Result:
+    """人数统计（含部门级："研发部有几个人"）——employee 表实时数据"""
+    rows = employee_store.all_active()
+    if rows is None:
+        return _UNAVAILABLE
+    dept = next((d for d in {r["dept"] for r in rows} if d and d in query), None)
+    if dept:
+        count = sum(1 for r in rows if r["dept"] == dept)
+        return {"answer": f"{dept}共有 {count} 人：\n" + _directory_text(dept), "chart": None}
+    return {"answer": f"根据员工目录，公司共有 {len(rows)} 位员工：\n"
+                      + _directory_text(), "chart": None}
 
 
 def employee_info(query: str) -> Result:
     """个人信息问法（入职/工号/部门/职位…），姓名必须在问句中出现"""
-    hits = [demo_data.lookup(n) for n in demo_data.names() if n in query]
+    names = employee_store.names()
+    if names is None:
+        return _UNAVAILABLE
+    hits = [employee_store.by_name(n) for n in names if n in query]
     hits = [h for h in hits if h]
     if not hits:
         return None
-    return {"answer": (hits[0] + "。" if len(hits) == 1 else "\n".join(hits)), "chart": None}
+    return {"answer": (_info_text(hits[0]) + "。" if len(hits) == 1
+                      else "\n".join(_info_text(h) for h in hits)), "chart": None}
+
+
+def employee_contact(query: str) -> Result:
+    """联系方式问法（电话/手机/号码…）：姓名必须在问句中出现——
+    不报全员通讯录（隐私）；未录入明确说未录入（不编造）。
+    名单外姓名也要确定性接管（答"未在目录"）——曾漏到图谱兜底，
+    "张三的电话"被图谱"电话"节点接住答出无关内容的实况。"""
+    names = employee_store.names()
+    if names is None:
+        return _UNAVAILABLE
+    name = next((n for n in names if n in query), None)
+    if name:
+        r = employee_store.by_name(name)
+        if r and r.get("mobile"):
+            return {"answer": f"{name}的电话是 {r['mobile']}。", "chart": None}
+        return {"answer": f"{name}的电话尚未录入员工目录，可联系管理员在后台维护。", "chart": None}
+    # 名单没命中但有姓名形态片段（2-4 字）→ 明确答复，不漏给图谱/KB
+    m = re.search(r"[一-龥]{2,4}",
+                  re.sub(r"(电话|手机|联系方式|号码|多少|是多少|请问|的)", " ", query))
+    if m:
+        return {"answer": f"未在员工目录中找到「{m.group()}」的登记信息，无法查询联系方式。",
+                "chart": None}
+    return None
 
 
 def oa_expenses(query: str) -> Result:
@@ -81,7 +129,8 @@ def oa_expenses(query: str) -> Result:
     if _PROCESS_WORDS.search(query):
         return None
     days = _days_of(query)
-    name = next((n for n in demo_data.names() if n in query), None)
+    # 名册口径与员工目录统一（employee 表；目录不可用时回退种子名单仅做姓名识别）
+    name = next((n for n in (employee_store.names() or demo_data.names()) if n in query), None)
     data = oa.expenses(days, name)
     d = (data or {}).get("data") or {}
     if not isinstance(d, dict) or not d.get("items"):
@@ -163,6 +212,8 @@ INTENT_RULES: list[IntentRule] = [
                headcount, priority=10, tool="employee_directory"),
     IntentRule("员工信息", r"入职|工号|部门|职位|岗位|什么时候|何时|哪一年|薪资|工资",
                employee_info, priority=20, tool="employee_directory"),
+    IntentRule("员工联系方式", r"电话|手机|联系方式|号码",
+               employee_contact, priority=21, tool="employee_directory"),
     IntentRule("OA报销", r"报销|花了多少钱|费用明细|开支", oa_expenses, priority=30,
                tool="oa_expenses"),
     IntentRule("经营数据", r"经营数据|营收|成本|利润|业绩|销售额|经营情况|生意",
