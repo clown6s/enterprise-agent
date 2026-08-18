@@ -505,8 +505,12 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     sources = sorted({h["source"] for h in hits if h.get("source")})
-    # 资料覆盖闸门：问"注意事项"但资料没该维度内容 → 直接答没有，不凑数
-    if _attention_gap(query, context):
+    # 资料覆盖闸门用主查询上下文判定：扩展命中的跨文档"饮食/用药"内容不算
+    # 资料覆盖——"民法典 的饮食建议"曾因扩展命中高血压文档被判"有该维度"，
+    # 生成端把高血压内容挂进法律答案的串味实况（扩展=词汇桥，不桥文档）
+    ctx_main = guards.strip_injection_sentences(
+        retrieval.build_context([h for h in hits if not h.get("_expanded")]))
+    if _attention_gap(query, ctx_main):
         gap_discovery.record_gap(query)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
@@ -726,8 +730,10 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         return
     sources = sorted({h["source"] for h in hits if h.get("source")})
 
-    # 资料覆盖闸门：问"注意事项"但资料没该维度内容 → 直接答没有，不凑数
-    if _attention_gap(query, context):
+    # 资料覆盖闸门（与非流式同口径：主查询上下文判定，扩展命中不桥文档）
+    ctx_main = guards.strip_injection_sentences(
+        retrieval.build_context([h for h in hits if not h.get("_expanded")]))
+    if _attention_gap(query, ctx_main):
         gap_discovery.record_gap(query)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         yield "token", _NO_ANSWER_GAP

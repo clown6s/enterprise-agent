@@ -86,6 +86,7 @@ def retrieve(query: str, *, top_k: int | None = None,
         for h in eh:
             if h["text"] not in seen:
                 seen.add(h["text"])
+                h["_expanded"] = True   # 扩展命中标记（维度闸门只认主查询命中）
                 hits.append(h)
         if len(hits) >= 20:
             break   # rerank 候选上限，防扩展灌爆
