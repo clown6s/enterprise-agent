@@ -5,21 +5,21 @@
 - 答案校验链        app/service/verify.py（小模型核查 + 熔断 + 确定性守卫顺序）
 - 确定性守卫/术语核对/格式修复  app/guards.py
 
-决策顺序（一晚试错得出的结论）：
-1. 意图规则表（app/intent/rules.py）——确定性意图（员工目录/OA 数据）直答，不让模型掺和
+决策顺序（2026-08-19 去 OA 化后）：
+1. 采纳直答 → 多跳编排 → NL2SQL 表查询（员工/报销/经营等事实型问法，注册即用）
 2. 闲聊 → 直接对话；指代不明 → 追问澄清
 3. 知识问答 → 预检索 →（无结果 → 兜底句式）→ LLM 生成 → 校验链
    → 确定性守卫（缺失术语/鉴伪断言/格式修复）
 
-原则：能确定性算出来的事绝不再交给模型；新增意图=规则表加一行。
+原则：能确定性算出来的事绝不再交给模型；新数据源=后台注册表，不写代码
+（能力总线 2026-08-19 退役：5 条种子规则全并入 NL2SQL 数据面）。
 """
 import re
 from datetime import datetime
 
-from .. import capabilities, embeddings, guards, llm, milvus_store, prompts, tools
+from .. import embeddings, guards, llm, milvus_store, prompts, tools
 from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
                        synonym_groups)
-from ..intent import rules as intent_rules
 from ..learn import adopted as adopted_qa
 from ..learn import feedback, gap_discovery, synonyms
 from ..plan import sop as sop_engine
@@ -43,10 +43,15 @@ _CHAT_WORDS = re.compile(
 )
 _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
 # NL2SQL 预闸：事实型问法才尝试表查询（"什么是心律失常"这类知识问题不触发，
-# 省一次模型调用；表查询不可答时照样漏回知识问答）
+# 省一次模型调用；表查询不可答时照样漏回知识问答）。
+# 2026-08-19 能力总线退役：员工3条+OA报销/经营2条的触发词全部并入本词表
+# （曾"王强是什么时候入职的""最近7天的经营数据"因词表缺"什么时候/经营数据"
+# 预闸不命中，NL2SQL 根本没被尝试的实况）
 _FACT_QUERY = re.compile(
     r"产品|价格|多少钱|哪些|几个|多少|数量|金额|汇总|统计|电话|手机|品类|售价|库存"
-    r"|特点|信息|详情|介绍|怎么样|如何|多大|多长")
+    r"|特点|信息|详情|介绍|怎么样|如何|多大|多长"
+    r"|入职|工号|部门|职位|岗位|什么时候|何时|哪一年|人数|员工数"
+    r"|报销|开支|费用明细|经营数据|营收|成本|利润|业绩|销售额|经营情况|支出")
 
 
 # ---------------- 路由与工具函数 ----------------
@@ -432,15 +437,11 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": guards.fix_output(mh_ans), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": None}
 
-    # 能力总线优先（数据驱动注册表：内置种子规则 + 后台覆盖，确定性直答）
-    intent = capabilities.dispatch(query, user)
-    if intent:
-        return {"answer": guards.fix_output(intent["answer"]), "sources": [],
-                "route": "KNOWLEDGE_QA", "chart": intent.get("chart")}
-
-    # NL2SQL 表查询层：已注册表的事实型问法自动生成 SQL（合规五关校验
-    # 后才执行，权限按 query_schema.grants 过滤）；不可答返回 None 漏回
-    # 知识问答。预闸限定事实型问法——避免每条知识问答都多一次模型调用
+    # NL2SQL 表查询层（2026-08-19 去 OA 化后员工/报销/经营问答唯一数据面）：
+    # 已注册表的事实型问法自动生成 SQL（合规五关校验后才执行，权限按
+    # query_schema.grants 过滤）；不可答返回 None 漏回知识问答。
+    # 预闸限定事实型问法——避免每条知识问答都多一次模型调用
+    # （能力总线已退役：员工3条+OA报销/经营2条全并入本层，query_schema 注册即用）
     if _FACT_QUERY.search(query):
         try:
             sql_ans = nlsql.try_answer(query, user=user)
@@ -652,18 +653,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "done", "[DONE]"
         return
 
-    # 能力总线（与非流式同口径——双路径同步）
-    intent = capabilities.dispatch(query, user)
-    if intent:
-        yield "route", "KNOWLEDGE_QA"
-        yield "token", guards.fix_output(intent["answer"])
-        if intent.get("chart"):
-            yield "chart", intent["chart"]
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
-
-    # NL2SQL 表查询层（与非流式同口径——双路径同步）
+    # NL2SQL 表查询层（与非流式同口径——双路径同步；能力总线已退役）
     if _FACT_QUERY.search(query):
         try:
             sql_ans = nlsql.try_answer(query, user=user)

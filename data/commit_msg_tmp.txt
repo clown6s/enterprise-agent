@@ -1,32 +1,7 @@
-智能路由架构收官：采纳升级直答层 + 多跳编排 + 字段级权限（4-5/5 步）
+去 OA 化第一批：能力总线退役+身份体系统一+请假 SOP 直连库
 
-一、采纳升级直答层（app/learn/adopted.py）：
-- 👍 采纳过的问答自动成为确定性知识：问法归一化（去空白/标点/语气词）
-  精确匹配 → 直答（秒回零 LLM），feedback_adopt 懒迁移加
-  query_norm/penalties/status 三列并回填历史
-- 👎 负向闭环：record_unhelpful 联动 penalize，失败满 2 停用回慢路径
-  （与词汇对齐同款模式）
-- 数据一致性修复：采纳行 source 旧 OCR 名 → 改名后的文档名（宫崎骏
-  用例 0.07s 直答但来源名过期——数据修复，非代码）
-
-二、多跳编排（app/service/multihop.py）：
-- 复合问句（多问号/问号后仍有实质内容/并列连接词）→ LLM 拆解 ≤4 子问
-  → 每片走能力总线/NL2SQL 确定性层 → 带子问标签合并；拆解跑偏只伤
-  该片（答未查询到），全无漏回主路径
-- 路由位置在能力总线之前：曾单规则正则截胡复合问句的一部分
-  （"职位"命中"李娜职位+报销"只答半句的实况）
-- 探针：李娜职位+报销双片合并 ✓、公司人数+研发部人数 ✓
-
-三、字段级权限（field_acl 表 + acl.field_visible）：
-- PII 列管控：table+column+grants（doc_acl 同口径），NL2SQL 列过滤
-  与意图 handler（员工电话）双处生效；admin 端点维护
-- 探针：employee.mobile 限 employee:3 → 未授权答"未录入"、绑 3 后
-  可见电话；清理还原
-
-四、意图 handler 签名统一带 user（capabilities.dispatch 透传）——
-字段权限/身份相关判定的通道。
-
-验证：回归 25/25（入职材料用例翻回"必须直答"——采纳层已能答）、
-不变量 53/53、矩阵 18/18、检索 100%/MRR 0.9167。
-
-Co-Authored-By: Claude <noreply@anthropic.com>
+- 能力总线退役：员工3条+OA报销/经营2条并入 NL2SQL 数据面（biz_expense/biz_metric_daily 注册 query_schema；capabilities/intent 模块删除，前端能力路由页撤除）
+- NL2SQL 三修：预闸并入退役触发词（曾"王强什么时候入职"预闸不命中）、interval 白名单+今天日期注入提示词（"最近7天"窗口生成）、聚合列名中文回退（曾答"total_count：8。"）
+- 身份体系统一：employee 主数据（dept_id 外键+sys_dept 扩充6部门+员工角色绑定重写指向 employee；sys_employee 演示账号体系退役）
+- 请假 SOP 直连库：名册查 employee、提交写 oa_leave_application、审批人按 oa_approval_flow 确定性解析（部门负责人/角色Key）；oa_client.py 退役
+- 回归 26/26、不变量 53/53、guards 矩阵 18/18

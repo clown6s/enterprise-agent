@@ -11,7 +11,8 @@ enterprise-agent 入口：FastAPI 应用装配。
     app/mysql_store.py     后台账号（sys_user 表）
     app/guards.py          确定性守卫（防编造/格式修复/术语核对/CJK 清理）
     app/demo_data.py       员工目录演示数据
-    app/oa_client.py       OA 业务系统客户端
+    app/employee_store.py  员工目录数据层（MySQL employee 表）
+    app/plan/sop.py        SOP 状态机（审批申请直连本库，去 OA 化）
     app/service/retrieval.py  检索管线
     app/service/verify.py     答案校验链（小模型核查 + 熔断 + 守卫顺序）
     app/service/agent.py      编排核心（路由/双路径/审计）

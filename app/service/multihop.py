@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 多跳查询编排（智能路由架构 5/5 之一）：复合问题 → 拆解 → 分派确定性层 →
-合并。拆解是模型建议，每片执行仍走确定性层（能力总线/NL2SQL）——
-拆解跑偏只影响该片（答"未查到"），合并层每片带子问题标签。
+合并。拆解是模型建议，每片执行走 NL2SQL 数据面（2026-08-19 能力总线
+退役后唯一确定性分派点）——拆解跑偏只影响该片（答"未查到"），
+合并层每片带子问题标签。
 护栏：子问题 ≤4 个、单片 ≤40 字、至少 1 片有答案才返回、全无漏回主路径。
 """
 import json
@@ -40,24 +41,17 @@ def try_answer(query: str, user: str = "") -> str | None:
         return None
     if not subs:
         return None
-    from .. import capabilities
     from . import nlsql
     parts = []
     for sub in subs:
         if len(sub) > 40:
             continue
         ans = None
+        # 分派走 NL2SQL 数据面（2026-08-19 能力总线退役，员工/报销/经营已注册）
         try:
-            hit = capabilities.dispatch(sub, user)
-            if hit and hit.get("answer"):
-                ans = hit["answer"]
+            ans = nlsql.try_answer(sub, user=user)
         except Exception:
             ans = None
-        if not ans:
-            try:
-                ans = nlsql.try_answer(sub, user=user)
-            except Exception:
-                ans = None
         parts.append(f"- {sub}：{ans.strip()}" if ans
                      else f"- {sub}：未查询到。")
     if not any("未查询到" not in p for p in parts):

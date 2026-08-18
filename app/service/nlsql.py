@@ -28,6 +28,9 @@ _SQL_KEYWORDS = {
     # 常用只读函数（白名单外函数一律拒——宁可漏回 KB 也不放行未审计能力）
     "length", "round", "coalesce", "ifnull", "date_format", "substr", "substring",
     "upper", "lower", "trim", "format", "if", "abs", "now", "curdate", "datediff",
+    # 相对日期条件（"最近7天"→ INTERVAL %s DAY；曾 interval 不在白名单被
+    # 第三关拒掉，报销/经营问法漏回兜底的实况）
+    "interval", "day", "date_sub",
 }
 _BLOCKED_WORDS = ("insert", "update", "delete", "drop", "alter", "create", "exec",
                   "grant", "union", "truncate", "replace", "into", "set")
@@ -40,6 +43,8 @@ _GEN_PROMPT = """你是数据库查询生成器。根据下面的表结构描述
 2. 只使用提供的表与列，不得臆测不存在的表/列；聚合表达式必须用 AS 起别名
 3. 所有字面值（人名/数字/日期/字符串）一律用 %s 占位放入 params，不要拼进 SQL
 4. 无法确定查什么时输出 {{"sql_template": "", "params": []}}
+5. 今天日期是 {today}。"最近 N 天"用参数化区间条件写：expense_date >= CURDATE() - INTERVAL %s DAY，
+   params 填数字 N（不要自己算日期，跨月容易算错——曾模型自算日期导致查错窗口）
 
 【表结构】
 {schema}
@@ -196,8 +201,10 @@ def try_answer(query: str, user: str = "") -> str | None:
                   for c in t["columns"])
         for t in tables)
     try:
-        raw = llm.verify_chat("", _GEN_PROMPT.format(schema=schema_block, query=query),
-                              temperature=0.1).strip()
+        from datetime import datetime
+        raw = llm.verify_chat("", _GEN_PROMPT.format(
+            schema=schema_block, query=query,
+            today=datetime.now().strftime("%Y-%m-%d")), temperature=0.1).strip()
         m = re.search(r"\{.*\}", raw, re.S)
         plan = json.loads(m.group()) if m else {}
         sql, params = plan.get("sql_template"), plan.get("params") or []
@@ -223,6 +230,10 @@ def try_answer(query: str, user: str = "") -> str | None:
         print(f"[nlsql] 执行失败: {e!r} | {final_sql}")
         return None
     labels = {c["name"].lower(): (c.get("desc") or c["name"]) for t in tables for c in t["columns"]}
+    # 聚合别名回退（模型起的 total_count/sum_amount 等别名尾缀匹配不上注册列
+    # 时的中文标签——"公司有多少人"曾输出"total_count：8。"的实况）
+    _AGG_LABELS = {"count": "数量", "sum": "合计", "avg": "平均",
+                   "max": "最大值", "min": "最小值", "total": "合计"}
 
     def _label(col: str) -> str:
         key = col.lower()
@@ -231,6 +242,10 @@ def try_answer(query: str, user: str = "") -> str | None:
         # 模型可能自造 product_description 类别名——尾缀匹配回注册列
         for k, v in labels.items():
             if key.endswith(k):
+                return v
+        # 再回退聚合函数后缀（total_count → 数量）
+        for k, v in _AGG_LABELS.items():
+            if key == k or key.endswith("_" + k):
                 return v
         return col
 

@@ -5,6 +5,8 @@ SOP 状态机引擎（执行准确的核心）——组件化：步骤描述符 
 component 的结构；曾 SOP 逻辑硬编码在 execute 的 if 分支里，加流程要写整条）。
 
 请假 SOP：查员工 → LLM 提取参数 → 确定性校验 → 提交前确认 → 提交 OA → 回执。
+2026-08-19 去 OA 化：名册/提交从 OA 接口改直连本库（业务库即 rag_service）——
+oa_leave_application 落单、oa_approval_flow 解析审批人、employee+sys_dept 是身份主数据。
 关键设计（血泪教训）：
 1. 校验失败是确定性的——失败信息直接输出，禁止让模型包装（模型曾把失败改写成"已提交"）
 2. 每一步落执行审计（logs/execution.jsonl），入参出参可回放
@@ -13,12 +15,12 @@ component 的结构；曾 SOP 逻辑硬编码在 execute 的 if 分支里，加�
 import json
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .. import config, llm
-from ..oa_client import oa
 
 _AUDIT_FILE = os.path.join(config.LOG_DIR, "execution.jsonl")
 
@@ -238,13 +240,82 @@ def try_confirm_or_cancel(chat_id: str, query: str) -> dict | None:
 
 # ---------------- 请假 SOP 步骤 handler（每步返回 (终止?, 结果)） ----------------
 
+def _load_employees_db() -> list[dict]:
+    """员工名册（employee 表，2026-08-19 去 OA 化：oa.employees() 退役）。
+    返回与旧 OA 接口同构 [{id, realName, deptId}]——下游校验/提交零改动。
+    dept_id 经迁移回填（migrate_identity 脚本）；库不可用返回 []。"""
+    try:
+        import pymysql
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                               user="root", password=config.MYSQL_PASSWORD,
+                               database=config.MYSQL_DB, charset="utf8mb4",
+                               connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, dept_id FROM employee WHERE status=1 ORDER BY id")
+            rows = [{"id": r[0], "realName": r[1], "deptId": r[2]} for r in cur.fetchall()]
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def _gen_apply_no(prefix: str) -> str:
+    """申请单号：前缀+日期+8位随机hex（与历史 LEAVE20260818XXXXXXXX 同格式）"""
+    return f"{prefix}{datetime.now().strftime('%Y%m%d')}{secrets.token_hex(4).upper()}"
+
+
+def _resolve_approver(business_type: str, emp: dict) -> int | None:
+    """审批人解析（确定性，去 OA 化后审批链在本库）：
+    oa_approval_flow 按 level 取第一级——
+    approver_dept_leader=1 → 申请人部门的负责人（sys_dept.leader 姓名 → employee.id）；
+    否则 approver_role_key → sys_role → sys_employee_role → employee。
+    无配置/无绑定返回 None（单子 status=1 停着，等审批入口接人）"""
+    try:
+        import pymysql
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                               user="root", password=config.MYSQL_PASSWORD,
+                               database=config.MYSQL_DB, charset="utf8mb4",
+                               connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT approver_dept_leader, approver_role_key FROM oa_approval_flow "
+                "WHERE business_type=%s ORDER BY level LIMIT 1", (business_type,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            if row[0]:  # 部门负责人
+                cur.execute("SELECT leader FROM sys_dept WHERE id=%s",
+                            (emp.get("deptId"),))
+                leader = cur.fetchone()
+                if leader and leader[0]:
+                    cur.execute("SELECT id FROM employee WHERE name=%s AND status=1",
+                                (leader[0],))
+                    r2 = cur.fetchone()
+                    if r2:
+                        return r2[0]
+                return None
+            if row[1]:  # 角色 Key
+                cur.execute(
+                    "SELECT e.id FROM sys_employee_role er "
+                    "JOIN sys_role r ON er.role_id = r.id "
+                    "JOIN employee e ON er.employee_id = e.id "
+                    "WHERE r.role_key=%s AND e.status=1 LIMIT 1", (row[1],))
+                r2 = cur.fetchone()
+                if r2:
+                    return r2[0]
+        conn.close()
+    except Exception:
+        pass
+    return None
+
+
 def _h_load_employees(state: dict) -> tuple[bool, dict | None]:
-    """步骤1：查员工名册（OA 不响应即终止——确定性错误文案）"""
+    """步骤1：查员工名册（本库 employee 表；不可用即终止——确定性错误文案）"""
     start_ts = time.time()
-    employees = oa.employees() or []
-    _audit("leave_action", "oa_employee_list", {}, f"{len(employees)}人", time.time() - start_ts)
+    employees = _load_employees_db()
+    _audit("leave_action", "employee_list", {}, f"{len(employees)}人", time.time() - start_ts)
     if not employees:
-        return True, {"answer": "请假服务暂不可用（OA 系统未响应），请稍后再试。", "route": "SOP"}
+        return True, {"answer": "请假服务暂不可用（员工目录未响应），请稍后再试。", "route": "SOP"}
     state["employees"] = employees
     return False, None
 
@@ -294,26 +365,49 @@ def _h_confirm(state: dict) -> tuple[bool, dict | None]:
 
 
 def _h_submit(state: dict) -> tuple[bool, dict | None]:
-    """步骤4：提交 OA（参数已通过确定性校验；确认闸门之后或降级直提）"""
+    """步骤4：写库提交（2026-08-19 去 OA 化：POST /api/leave/submit 退役，
+    直写 oa_leave_application——业务库即本库。参数已通过确定性校验；
+    确认闸门之后或降级直提。审批人按 oa_approval_flow 第一级解析）"""
     params, emp = state["params"], state["emp"]
     start_date = datetime.fromisoformat(params["startTime"])
     end_date = datetime.fromisoformat(params["endTime"])
+    apply_no = _gen_apply_no("LEAVE")
     payload = {
+        "apply_no": apply_no,
         "userId": emp.get("id"),
         "userName": emp.get("realName"),
         "deptId": emp.get("deptId"),
         "leaveType": int(params.get("leaveType") or 1),
-        "startTime": start_date.strftime("%Y-%m-%dT00:00:00"),
-        "endTime": end_date.strftime("%Y-%m-%dT23:59:59"),
+        "startTime": start_date.strftime("%Y-%m-%d 00:00:00"),
+        "endTime": end_date.strftime("%Y-%m-%d 23:59:59"),
+        "days": float(params.get("days") or 0),
         "reason": params["reason"].strip(),
+        "approverId": _resolve_approver("leave", emp),
     }
     t0 = time.time()
-    resp = oa.leave_submit(payload)
-    _audit("leave_action", "oa_leave_submit", payload,
-           json.dumps(resp, ensure_ascii=False)[:200], time.time() - t0)
-    if not resp or resp.get("code") != 200:
-        return True, {"answer": "请假提交失败：OA 系统未受理，请稍后再试。", "route": "SOP"}
-    state["apply_no"] = resp.get("data") or ""
+    try:
+        import pymysql
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                               user="root", password=config.MYSQL_PASSWORD,
+                               database=config.MYSQL_DB, charset="utf8mb4",
+                               connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO oa_leave_application (apply_no, user_id, user_name, dept_id, "
+                "leave_type, start_time, end_time, days, reason, status, current_approver_id, "
+                "create_time) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,NOW())",
+                (payload["apply_no"], payload["userId"], payload["userName"],
+                 payload["deptId"], payload["leaveType"], payload["startTime"],
+                 payload["endTime"], payload["days"], payload["reason"],
+                 payload["approverId"]))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        _audit("leave_action", "leave_insert", payload, f"DB 失败: {e!r}",
+               time.time() - t0)
+        return True, {"answer": "请假提交失败：员工目录服务未受理，请稍后再试。", "route": "SOP"}
+    _audit("leave_action", "leave_insert", payload, apply_no, time.time() - t0)
+    state["apply_no"] = apply_no
     return False, None
 
 

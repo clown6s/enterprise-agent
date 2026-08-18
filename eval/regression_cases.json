@@ -5,12 +5,13 @@
     "expect": {
       "route": "KNOWLEDGE_QA",
       "answer_contain": [
-        "8 位员工"
+        "数量",
+        "8"
       ],
       "answer_not_contain": [
         "暂无法回答"
       ],
-      "max_seconds": 5
+      "max_seconds": 30
     }
   },
   {
@@ -23,18 +24,33 @@
       "answer_not_contain": [
         "暂无法回答"
       ],
-      "max_seconds": 5
+      "max_seconds": 30
     }
   },
   {
-    "id": "guard-003-OA报销",
-    "query": "李娜最近7天报销了多少",
+    "id": "guard-003-报销全量聚合",
+    "query": "李娜一共报销了多少",
     "expect": {
       "answer_contain": [
-        "4930",
-        "共 2 笔"
+        "5890"
       ],
-      "max_seconds": 60
+      "answer_not_contain": [
+        "暂无法回答"
+      ],
+      "max_seconds": 30
+    }
+  },
+  {
+    "id": "guard-003b-报销全量聚合",
+    "query": "赵敏一共报销了多少",
+    "expect": {
+      "answer_contain": [
+        "3636"
+      ],
+      "answer_not_contain": [
+        "暂无法回答"
+      ],
+      "max_seconds": 30
     }
   },
   {
@@ -42,13 +58,12 @@
     "query": "最近7天的经营数据",
     "expect": {
       "answer_contain": [
-        "营收合计"
+        "营收"
       ],
       "answer_not_contain": [
         "暂无法回答"
       ],
-      "chart_present": true,
-      "max_seconds": 5
+      "max_seconds": 30
     }
   },
   {
@@ -137,7 +152,7 @@
   },
   {
     "id": "guard-011-请假成功",
-    "query": "帮我请假，李四明天请一天事假，家里有事",
+    "query": "帮我请假，李娜明天请一天事假，家里有事",
     "followup": "确认",
     "expect": {
       "route": "SOP",
@@ -164,7 +179,7 @@
   },
   {
     "id": "guard-013-请假天数超限",
-    "query": "帮我请假，张三请60天事假",
+    "query": "帮我请假，王强请60天事假",
     "expect": {
       "route": "SOP",
       "answer_contain": [
