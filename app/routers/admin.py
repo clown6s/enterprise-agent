@@ -6,6 +6,7 @@ SOP 管理 / 答案审核 / 文档权限 / 知识库健康度 / 用量看板 / �
 """
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import datetime
@@ -237,6 +238,33 @@ def delete_capability(body: dict, authorization: str | None = Header(default=Non
 
 
 # ---------------- NL2SQL 表注册（query_schema，表级权限） ----------------
+
+_SAFE_TABLE_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
+
+
+@router.get("/api/rag/admin/query-schema/tables")
+def list_db_tables(authorization: str | None = Header(default=None)):
+    """列出 MySQL 全部表（注册页候选；表名白名单校验防注入——SHOW 不支持
+    参数化表名，正则白名单是唯一防线）"""
+    if not _auth(authorization):
+        return _unauthorized()
+    rows = _query("SHOW TABLES")
+    return _ok([r[0] for r in rows])
+
+
+@router.get("/api/rag/admin/query-schema/introspect")
+def introspect_table(table: str = "", authorization: str | None = Header(default=None)):
+    """读取表结构（SHOW FULL COLUMNS）→ [{name, type, comment}]，注册页
+    自动填充列定义用。表名必须过白名单正则（防注入/防跨库）"""
+    if not _auth(authorization):
+        return _unauthorized()
+    if not _SAFE_TABLE_NAME.match(table or ""):
+        return {"success": False, "message": "非法表名", "data": None}
+    rows = _query(f"SHOW FULL COLUMNS FROM `{table}`")
+    return _ok([{"name": r[0], "type": r[1], "comment": r[8] or ""} for r in rows])
+
+
+@router.get("/api/rag/admin/query-schema")
 
 @router.get("/api/rag/admin/query-schema")
 def list_query_schema(authorization: str | None = Header(default=None)):
