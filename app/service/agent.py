@@ -439,14 +439,21 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": guards.fix_output(mh_ans), "sources": [],
                 "route": "KNOWLEDGE_QA", "chart": None}
 
+    # 对话历史提前加载：NL2SQL 追问改写 + 后续 route 判定共用。
+    # 2026-08-19 飞书实况："他的手机号多少"（上一轮问了王强）直接进 NL2SQL
+    # 查不出——"他"无历史上下文；曾历史只在知识问答段加载，数据面吃不到补全
+    turns = history.recent_turns(conversation_id)
+
     # NL2SQL 表查询层（2026-08-19 去 OA 化后员工/报销/经营问答唯一数据面）：
     # 已注册表的事实型问法自动生成 SQL（合规五关校验后才执行，权限按
     # query_schema.grants 过滤）；不可答返回 None 漏回知识问答。
     # 预闸限定事实型问法——避免每条知识问答都多一次模型调用
     # （能力总线已退役：员工3条+OA报销/经营2条全并入本层，query_schema 注册即用）
     if _FACT_QUERY.search(query):
+        # 追问改写前置：指代追问先补全再进数据面（非追问 _resolve_query 零成本）
+        nlsql_q = _resolve_query(query, turns)
         try:
-            sql_ans = nlsql.try_answer(query, user=user)
+            sql_ans = nlsql.try_answer(nlsql_q, user=user)
         except Exception:
             sql_ans = None
         if sql_ans:
@@ -490,7 +497,6 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
                 "route": "SOP", "chart": None}
 
-    turns = history.recent_turns(conversation_id)
     r = route(query, has_history=bool(turns))
     if r == "CHAT":
         user_prompt = (f"{history.history_block(turns)}\n{query}" if turns else query)
@@ -663,10 +669,14 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "done", "[DONE]"
         return
 
+    # 对话历史提前加载（与非流式同口径——追问改写进数据面）
+    turns = history.recent_turns(conversation_id)
+
     # NL2SQL 表查询层（与非流式同口径——双路径同步；能力总线已退役）
     if _FACT_QUERY.search(query):
+        nlsql_q = _resolve_query(query, turns)
         try:
-            sql_ans = nlsql.try_answer(query, user=user)
+            sql_ans = nlsql.try_answer(nlsql_q, user=user)
         except Exception:
             sql_ans = None
         if sql_ans:
@@ -720,7 +730,6 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         yield "done", "[DONE]"
         return
 
-    turns = history.recent_turns(conversation_id)
     r = route(query, has_history=bool(turns))
     yield "route", r
     if r == "CHAT":

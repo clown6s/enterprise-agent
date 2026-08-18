@@ -178,15 +178,20 @@ def _validate(sql: str, params: list, tables: list[dict]) -> str | None:
 
 def _fmt_rows(rows: list[tuple], cols: list[str], labels: dict[str, str],
               label_fn=None) -> str:
-    """结果行 → 确定性文本（列值全来自真实数据行；列名转注册的中文描述）"""
+    """结果行 → 确定性文本（列值全来自真实数据行；列名转注册的中文描述）。
+    NULL 值显示「未录入」——曾直接输出 None（电话字段没录时"电话：None。"）"""
     heads = [(label_fn(c) if label_fn else labels.get(c.lower(), c)) for c in cols]
     if not rows:
         return "查询结果为空。"
+
+    def _cell(v):
+        return "未录入" if v is None else v
+
     if len(rows) == 1 and len(cols) <= 2:
-        return "，".join(f"{heads[i]}：{rows[0][i]}" for i in range(len(cols))) + "。"
+        return "，".join(f"{heads[i]}：{_cell(rows[0][i])}" for i in range(len(cols))) + "。"
     lines = [f"查询结果（{len(rows)} 条）："]
     for r in rows:
-        lines.append("- " + "，".join(f"{heads[i]}：{r[i]}" for i in range(len(cols))))
+        lines.append("- " + "，".join(f"{heads[i]}：{_cell(r[i])}" for i in range(len(cols))))
     return "\n".join(lines)
 
 
