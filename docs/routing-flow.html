@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>enterprise-agent 问答路由分发链</title>
+<style>
+  /* 调色板：dataviz 参考实例（已验证），按角色声明 */
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --gridline: #e1e0d9;
+    --border: rgba(11,11,11,0.10);
+    --cat-guard: #2a78d6;   /* 蓝：确定性规则与守卫 */
+    --cat-data: #1baf7a;    /* 青：数据查询与已验证知识 */
+    --cat-gen: #eb6834;     /* 橙：LLM 生成与执行流程 */
+    --warn-badge-bg: rgba(250,178,25,0.14);
+    --warn-badge-ink: #8a5a00;
+    --warn-badge-border: rgba(250,178,25,0.55);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --gridline: #2c2c2a;
+      --border: rgba(255,255,255,0.10);
+      --cat-guard: #3987e5;
+      --cat-data: #199e70;
+      --cat-gen: #d95926;
+      --warn-badge-bg: rgba(201,133,0,0.20);
+      --warn-badge-ink: #f5c96b;
+      --warn-badge-border: rgba(201,133,0,0.55);
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --gridline: #2c2c2a;
+    --border: rgba(255,255,255,0.10);
+    --cat-guard: #3987e5;
+    --cat-data: #199e70;
+    --cat-gen: #d95926;
+    --warn-badge-bg: rgba(201,133,0,0.20);
+    --warn-badge-ink: #f5c96b;
+    --warn-badge-border: rgba(201,133,0,0.55);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--text-secondary); margin: 0 0 20px; }
+  .legend {
+    display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 22px;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--text-secondary); font-size: 13px;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 3px; }
+  .flow { display: flex; flex-direction: column; align-items: center; }
+  .card {
+    width: 100%;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent, var(--gridline));
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex; gap: 12px; align-items: flex-start;
+  }
+  .num {
+    flex: 0 0 26px; height: 26px; border-radius: 50%;
+    border: 1.5px solid var(--accent, var(--gridline));
+    color: var(--accent, var(--text-muted));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 13px; margin-top: 1px;
+  }
+  .body { flex: 1; min-width: 0; }
+  .row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .name { font-weight: 700; }
+  .chip {
+    font-size: 11px; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid var(--accent, var(--gridline));
+    color: var(--accent, var(--text-secondary));
+    white-space: nowrap;
+  }
+  .cond { color: var(--text-secondary); margin-top: 4px; }
+  .out { color: var(--text-muted); margin-top: 2px; font-size: 13px; }
+  .warnbadge {
+    font-size: 11px; padding: 1px 8px; border-radius: 999px;
+    background: var(--warn-badge-bg); color: var(--warn-badge-ink);
+    border: 1px solid var(--warn-badge-border); white-space: nowrap;
+  }
+  .arrow {
+    width: 2px; height: 22px; background: var(--gridline); margin: 2px 0;
+    position: relative;
+  }
+  .arrow::after {
+    content: ""; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+    border: 5px solid transparent; border-top: 7px solid var(--text-muted);
+    border-bottom: 0;
+  }
+  .terminal {
+    width: 100%; background: var(--surface-1); border: 1px dashed var(--border);
+    border-radius: 8px; padding: 12px 14px; color: var(--text-secondary);
+    text-align: center;
+  }
+  details { width: 100%; margin-top: 26px; }
+  summary { cursor: pointer; color: var(--text-secondary); margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; background: var(--surface-1); }
+  th, td {
+    text-align: left; padding: 7px 10px; font-size: 13px;
+    border-bottom: 1px solid var(--gridline);
+  }
+  th { color: var(--text-secondary); font-weight: 600; }
+  .accent-line { border-bottom: 2px solid var(--accent, transparent); }
+</style>
+</head>
+<body class="viz-root">
+<div class="wrap">
+  <h1>enterprise-agent 问答路由分发链</h1>
+  <p class="sub">问题进入 agent.answer 后的逐层判定——命中即返回，未命中流到下一层。快照：2026-08-18。</p>
+
+  <div class="legend" role="list" aria-label="图例">
+    <span class="legend-item" role="listitem"><span class="dot" style="background:var(--cat-guard)"></span>确定性规则与守卫</span>
+    <span class="legend-item" role="listitem"><span class="dot" style="background:var(--cat-data)"></span>数据查询与已验证知识</span>
+    <span class="legend-item" role="listitem"><span class="dot" style="background:var(--cat-gen)"></span>LLM 生成与执行流程</span>
+  </div>
+
+  <div class="flow">
+    <div class="card" style="--accent: var(--cat-guard)">
+      <div class="num">1</div>
+      <div class="body">
+        <div class="row1"><span class="name">注入拦截</span><span class="chip">确定性正则</span></div>
+        <div class="cond">命中条件：问句含注入句式（"忽略以上所有指令…"）</div>
+        <div class="out">→ 返回：拦截话术（INJECTION_BLOCKED）</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-data)">
+      <div class="num">2</div>
+      <div class="body">
+        <div class="row1"><span class="name">采纳直答</span><span class="chip">查表直答 · 零 LLM</span></div>
+        <div class="cond">命中条件：问法与 👍 采纳过的问答精确匹配（归一化比对）</div>
+        <div class="out">→ 返回：已采纳答案 + 来源；👎 两次自动停用回慢路径</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-data)">
+      <div class="num">3</div>
+      <div class="body">
+        <div class="row1"><span class="name">多跳编排</span><span class="chip">拆解 · 分派 · 合并</span></div>
+        <div class="cond">命中条件：复合问句（多问号 / "还有" / "以及"）</div>
+        <div class="out">→ LLM 拆成 ≤4 子问 → 每片走第 4/5 层 → 带标签合并返回</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-guard)">
+      <div class="num">4</div>
+      <div class="body">
+        <div class="row1"><span class="name">能力总线</span><span class="chip">代码 handler 直答</span>
+          <span class="warnbadge">⚠ 员工 3 条待并入 NL2SQL（待拍板）</span></div>
+        <div class="cond">命中条件：5 条内置正则（员工人数 / 员工信息 / 员工电话 / OA 报销 / 经营数据）+ 后台可改触发词/优先级/停用</div>
+        <div class="out">→ 返回：确定性答案 / 图表（OA 数据走 7000 接口）</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-data)">
+      <div class="num">5</div>
+      <div class="body">
+        <div class="row1"><span class="name">NL2SQL 表查询</span><span class="chip">注册表驱动 · 查数据库</span></div>
+        <div class="cond">命中条件：事实型问法（产品/价格/多少/电话…）且表已注册（query_schema，含 grants 权限）</div>
+        <div class="out">→ LLM 生成 SQL → 五关合规校验 → 参数化执行 → 中文列名格式化返回；不可答继续下一层</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-gen)">
+      <div class="num">6</div>
+      <div class="body">
+        <div class="row1"><span class="name">docwizard</span><span class="chip">文档流程</span></div>
+        <div class="cond">命中条件：文档生成/修改触发词 + skill 开关</div>
+        <div class="out">→ 返回：飞书云文档链接</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-gen)">
+      <div class="num">7</div>
+      <div class="body">
+        <div class="row1"><span class="name">待确认单</span><span class="chip">人机协同闸门</span></div>
+        <div class="cond">命中条件：存在请假待确认单且回复「确认/取消」</div>
+        <div class="out">→ 返回：提交 OA 回执 / 已取消</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-gen)">
+      <div class="num">8</div>
+      <div class="body">
+        <div class="row1"><span class="name">SOP 请假</span><span class="chip">多步状态机</span></div>
+        <div class="cond">命中条件：请假触发词 + skill 表与 SOP 页双开关</div>
+        <div class="out">→ 查名册 → 提取参数 → 确定性校验 → 提交前确认 → 提交 OA</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-guard)">
+      <div class="num">9</div>
+      <div class="body">
+        <div class="row1"><span class="name">route() 正则路由</span><span class="chip">确定性正则</span></div>
+        <div class="cond">命中条件：闲聊前缀（你好/谢谢…）→ CHAT；指代/怎么办且无历史 → CLARIFY</div>
+        <div class="out">→ 返回：闲聊直答 / 追问澄清</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="card" style="--accent: var(--cat-gen)">
+      <div class="num">10</div>
+      <div class="body">
+        <div class="row1"><span class="name">知识问答（兜底）</span><span class="chip">检索 · 生成 · 校验链</span></div>
+        <div class="cond">命中条件：以上全部未命中</div>
+        <div class="out">→ 追问改写 → 检索（含扩展）→ 维度闸门 → 生成 → 校验链 → 相关性闸门 → 失败走图谱兜底 → 兜底句式</div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="terminal">未命中任何层 / 资料无依据 → 「根据现有资料，暂无法回答该问题」</div>
+  </div>
+
+  <details>
+    <summary>表格视图（无障碍等价内容）</summary>
+    <table>
+      <thead>
+        <tr><th>#</th><th>层</th><th>类别</th><th>命中条件</th><th>执行方式</th></tr>
+      </thead>
+      <tbody>
+        <tr class="accent-line" style="--accent: var(--cat-guard)"><td>1</td><td>注入拦截</td><td>确定性守卫</td><td>注入句式</td><td>正则拦截</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-data)"><td>2</td><td>采纳直答</td><td>已验证知识</td><td>👍 采纳问法精确匹配</td><td>查表直答</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-data)"><td>3</td><td>多跳编排</td><td>数据查询</td><td>复合问句</td><td>拆解→分派→合并</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-guard)"><td>4</td><td>能力总线</td><td>确定性规则</td><td>5 条内置正则（员工 3 条待并入 NL2SQL）</td><td>代码 handler</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-data)"><td>5</td><td>NL2SQL</td><td>数据查询</td><td>事实型问法 + 已注册表</td><td>生成 SQL→校验→查库</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-gen)"><td>6</td><td>docwizard</td><td>执行流程</td><td>文档触发词 + 开关</td><td>云文档流程</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-gen)"><td>7</td><td>待确认单</td><td>执行流程</td><td>待确认单 + 确认/取消</td><td>SOP 收尾</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-gen)"><td>8</td><td>SOP 请假</td><td>执行流程</td><td>请假触发词 + 双开关</td><td>多步状态机</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-guard)"><td>9</td><td>route()</td><td>确定性路由</td><td>闲聊前缀 / 指代澄清</td><td>正则</td></tr>
+        <tr class="accent-line" style="--accent: var(--cat-gen)"><td>10</td><td>知识问答</td><td>LLM 生成</td><td>兜底</td><td>检索→生成→校验→闸门</td></tr>
+      </tbody>
+    </table>
+  </details>
+</div>
+</body>
+</html>
