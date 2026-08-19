@@ -66,13 +66,6 @@ class SopDefinition:
         return any(k in query for k in self.keywords)
 
 
-# 请假触发词（2026-08-19 变体矩阵扩充："给王强请60天事假"曾不触发——
-# 关键词补"天假/天事假"等碎片形态；宽词"请假"覆盖"X请假N天"）
-_LEAVE_KEYWORDS = ["请假", "提交请假", "帮我请假", "帮我请", "申请年假", "请事假",
-                   "请病假", "请年假", "请调休", "请个假", "请一天假", "请两天假",
-                   "请三天假", "请半天假", "请假一天", "请假两天", "请假三天",
-                   "天假", "天事假", "天病假", "天年假", "天调休"]
-
 # ---------------- 管理后台开关接线 ----------------
 # sop 表 enabled 开关（TTL 60s 缓存；曾只存储不消费——后台禁用请假 SOP，
 # 运行时照常触发）。keywords 运行时仍用代码内触发词（改动是危险操作，
@@ -116,21 +109,6 @@ def match(query: str) -> SopDefinition | None:
 
 # ---------------- 请假 SOP 步骤 ----------------
 
-_EXTRACT_PROMPT = """你是请假信息提取器。今天是 {today}（星期{week}）。
-从用户输入中提取请假参数，输出严格 JSON（不要任何其他内容）：
-{{"userName": "员工姓名", "startTime": "yyyy-MM-dd", "endTime": "yyyy-MM-dd",
-  "days": 数字, "leaveType": 数字, "reason": "事由"}}
-规则：
-1. 员工姓名必须从这份名单中选（一字不差）：{names}；名单外的人名也要原样输出，由校验层拦截
-2. "明天"= {tomorrow}，"后天"= {after_tomorrow}，"今天"= {today}；"下午/上午/半天"记 days=0.5
-3. days 必须与 startTime/endTime 一致（同一天=1，两天=2）
-4. leaveType：1事假 2病假 3年假；没说类型默认 1
-5. 提取不到 reason 就留空字符串，不要编造
-
-用户输入：
-{query}
-"""
-
 
 def _parse_json(s: str) -> dict | None:
     """容错 JSON 提取（模型可能包一层说明文字）"""
@@ -141,39 +119,6 @@ def _parse_json(s: str) -> dict | None:
         return json.loads(m.group())
     except json.JSONDecodeError:
         return None
-
-
-def _validate_leave(params: dict, employees: list[dict]) -> str | None:
-    """
-    确定性校验规则（校验不通过返回错误文案，通过返回 None）。
-    这些规则是公司制度的确定性表达——不需要模型参与判断。
-    """
-    name = (params.get("userName") or "").strip()
-    if not name:
-        return "校验未通过：缺少请假人姓名。"
-    if not any(e.get("realName") == name for e in employees):
-        names = "、".join(e.get("realName", "") for e in employees)
-        return f"校验未通过：员工「{name}」不在员工名册中（现有：{names}）。"
-    start = params.get("startTime") or ""
-    end = params.get("endTime") or ""
-    if not start or not end:
-        return "校验未通过：缺少请假起止日期，请说明请哪天到哪天。"
-    try:
-        d0, d1 = datetime.fromisoformat(start), datetime.fromisoformat(end)
-    except ValueError:
-        return "校验未通过：日期格式无法识别，请用「明天」「8月18日」这类表述。"
-    if d1 < d0:
-        return "校验未通过：结束日期早于开始日期。"
-    days = params.get("days")
-    try:
-        days = float(days) if days not in (None, "") else (d1 - d0).days + 1
-    except (TypeError, ValueError):
-        return "校验未通过：请假天数无法识别。"
-    if days < 0.5 or days > 30:
-        return f"校验未通过：请假天数 {days:g} 天超出范围（0.5~30 天）。"
-    if not (params.get("reason") or "").strip():
-        return "校验未通过：缺少请假事由。"
-    return None
 
 
 # ---------------- 提交前确认（人机协同闸门） ----------------
@@ -351,41 +296,10 @@ def _h_load_employees(state: dict) -> tuple[bool, dict | None]:
     """步骤1：查员工名册（本库 employee 表；不可用即终止——确定性错误文案）"""
     start_ts = time.time()
     employees = _load_employees_db()
-    _audit("leave_action", "employee_list", {}, f"{len(employees)}人", time.time() - start_ts)
+    _audit(state["sop"], "employee_list", {}, f"{len(employees)}人", time.time() - start_ts)
     if not employees:
         return True, {"answer": "请假服务暂不可用（员工目录未响应），请稍后再试。", "route": "SOP"}
     state["employees"] = employees
-    return False, None
-
-
-def _h_extract(state: dict) -> tuple[bool, dict | None]:
-    """步骤2：LLM 提取参数（时间锚点注入）"""
-    now = datetime.now()
-    names = "、".join(e.get("realName", "") for e in state["employees"])
-    t0 = time.time()
-    raw = llm.verify_chat(
-        "", _EXTRACT_PROMPT.format(
-            today=now.strftime("%Y-%m-%d"), week="一二三四五六日"[now.weekday()],
-            tomorrow=(now + timedelta(days=1)).strftime("%Y-%m-%d"),
-            after_tomorrow=(now + timedelta(days=2)).strftime("%Y-%m-%d"),
-            names=names, query=state["query"]),
-        temperature=0.1,
-    )
-    state["params"] = _parse_json(raw) or {}
-    _audit("leave_action", "extract", {"query": state["query"]},
-           json.dumps(state["params"], ensure_ascii=False), time.time() - t0)
-    return False, None
-
-
-def _h_validate(state: dict) -> tuple[bool, dict | None]:
-    """步骤3：确定性校验（失败即终止，不做 LLM 包装——防"编造成功"）"""
-    t0 = time.time()
-    error = _validate_leave(state["params"], state["employees"])
-    _audit("leave_action", "validate", state["params"], error or "通过", time.time() - t0)
-    if error:
-        return True, {"answer": error, "route": "SOP"}
-    state["emp"] = next(e for e in state["employees"]
-                        if e.get("realName") == state["params"]["userName"].strip())
     return False, None
 
 
@@ -415,99 +329,7 @@ def _h_confirm(state: dict) -> tuple[bool, dict | None]:
     return False, None
 
 
-def _h_submit(state: dict) -> tuple[bool, dict | None]:
-    """步骤4：写库提交（2026-08-19 去 OA 化：POST /api/leave/submit 退役，
-    直写 oa_leave_application——业务库即本库。参数已通过确定性校验；
-    确认闸门之后或降级直提。审批人按 oa_approval_flow 第一级解析）"""
-    params, emp = state["params"], state["emp"]
-    start_date = datetime.fromisoformat(params["startTime"])
-    end_date = datetime.fromisoformat(params["endTime"])
-    apply_no = _gen_apply_no("LEAVE")
-    payload = {
-        "apply_no": apply_no,
-        "userId": emp.get("id"),
-        "userName": emp.get("realName"),
-        "deptId": emp.get("deptId"),
-        "leaveType": int(params.get("leaveType") or 1),
-        "startTime": start_date.strftime("%Y-%m-%d 00:00:00"),
-        "endTime": end_date.strftime("%Y-%m-%d 23:59:59"),
-        "days": float(params.get("days") or 0),
-        "reason": params["reason"].strip(),
-        "approverId": _resolve_approver("leave", emp),
-    }
-    t0 = time.time()
-    try:
-        import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO oa_leave_application (apply_no, user_id, user_name, dept_id, "
-                "leave_type, start_time, end_time, days, reason, status, current_approver_id, "
-                "create_time) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,NOW())",
-                (payload["apply_no"], payload["userId"], payload["userName"],
-                 payload["deptId"], payload["leaveType"], payload["startTime"],
-                 payload["endTime"], payload["days"], payload["reason"],
-                 payload["approverId"]))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        _audit("leave_action", "leave_insert", payload, f"DB 失败: {e!r}",
-               time.time() - t0)
-        return True, {"answer": "请假提交失败：员工目录服务未受理，请稍后再试。", "route": "SOP"}
-    _audit("leave_action", "leave_insert", payload, apply_no, time.time() - t0)
-    # 飞书通知审批人（软依赖：无绑定静默跳过）
-    if payload["approverId"]:
-        from . import approval as _approval
-        _approval.notify_approver(payload["approverId"], "leave",
-                                  {"apply_no": apply_no, "user_name": payload["userName"],
-                                   "leave_type": payload["leaveType"], "days": payload["days"],
-                                   "reason": payload["reason"]})
-    state["apply_no"] = apply_no
-    return False, None
-
-
-def _h_receipt(state: dict) -> tuple[bool, dict | None]:
-    """步骤5：回执（数据全来自 OA 返回，模型只做措辞包装）"""
-    emp = state["emp"]
-    receipt_prompt = (
-        "用户已成功提交请假申请。请用一句话回复用户，必须包含以下信息：\n"
-        f"申请单号：{state['apply_no']}；姓名：{emp.get('realName')}；"
-        f"时间：{state['params']['startTime']} 至 {state['params']['endTime']}；"
-        f"事由：{state['params']['reason'].strip()}。\n"
-        "只输出这句话，不要编造其他信息（如审批人、预计通过时间）。")
-    receipt = llm.chat_chain("", receipt_prompt)
-    return True, {"answer": receipt.strip(), "route": "SOP"}
-
-
-def _finish_submit(params: dict, emp: dict) -> dict:
-    """确认后/降级直提的收尾：提交 → 回执（try_confirm_or_cancel 复用）"""
-    state = {"params": params, "emp": emp, "chat_id": ""}
-    stop, result = _h_submit(state)
-    if stop:
-        return result
-    return _h_receipt(state)[1]
-
-
-_LEAVE_HANDLERS = {
-    "load_employees": _h_load_employees,
-    "extract": _h_extract,
-    "validate": _h_validate,
-    "confirm": _h_confirm,
-    "submit": _h_submit,
-    "receipt": _h_receipt,
-}
-
-LEAVE_SOP = SopDefinition(
-    code="leave_action", name="请假申请", keywords=_LEAVE_KEYWORDS,
-    steps=["load_employees", "extract", "validate", "confirm", "submit", "receipt"],
-    handlers=_LEAVE_HANDLERS,
-    finish=_finish_submit,   # 待确认单分发：确认后提交请假单
-    confirm_detail=lambda p: f"{p.get('startTime', '')} 至 {p.get('endTime', '')}")
-
-SOP_REGISTRY = [LEAVE_SOP]
+SOP_REGISTRY: list[SopDefinition] = []
 
 
 def register(definition: SopDefinition) -> None:

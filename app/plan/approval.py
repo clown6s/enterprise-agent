@@ -10,26 +10,10 @@ import time
 from datetime import datetime
 
 from .. import config
-
-# 业务类型 → 申请表（代码内常量，非用户输入）
-APPLY_TABLES = {
-    "leave": "oa_leave_application",
-    "expense": "expense_application",
-    "travel": "travel_application",
-    "purchase": "purchase_application",
-    "contract": "contract_seal_application",
-}
+from . import registry
 
 STATUS_PENDING, STATUS_IN_FLOW, STATUS_APPROVED, STATUS_REJECTED = 1, 2, 3, 4
 ACT_APPROVE, ACT_REJECT = 1, 2
-
-_SUMMARY_COLS = {
-    "leave": ("leave_type", "days", "reason"),
-    "expense": ("expense_type", "amount", "reason"),
-    "travel": ("destination", "start_date", "reason"),
-    "purchase": ("item_name", "amount", "reason"),
-    "contract": ("contract_name", "counterparty", "reason"),
-}
 
 
 def _conn():
@@ -40,7 +24,7 @@ def _conn():
 
 
 def _load_apply(business_type: str, apply_id: int) -> dict | None:
-    table = APPLY_TABLES.get(business_type)
+    table = registry.TABLE_MAP.get(business_type)
     if not table:
         return None
     try:
@@ -103,7 +87,7 @@ def summary_text(business_type: str, row: dict) -> str:
                "end_date": "返回日期", "item_name": "物品", "quantity": "数量",
                "contract_name": "合同", "counterparty": "对方", "reason": "事由"}
     parts = []
-    for col in _SUMMARY_COLS.get(business_type, ()):
+    for col in registry.SUMMARY_MAP.get(business_type, ()):
         v = row.get(col)
         if v not in (None, ""):
             parts.append(f"{_COL_CN.get(col, col)}：{v}")
@@ -113,7 +97,7 @@ def summary_text(business_type: str, row: dict) -> str:
 def pending_by_approver(approver_id: int) -> list[dict]:
     """某人待审批的申请单列表（跨业务，供飞书对话审批/后台页）"""
     out = []
-    for business_type, table in APPLY_TABLES.items():
+    for business_type, table in registry.TABLE_MAP.items():
         try:
             conn = _conn()
             with conn.cursor() as cur:
@@ -166,7 +150,7 @@ def act_on_application(business_type: str, apply_id: int, approver_id: int,
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,NOW())",
                 (apply_id, row.get("apply_no"), approver_id, approver_name, level,
                  action, comment))
-            table = APPLY_TABLES[business_type]
+            table = registry.TABLE_MAP[business_type]
             if action == ACT_REJECT:
                 cur.execute(f"UPDATE {table} SET status=4 WHERE id=%s", (apply_id,))
                 message = "已拒绝该申请。"
@@ -222,11 +206,10 @@ def notify_approver(approver_id: int, business_type: str, row: dict) -> bool:
 
 def list_applications(business_type: str = "", status=None) -> list[dict]:
     """申请单看板（后台页）：全部申请单（可按业务/状态过滤），每行带业务码/名"""
-    tables = (APPLY_TABLES if not business_type
-              else ({business_type: APPLY_TABLES[business_type]}
-                    if business_type in APPLY_TABLES else {}))
-    _BIZ_NAMES = {"leave": "请假", "expense": "报销", "travel": "出差",
-                  "purchase": "采购", "contract": "合同用印"}
+    tables = (registry.TABLE_MAP if not business_type
+              else ({business_type: registry.TABLE_MAP[business_type]}
+                    if business_type in registry.TABLE_MAP else {}))
+    _BIZ_NAMES = registry.BIZ_NAME_MAP
     out = []
     for bt, table in tables.items():
         try:
@@ -243,7 +226,7 @@ def list_applications(business_type: str = "", status=None) -> list[dict]:
             for row in rows:
                 d = dict(zip(cols, row))
                 d["_business_type"] = bt
-                d["_business_name"] = _BIZ_NAMES.get(bt, bt)
+                d["_business_name"] = registry.BIZ_NAME_MAP.get(bt, bt)
                 out.append(d)
         except Exception:
             continue
@@ -258,8 +241,7 @@ def list_applications(business_type: str = "", status=None) -> list[dict]:
 import re  # noqa: E402
 
 _COMMAND = re.compile(r"(同意|通过|拒绝|驳回)\s*([A-Z]+\d{8,})")
-_PREFIX_BIZ = {"LEAVE": "leave", "EXPENSE": "expense", "TRAVEL": "travel",
-               "PURCHASE": "purchase", "CONTRACT": "contract"}
+_PREFIX_BIZ = registry.PREFIX_MAP
 
 
 def try_approval_command(query: str, user: str) -> dict | None:

@@ -601,18 +601,18 @@ def eval_run_status(task_id: str, authorization: str | None = Header(default=Non
 # ---------------- SOP ----------------
 
 def _seed_sop() -> None:
-    rows = _query("SELECT COUNT(*) FROM sop WHERE code='leave_action'")
-    if rows and rows[0][0] == 0:
-        _exec("INSERT INTO sop (code, name, keywords, steps_json, enabled, builtin) VALUES (%s,%s,%s,%s,%s,%s)",
-              ("leave_action", "请假申请",
-               "提交请假,帮我请假,帮我请,申请年假,请事假,请病假,请年假,请调休,请个假,请一天假,请两天假,请三天假,请半天假,请假一天,请假两天,请假三天",
-               json.dumps([
-                   {"type": "tool", "toolName": "oa_employee_list", "instruction": None},
-                   {"type": "extract", "toolName": None, "instruction": "提取 userName/startTime/endTime/days/leaveType/reason"},
-                   {"type": "validate", "toolName": None, "instruction": "leave_rules"},
-                   {"type": "tool", "toolName": "oa_leave_submit", "instruction": None},
-                   {"type": "end", "toolName": None, "instruction": None},
-               ], ensure_ascii=False), 1, 1))
+    """从注册表自动种子所有 SOP 到 sop 表（幂等：已存在则跳过）"""
+    from ..plan.registry import ALL_DEFS
+    for d in ALL_DEFS:
+        rows = _query("SELECT COUNT(*) FROM sop WHERE code=%s", (d.code,))
+        if rows and rows[0][0] == 0:
+            _exec(
+                "INSERT INTO sop (code, name, keywords, steps_json, enabled, builtin) "
+                "VALUES (%s,%s,%s,%s,%s,%s)",
+                (d.code, d.name, ",".join(d.keywords),
+                 json.dumps(["load_employees", "extract", "validate", "confirm", "submit", "receipt"],
+                            ensure_ascii=False),
+                 1, 1))
 
 
 @router.get("/api/rag/admin/sops")

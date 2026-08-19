@@ -26,18 +26,28 @@ class Tool:
     description: str
 
 
+def _get_tools_from_registry() -> list[Tool]:
+    """从 SOP 注册表自动派生工具列表（单一数据源：registry.py）"""
+    try:
+        from .plan.registry import get_tools
+        return get_tools()
+    except ImportError:
+        return []
+
+
 # 现有确定性工具全量登记（描述供未来发现机制/后台展示用）。
-# 2026-08-19 去 OA 化：员工目录/报销/经营三条退役（并入 NL2SQL 数据面）；
-# 审批类 SOP 按 code 逐一登记——skill 表空时只有登记过的默认启用，
-# 曾新 SOP 未登记 is_enabled 全 False 被整条关死的实况。
-TOOLS: list[Tool] = [
-    Tool("leave_action", "请假申请", "请假 SOP（查名册→提取→校验→确认→写库）"),
-    Tool("expense_action", "报销申请", "报销 SOP（提取→校验→确认→写库→审批流）"),
-    Tool("travel_action", "出差申请", "出差 SOP（目的地/日期→校验→确认→写库）"),
-    Tool("purchase_action", "采购申请", "采购 SOP（物品/数量/金额→校验→确认→写库）"),
-    Tool("contract_action", "合同用印申请", "合同用印 SOP（合同/对方/金额→校验→确认→写库）"),
-    Tool("doc_wizard", "文档生成", "一句话生成/多轮修改云文档"),
-]
+# SOP 工具从 registry 自动派生；非 SOP 工具（doc_wizard）单独登记。
+# 2026-08-19 去 OA 化后：SOP 工具不再硬编码，registry 是单一数据源。
+def _init_tools() -> list[Tool]:
+    """初始化工具列表：SOP 工具从 registry 派生 + 非 SOP 工具单独添加"""
+    sop_tools = _get_tools_from_registry()
+    non_sop_tools = [
+        Tool("doc_wizard", "文档生成", "一句话生成/多轮修改云文档"),
+    ]
+    return sop_tools + non_sop_tools
+
+
+TOOLS: list[Tool] = _init_tools()
 
 
 def _load_enabled_from_db() -> set[str]:
