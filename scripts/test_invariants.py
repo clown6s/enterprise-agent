@@ -9,6 +9,8 @@ LLM 相关用 monkeypatch 锁链语义）。
 import random
 import sys
 
+import httpx  # noqa: E402  降级链测试用 httpx 异常当"真 LLM 失败"替身（dsh 一-9）
+
 sys.path.insert(0, ".")
 
 from app import config, domains, guards, llm  # noqa: E402
@@ -114,16 +116,22 @@ _orig_chat = llm.chat
 
 
 def _fake_chain_chat(system, user, **kw):
-    """main 失败、fallback 成功；记录被调用的 model"""
+    """main 失败（transient）、fallback 成功；记录被调用的 model"""
     calls.append(kw.get("model"))
     if kw.get("model") == config.MODEL_REGISTRY["main"]["model"]:
-        raise RuntimeError("main down")
+        raise httpx.TimeoutException("main down")
     return "fallback-ok"
 
 
 def _fake_both_fail(system, user, **kw):
     calls.append(kw.get("model"))
-    raise RuntimeError("all down")
+    raise httpx.TimeoutException("all down")
+
+
+def _fake_bug_chat(system, user, **kw):
+    """编程 bug（非 httpx）——应直接抛不降级（dsh 一-9）"""
+    calls.append(kw.get("model"))
+    raise RuntimeError("code bug: data['choices'][0]")
 
 
 calls: list = []
@@ -140,8 +148,20 @@ try:
     try:
         llm.chat_chain("", "hi")
         check("chat_chain 全败抛异常", False, "未抛异常")
-    except RuntimeError:
+    except httpx.HTTPError:
         check("chat_chain 全败抛异常", len(calls) == 2, repr(calls))
+finally:
+    llm.chat = _orig_chat
+
+# 编程 bug（非 httpx）不降级——直接抛，不换棒（dsh 一-9：不拿降级掩盖 bug）
+calls = []
+llm.chat = _fake_bug_chat
+try:
+    try:
+        llm.chat_chain("", "hi")
+        check("chat_chain bug 不降级直接抛", False, "未抛异常")
+    except RuntimeError:
+        check("chat_chain bug 不降级直接抛", len(calls) == 1, repr(calls))
 finally:
     llm.chat = _orig_chat
 
@@ -150,14 +170,14 @@ _orig_stream = llm.chat_stream
 
 def _fake_pre_fail(system, user, **kw):
     if kw.get("model") == config.MODEL_REGISTRY["main"]["model"]:
-        raise RuntimeError("main down")
+        raise httpx.TimeoutException("main down")
     yield "a"
     yield "b"
 
 
 def _fake_mid_fail(system, user, **kw):
     yield "part"
-    raise RuntimeError("mid-stream down")
+    raise httpx.TimeoutException("mid-stream down")
 
 
 llm.chat_stream = _fake_pre_fail

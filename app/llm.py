@@ -47,11 +47,26 @@ _GEN_CHAIN = ("main", "main_fallback")
 _VERIFY_CHAIN = ("verify", "verify_fallback")
 
 
+def _classify_err(e: Exception) -> str:
+    """异常分类（dsh 一-9：降级只对确认的 LLM/网络失败，不拿降级掩盖 bug）。
+    http=HTTPStatusError（4xx/5xx，明确服务端失败）；transient=httpx 网络层
+    （超时/连接，换厂商可能通）；bug=非 httpx 异常（KeyError/ValueError/
+    RuntimeError 等编程错误）——这类直接抛不降级（曾任何异常都换棒，把代码
+    bug 当 LLM 失败掩盖，难排查）。chat() 先 raise_for_status 再解析，故响应
+    解析期 KeyError 多为真 bug 而非坏响应。"""
+    if isinstance(e, httpx.HTTPStatusError):
+        return "http"
+    if isinstance(e, httpx.HTTPError):
+        return "transient"
+    return "bug"
+
+
 def chat_chain(system: str, user: str, *,
                purposes: tuple[str, ...] = _GEN_CHAIN, **kw) -> str:
     """带降级链的一次性对话：按 purposes 顺序尝试，全部失败抛最后一个异常。
-    kw（temperature 等）由调用方给出；厂商特有参数来自注册表条目 extra——
-    调用方不传厂商参数（换厂商参数随条目走）。"""
+    只对确认的 LLM/网络失败降级（dsh 一-9）；编程 bug（非 httpx）直接抛——
+    不拿换棒掩盖 bug。kw（temperature 等）由调用方给出；厂商特有参数来自
+    注册表条目 extra——调用方不传厂商参数（换厂商参数随条目走）。"""
     last: Exception | None = None
     for purpose in purposes:
         m = model_config(purpose)
@@ -64,15 +79,19 @@ def chat_chain(system: str, user: str, *,
             return chat(system, user, model=m["model"], base=m["base"], key=m["key"],
                         **opts, **kw)
         except Exception as e:
+            cat = _classify_err(e)
+            if cat == "bug":
+                raise   # 编程错误不降级——不拿换棒掩盖 bug（dsh 一-9）
             last = e
-            log.warning(f"{purpose} 调用失败，降级下一棒: {e!r}")
+            log.warning(f"{purpose} 调用失败（{cat}）降级下一棒: {e!r}")
     raise last
 
 
 def chat_stream_chain(system: str, user: str, *,
                       purposes: tuple[str, ...] = _GEN_CHAIN) -> Iterator[str]:
     """带降级链的流式生成：首块前失败换下一棒；流式中断保留已生成部分
-    （部分答案仍会走校验链再出门，比整体 500 强）。全部未出块失败抛最后一个异常。"""
+    （部分答案仍会走校验链再出门，比整体 500 强）。全部未出块失败抛最后一个异常。
+    编程 bug（非 httpx）首块前直接抛不降级（dsh 一-9）。"""
     last: Exception | None = None
     for purpose in purposes:
         m = model_config(purpose)
@@ -88,8 +107,11 @@ def chat_stream_chain(system: str, user: str, *,
             if started:
                 log.warning(f"{purpose} 流式中断，保留已生成部分")
                 return
+            cat = _classify_err(e)
+            if cat == "bug":
+                raise   # 首块前编程错误不降级
             last = e
-            log.warning(f"{purpose} 流式失败，降级下一棒: {e!r}")
+            log.warning(f"{purpose} 流式失败（{cat}）降级下一棒: {e!r}")
     raise last
 
 
