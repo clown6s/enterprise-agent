@@ -42,7 +42,9 @@ _GEN_PROMPT = """你是数据库查询生成器。根据下面的表结构描述
 1. 只读查询，只允许 SELECT
 2. 只使用提供的表与列，不得臆测不存在的表/列；聚合表达式必须用 AS 起别名
 3. 所有字面值（人名/数字/日期/字符串）一律用 %s 占位放入 params，不要拼进 SQL
-4. 无法确定查什么时输出 {{"sql_template": "", "params": []}}
+4. 无法确定查什么时输出 {{"sql_template": "", "params": []}}。以下问法一律输出空模板：
+   提交/申请类写操作（"帮我报销…""提交请假…"）、纯知识问法（"是什么/注意/建议"）、
+   与表结构无关的闲聊——你只负责查表，不是查询就不生成 SQL
 5. 今天日期是 {today}。"最近 N 天"用参数化区间条件写：expense_date >= CURDATE() - INTERVAL %s DAY，
    params 填数字 N（不要自己算日期，跨月容易算错——曾模型自算日期导致查错窗口）
 6. 跨表问法（"某人的部门的报销"= 先定位部门再查该部门数据）用 JOIN：
@@ -54,6 +56,30 @@ _GEN_PROMPT = """你是数据库查询生成器。根据下面的表结构描述
 
 【用户问题】
 {query}
+"""
+
+# 结果→回答包装层（治类，2026-08-19 用户定调：数据≠答案——
+# 曾比较问法甩两行原始数据让用户自己算，答案层加特判加到死也加不完。
+# 一个机制收编所有形态：问句+真实数据+确定性衍生信息 → LLM 只做措辞，
+# 数字核对兜底防编造，失败回退确定性原文）
+_ANSWER_PROMPT = """你是数据问答助手。根据查询结果回答用户问题。
+规则：
+1. 只能使用【查询结果】与【衍生信息】中的数据，不得编造任何数据外的事实、数字、人名、日期
+2. 日期与数字的写法必须与查询结果完全一致（如 2026-08-19 不要写成 2026年8月19日；
+   2881.30 不要写成 2881.3 或四舍五入）
+3. NULL 表示"未录入"；聚合结果（合计/总数）为 NULL 表示该条件下没有记录，回答"无记录/没有记录"
+4. 直接回答用户问的问题（问比较就答谁多、差多少；问单值就直接给值）。
+   单值数字回答必须带含义与单位（如"销售额合计 1974100.00 元"，不要只输出裸数字）。
+   简明扼要，不要复述整个表格，不要加"根据查询结果"之类的套话
+
+【用户问题】
+{query}
+
+【查询结果】
+{data_text}
+{derived}
+
+请直接输出回答：
 """
 
 
@@ -212,17 +238,26 @@ def try_answer(query: str, user: str = "") -> str | None:
         "，".join(f"{c['name']}({c.get('desc', '')}，如：{c.get('sample', '')})"
                   for c in t["columns"])
         for t in tables)
-    try:
-        from datetime import datetime
-        raw = llm.verify_chat("", _GEN_PROMPT.format(
-            schema=schema_block, query=query,
-            today=datetime.now().strftime("%Y-%m-%d")), temperature=0.1).strip()
-        m = re.search(r"\{.*\}", raw, re.S)
-        plan = json.loads(m.group()) if m else {}
-        sql, params = plan.get("sql_template"), plan.get("params") or []
-        if not isinstance(sql, str) or not isinstance(params, list):
-            return None
-    except (ValueError, AttributeError):
+    from datetime import datetime
+    sql, params = "", []
+    # 生成重试 3 次（曾"最近7天"窗口问法偶发生成失败/空模板漏回兜底，9/10 稳定性；
+    # verify 模型 ReadTimeout 抖动是"李娜是哪年来的"类变体偶发失败根因，
+    # 夜间 API 慢时段连续超时也偶发——重试吸收抖动）
+    for _ in range(4):
+        try:
+            raw = llm.verify_chat("", _GEN_PROMPT.format(
+                schema=schema_block, query=query,
+                today=datetime.now().strftime("%Y-%m-%d")), temperature=0.1).strip()
+            m = re.search(r"\{.*\}", raw, re.S)
+            plan = json.loads(m.group()) if m else {}
+            sql, params = plan.get("sql_template"), plan.get("params") or []
+        except (ValueError, AttributeError):
+            sql, params = "", []
+        if isinstance(sql, str) and sql.strip() and isinstance(params, list):
+            if _validate(sql, params, tables):
+                break
+        sql, params = "", []
+    if not sql:
         return None
     final_sql = _validate(sql, params, tables)
     if not final_sql:
@@ -288,4 +323,74 @@ def try_answer(query: str, user: str = "") -> str | None:
                 return v
         return col
 
-    return _fmt_rows(rows, cols, labels, _label)
+    text = _fmt_rows(rows, cols, labels, _label)
+    # 空结果+问句带金额数字 = 提交语义（"王强报销96元交通费"模型偶发生成查询
+    # SQL 查无记录）→ 漏回让 SOP 接（写操作不走数据面；空结果语义修正，
+    # 不是路由预判——"李娜报销了多少"查空无金额仍答"查询结果为空"）
+    if not rows and re.search(r"\d+(\.\d+)?\s*(元|块钱|块)", query or ""):
+        return None
+    # 多行列表类结果不包装（曾包装层压缩明细列表时丢掉部门/姓名等标识列——
+    # 列表本身可读性好，包装只用于单值/两行比较类）
+    if len(rows) > 2:
+        return text
+    return _answer_with_llm(query, text, rows)
+
+
+# ---------------- 结果→回答包装（治类：数据≠答案） ----------------
+
+def _derive_compare(rows: list[tuple]) -> str:
+    """确定性衍生信息：结果恰好 2 行且含数值列时给出差值（算术不让模型算——
+    曾比较问法模型需自己算"多多少"，有算错风险；这里算好喂给包装层）"""
+    if len(rows or []) != 2:
+        return ""
+    try:
+        from decimal import Decimal, InvalidOperation
+        idx = next((i for i, v in enumerate(rows[0])
+                    if isinstance(v, (int, float, Decimal))
+                    and isinstance(rows[1][i], (int, float, Decimal))), None)
+        if idx is None:
+            return ""
+        a, b = Decimal(str(rows[0][idx])), Decimal(str(rows[1][idx]))
+        if a == b:
+            return "\n【衍生信息】两者数值相同"
+        high_name = str(rows[0][0]) if a > b else str(rows[1][0])
+        diff = _fmt_num(abs(a - b))
+        return f"\n【衍生信息】{high_name} 的数值更高，差值为 {diff}"
+    except (InvalidOperation, TypeError, ValueError):
+        return ""
+
+
+def _fmt_num(v) -> str:
+    """数值展示：去多余小数尾零（754.70 不显示成 754.7000）"""
+    s = str(v)
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def _numbers_in(text: str) -> set:
+    """提取文本中所有数字（含小数），用于核对"""
+    return set(re.findall(r"\d+(?:\.\d+)?", text or ""))
+
+
+def _answer_with_llm(query: str, data_text: str, rows: list[tuple]) -> str:
+    """数据 → 回答（问句+真实数据+衍生信息 → LLM 只做措辞）。
+    数字核对：回答里每个数字必须来自查询结果/衍生信息——模型改写数字
+    （2881.30→2881.3 或算错差值）一律回退确定性原文；LLM 失败同样回退。
+    确定性原文永远是最差可交付底线，LLM 包装只是让它"像在回答问题"。"""
+    derived = _derive_compare(rows)
+    source = data_text + derived
+    try:
+        ans = (llm.verify_chat("", _ANSWER_PROMPT.format(
+            query=query, data_text=data_text, derived=derived),
+            temperature=0.1).strip() or "")
+    except Exception:
+        return data_text
+    if not ans or ans == data_text:
+        return data_text
+    # 允许数字集合 = 查询结果/衍生信息 + 用户问句中的数字（"8月营收"答"8月"
+    # 的 8 来自问句不算编造——曾把问句数字当越界误杀回退原文）
+    if not _numbers_in(ans) <= (_numbers_in(source) | _numbers_in(query)):
+        print(f"[nlsql] 包装层数字越界，回退原文: {ans[:80]!r}")
+        return data_text
+    return ans

@@ -152,46 +152,14 @@ def _fstr(v) -> str:
     return "" if v is None else str(v).strip()
 
 
+# 注册顺序 = 匹配优先级（"孙悦申请合同用印，天启科技采购合同30万"同时含
+# "用印"和"采购"——曾采购排前面抢成采购申请单）。特化词（用印/盖章）
+# 的 contract 排最前，动作语义优先于宽词
 APPROVAL_DEFS: list[ApprovalDef] = [
-    ApprovalDef(
-        code="expense_action", name="报销申请", prefix="EXPENSE",
-        table="expense_application", business_type="expense",
-        keywords=["提交报销", "帮我报销", "申请报销", "报销申请", "我要报销", "报销一笔"],
-        fields={"expenseType": ("expense_type", _fstr), "amount": ("amount", _fnum),
-                "expenseDate": ("expense_date", _fstr), "reason": ("reason", _fstr)},
-        extract_schema=('{{"userName": "员工姓名", "expenseType": "报销类型", '
-                        '"amount": 数字, "expenseDate": "yyyy-MM-dd", "reason": "事由"}}'),
-        extra_rules="报销日期没说就默认今天；金额是报销总金额",
-        validate=_v_expense,
-        receipt_detail=lambda p: f"报销类型：{p.get('expenseType', '')}，金额：{p.get('amount', 0)} 元"),
-    ApprovalDef(
-        code="travel_action", name="出差申请", prefix="TRAVEL",
-        table="travel_application", business_type="travel",
-        keywords=["提交出差", "帮我出差", "申请出差", "出差申请", "我要出差"],
-        fields={"destination": ("destination", _fstr), "startDate": ("start_date", _fstr),
-                "endDate": ("end_date", _fstr), "reason": ("reason", _fstr)},
-        extract_schema=('{{"userName": "员工姓名", "destination": "目的地", '
-                        '"startDate": "yyyy-MM-dd", "endDate": "yyyy-MM-dd", "reason": "事由"}}'),
-        extra_rules="出差当天往返时 endDate 与 startDate 相同",
-        validate=_v_travel,
-        receipt_detail=lambda p: (f"目的地：{p.get('destination', '')}，"
-                                   f"时间：{p.get('startDate', '')} 至 {p.get('endDate', '')}")),
-    ApprovalDef(
-        code="purchase_action", name="采购申请", prefix="PURCHASE",
-        table="purchase_application", business_type="purchase",
-        keywords=["提交采购", "帮我采购", "申请采购", "采购申请", "我要采购", "采购一批"],
-        fields={"itemName": ("item_name", _fstr), "quantity": ("quantity", _fnum),
-                "amount": ("amount", _fnum), "reason": ("reason", _fstr)},
-        extract_schema=('{{"userName": "员工姓名", "itemName": "采购物品", '
-                        '"quantity": 数字, "amount": 数字, "reason": "事由"}}'),
-        extra_rules="quantity 是数量，amount 是总金额",
-        validate=_v_purchase,
-        receipt_detail=lambda p: (f"物品：{p.get('itemName', '')}，数量：{p.get('quantity', 0)}，"
-                                   f"金额：{p.get('amount', 0)} 元")),
     ApprovalDef(
         code="contract_action", name="合同用印申请", prefix="CONTRACT",
         table="contract_seal_application", business_type="contract",
-        keywords=["合同用印", "申请用印", "提交合同", "帮我用印", "盖章申请", "合同盖章"],
+        keywords=["用印", "盖章"],
         fields={"contractName": ("contract_name", _fstr),
                 "counterparty": ("counterparty", _fstr),
                 "amount": ("amount", _fnum), "reason": ("reason", _fstr)},
@@ -203,6 +171,41 @@ APPROVAL_DEFS: list[ApprovalDef] = [
         validate=_v_contract,
         receipt_detail=lambda p: (f"合同：{p.get('contractName', '')}，"
                                    f"对方：{p.get('counterparty', '')}")),
+    ApprovalDef(
+        code="expense_action", name="报销申请", prefix="EXPENSE",
+        table="expense_application", business_type="expense",
+        keywords=["报销", "报账"],
+        fields={"expenseType": ("expense_type", _fstr), "amount": ("amount", _fnum),
+                "expenseDate": ("expense_date", _fstr), "reason": ("reason", _fstr)},
+        extract_schema=('{{"userName": "员工姓名", "expenseType": "报销类型", '
+                        '"amount": 数字, "expenseDate": "yyyy-MM-dd", "reason": "事由"}}'),
+        extra_rules="报销日期没说就默认今天；金额是报销总金额",
+        validate=_v_expense,
+        receipt_detail=lambda p: f"报销类型：{p.get('expenseType', '')}，金额：{p.get('amount', 0)} 元"),
+    ApprovalDef(
+        code="travel_action", name="出差申请", prefix="TRAVEL",
+        table="travel_application", business_type="travel",
+        keywords=["出差"],
+        fields={"destination": ("destination", _fstr), "startDate": ("start_date", _fstr),
+                "endDate": ("end_date", _fstr), "reason": ("reason", _fstr)},
+        extract_schema=('{{"userName": "员工姓名", "destination": "目的地", '
+                        '"startDate": "yyyy-MM-dd", "endDate": "yyyy-MM-dd", "reason": "事由"}}'),
+        extra_rules="出差当天往返时 endDate 与 startDate 相同",
+        validate=_v_travel,
+        receipt_detail=lambda p: (f"目的地：{p.get('destination', '')}，"
+                                   f"时间：{p.get('startDate', '')} 至 {p.get('endDate', '')}")),
+    ApprovalDef(
+        code="purchase_action", name="采购申请", prefix="PURCHASE",
+        table="purchase_application", business_type="purchase",
+        keywords=["采购", "采买", "买办公", "买设备"],
+        fields={"itemName": ("item_name", _fstr), "quantity": ("quantity", _fnum),
+                "amount": ("amount", _fnum), "reason": ("reason", _fstr)},
+        extract_schema=('{{"userName": "员工姓名", "itemName": "采购物品", '
+                        '"quantity": 数字, "amount": 数字, "reason": "事由"}}'),
+        extra_rules="quantity 是数量，amount 是总金额",
+        validate=_v_purchase,
+        receipt_detail=lambda p: (f"物品：{p.get('itemName', '')}，数量：{p.get('quantity', 0)}，"
+                                   f"金额：{p.get('amount', 0)} 元")),
 ]
 
 

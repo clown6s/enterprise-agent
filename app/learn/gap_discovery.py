@@ -26,9 +26,15 @@ _STOPWORDS = set("请问 是什么 什么 怎么 如何 哪些 那个 这个 帮
 _TOKEN = re.compile(r"[一-龥]{2,}|[A-Za-z]{2,}")
 
 
-def record_gap(query: str) -> None:
+def record_gap(query: str, conversation_id: str = "") -> None:
     """兜底句式触发即记录（JSONL 为唯一数据源——曾内存+文件双源合并，
-    每条缺口在报告里重复计数，重启后数字跳变）"""
+    每条缺口在报告里重复计数，重启后数字跳变）。
+    2026-08-19 补测试会话过滤：曾回归用例的"心衰如何诊断"混进缺口库，
+    健康度报告的缺口建议全是测试噪音（与审计过滤同口径）"""
+    if conversation_id:
+        from ..service import history
+        if history.is_test_conversation(conversation_id):
+            return
     entry = {"ts": datetime.now().isoformat(), "query": query}
     try:
         os.makedirs(os.path.dirname(_FILE), exist_ok=True)

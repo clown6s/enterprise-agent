@@ -42,6 +42,14 @@ def _audit(sop: str, step: str, input_: dict, output: str, seconds: float) -> No
 # 借鉴 ragflow agent component：新增 SOP = 定义步骤顺序 + 每个步骤的 handler，
 # 注册表加一行即可——不用再写整条状态机代码（曾 SOP 逻辑硬编码在 execute 分支里）。
 
+# 制度问法排除（宽词触发的代价）："报销流程是什么/采购需要什么材料"不进 SOP——
+# 流程制度问题走知识问答。2026-08-19 变体矩阵抓出触发词覆盖不足后加宽词，
+# 宽词必须配这个排除（曾"请假流程"无关键词不触发纯属运气）
+_PROCESS_WORDS_SOP = re.compile(
+    r"流程|制度|规定|标准|政策|条件|材料|模板|须知|注意事项|怎么|如何|多少|多少钱"
+    r"|谁|哪个|最多|最少|比较|对比")
+
+
 @dataclass
 class SopDefinition:
     code: str
@@ -53,13 +61,17 @@ class SopDefinition:
     confirm_detail: Callable | None = None   # params → 确认单详情文案（请假=起止日期等）
 
     def matches(self, query: str) -> bool:
+        if _PROCESS_WORDS_SOP.search(query):
+            return False
         return any(k in query for k in self.keywords)
 
 
-# 请假触发词
-_LEAVE_KEYWORDS = ["提交请假", "帮我请假", "帮我请", "申请年假", "请事假", "请病假", "请年假",
-                   "请调休", "请个假", "请一天假", "请两天假", "请三天假", "请半天假",
-                   "请假一天", "请假两天", "请假三天"]
+# 请假触发词（2026-08-19 变体矩阵扩充："给王强请60天事假"曾不触发——
+# 关键词补"天假/天事假"等碎片形态；宽词"请假"覆盖"X请假N天"）
+_LEAVE_KEYWORDS = ["请假", "提交请假", "帮我请假", "帮我请", "申请年假", "请事假",
+                   "请病假", "请年假", "请调休", "请个假", "请一天假", "请两天假",
+                   "请三天假", "请半天假", "请假一天", "请假两天", "请假三天",
+                   "天假", "天事假", "天病假", "天年假", "天调休"]
 
 # ---------------- 管理后台开关接线 ----------------
 # sop 表 enabled 开关（TTL 60s 缓存；曾只存储不消费——后台禁用请假 SOP，

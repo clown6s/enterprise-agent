@@ -44,16 +44,11 @@ _CHAT_WORDS = re.compile(
     r"^(你好|您好|hi|hello|谢谢|你是谁|你能做什么|你叫什么|在吗|早上好|晚上好|再见|拜拜|辛苦|谢谢啦|好的|OK|ok)"
 )
 _DATA_DAYS = re.compile(r"(\d{1,3})\s*天")
-# NL2SQL 预闸：事实型问法才尝试表查询（"什么是心律失常"这类知识问题不触发，
-# 省一次模型调用；表查询不可答时照样漏回知识问答）。
-# 2026-08-19 能力总线退役：员工3条+OA报销/经营2条的触发词全部并入本词表
-# （曾"王强是什么时候入职的""最近7天的经营数据"因词表缺"什么时候/经营数据"
-# 预闸不命中，NL2SQL 根本没被尝试的实况）
-_FACT_QUERY = re.compile(
-    r"产品|价格|多少钱|哪些|几个|多少|数量|金额|汇总|统计|电话|手机|品类|售价|库存"
-    r"|特点|信息|详情|介绍|怎么样|如何|多大|多长"
-    r"|入职|工号|部门|职位|岗位|什么时候|何时|哪一年|人数|员工数"
-    r"|报销|开支|费用明细|经营数据|营收|成本|利润|业绩|销售额|经营情况|支出")
+# NL2SQL 无预闸（2026-08-19 用户定调：不做写死词表预判——知识库定义回答什么、
+# skills 定义能干什么、NL2SQL 自己判断能不能答）。曾白名单/黑名单/lookahead
+# 预判正则补丁三轮全废（口语碎片漏预闸、黑名单误伤"是什么时候"）；
+# 现无条件尝试：模型生成 SQL 或空模板（=无法确定→None 漏回后续层），
+# 多一次模型调用是正确架构的代价（用户明确不在乎成本）
 
 
 # ---------------- 路由与工具函数 ----------------
@@ -452,16 +447,16 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     # query_schema.grants 过滤）；不可答返回 None 漏回知识问答。
     # 预闸限定事实型问法——避免每条知识问答都多一次模型调用
     # （能力总线已退役：员工3条+OA报销/经营2条全并入本层，query_schema 注册即用）
-    if _FACT_QUERY.search(query):
-        # 追问改写前置：指代追问先补全再进数据面（非追问 _resolve_query 零成本）
-        nlsql_q = _resolve_query(query, turns)
-        try:
-            sql_ans = nlsql.try_answer(nlsql_q, user=user)
-        except Exception:
-            sql_ans = None
-        if sql_ans:
-            return {"answer": guards.fix_output(sql_ans), "sources": [],
-                    "route": "KNOWLEDGE_QA", "chart": None}
+    # 无预闸：无条件尝试（模型自判能否生成 SQL；空模板=漏回后续层）
+    # 追问改写前置：指代追问先补全再进数据面（非追问 _resolve_query 零成本）
+    nlsql_q = _resolve_query(query, turns)
+    try:
+        sql_ans = nlsql.try_answer(nlsql_q, user=user)
+    except Exception:
+        sql_ans = None
+    if sql_ans:
+        return {"answer": guards.fix_output(sql_ans), "sources": [],
+                "route": "KNOWLEDGE_QA", "chart": None}
 
     # 文档多轮修改（会话有进行中文档 + 修改指令 → 回写同一份云文档）
     if tools.is_enabled("doc_wizard"):
@@ -502,9 +497,10 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
 
     r = route(query, has_history=bool(turns))
     if r == "CHAT":
-        user_prompt = (f"{history.history_block(turns)}\n{query}" if turns else query)
+        # 闲聊不带历史（曾先提报销确认单后说"你好"，模型复读历史里的
+        # "请确认报销申请：王强…"话术——闲聊是开场语，历史无益且污染）
         return {"answer": guards.clean_cjk_spacing(
-                    llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), user_prompt)),
+                    llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), query)),
                 "sources": [], "route": "CHAT", "chart": None}
     if r == "CLARIFY":
         return {"answer": "抱歉，我没太理解你的问题。可以再具体一点吗？比如补充对象、时间或背景。",
@@ -558,7 +554,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             return graph_fb
-        gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
+        gap_discovery.record_gap(query, conversation_id)   # 缺口信号：兜底句式触发
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     sources = sorted({h["source"] for h in hits if h.get("source")})
@@ -568,7 +564,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
     ctx_main = guards.strip_injection_sentences(
         retrieval.build_context([h for h in hits if not h.get("_expanded")]))
     if _attention_gap(query, ctx_main):
-        gap_discovery.record_gap(query)
+        gap_discovery.record_gap(query, conversation_id)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     # 文件上下文（图片 OCR 等）作为首要依据注入——此前只在图谱兜底分支注入，
@@ -600,7 +596,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             return graph_fb
         # 恢复也失败：记知识缺口（曾闸门拒绝不进缺口聚类——知识库健康度
         # 看板上这类"答不上"隐形，与空手/维度闸门路径口径不一致）
-        gap_discovery.record_gap(query)
+        gap_discovery.record_gap(query, conversation_id)
         # 闸门拒绝=无依据，不得带来源（曾"暂无法回答"+来源并存的矛盾实况）
         return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
@@ -675,19 +671,18 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     # 对话历史提前加载（与非流式同口径——追问改写进数据面）
     turns = history.recent_turns(conversation_id)
 
-    # NL2SQL 表查询层（与非流式同口径——双路径同步；能力总线已退役）
-    if _FACT_QUERY.search(query):
-        nlsql_q = _resolve_query(query, turns)
-        try:
-            sql_ans = nlsql.try_answer(nlsql_q, user=user)
-        except Exception:
-            sql_ans = None
-        if sql_ans:
-            yield "route", "KNOWLEDGE_QA"
-            yield "token", guards.fix_output(sql_ans)
-            yield "sources", []
-            yield "done", "[DONE]"
-            return
+    # NL2SQL 表查询层（与非流式同口径——双路径同步；无预闸无条件尝试）
+    nlsql_q = _resolve_query(query, turns)
+    try:
+        sql_ans = nlsql.try_answer(nlsql_q, user=user)
+    except Exception:
+        sql_ans = None
+    if sql_ans:
+        yield "route", "KNOWLEDGE_QA"
+        yield "token", guards.fix_output(sql_ans)
+        yield "sources", []
+        yield "done", "[DONE]"
+        return
 
     if tools.is_enabled("doc_wizard"):
         revised = docwizard.revise(conversation_id, query)
@@ -739,7 +734,8 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         # 真流式：逐 chunk 下发（此前收齐后整体下发——闲聊无校验需求，
         # 纯损失）。增量 CJK 清理：留 4 字尾部缓冲，跨 chunk 的
         # "字 标点"粘连在下一段修正（流式中文逐字带空格的实况）
-        user_prompt = (f"{history.history_block(turns)}\n{query}" if turns else query)
+        # 闲聊不带历史（与非流式同口径——曾复读待确认单话术）
+        user_prompt = query
         carry = ""
         for chunk in llm.chat_stream_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()),
                                      user_prompt):
@@ -814,7 +810,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
             yield "sources", graph_fb["sources"]
             yield "done", "[DONE]"
             return
-        gap_discovery.record_gap(query)   # 缺口信号：兜底句式触发
+        gap_discovery.record_gap(query, conversation_id)   # 缺口信号：兜底句式触发
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         yield "token", _NO_ANSWER_GAP
         yield "sources", []
@@ -826,7 +822,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     ctx_main = guards.strip_injection_sentences(
         retrieval.build_context([h for h in hits if not h.get("_expanded")]))
     if _attention_gap(query, ctx_main):
-        gap_discovery.record_gap(query)
+        gap_discovery.record_gap(query, conversation_id)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         yield "token", _NO_ANSWER_GAP
         yield "sources", []
@@ -868,7 +864,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
             yield "done", "[DONE]"
             return
         # 恢复也失败：记知识缺口（与非流式同口径）
-        gap_discovery.record_gap(query)
+        gap_discovery.record_gap(query, conversation_id)
         # 闸门拒绝=无依据，不得带来源（与非流式同口径）
         yield "token", final
         yield "sources", []
