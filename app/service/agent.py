@@ -18,6 +18,7 @@ import re
 from datetime import datetime
 
 from .. import embeddings, guards, llm, milvus_store, prompts, tools
+from .. import invariants as _invariants
 from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
                        synonym_groups)
 from ..learn import adopted as adopted_qa
@@ -379,6 +380,11 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
     if (result.get("route") != "GUARD" and not result.get("answer").startswith(guards.NO_ANSWER)
             and not history.is_test_conversation(conversation_id)):
         history.save_turn(conversation_id, query, guards.strip_leading_anchor(result["answer"]))
+    # 运行时不变量：出口契约检查（route 合法/answer 非空）——生产自证，失败写告警表
+    if not history.is_test_conversation(conversation_id):
+        ok, detail = _invariants.check_answer_contract(result)
+        if not ok:
+            _invariants.fail("answer_contract", detail)
     return result
 
 

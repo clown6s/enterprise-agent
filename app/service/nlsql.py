@@ -262,6 +262,13 @@ def try_answer(query: str, user: str = "") -> str | None:
     final_sql = _validate(sql, params, tables)
     if not final_sql:
         return None
+    # 运行时不变量：校验先于执行（final_sql 必须是 _validate 产物——
+    # 曾列白名单死代码放行未校验 SQL 的实况，生产自证防回潮）
+    from .. import invariants as _invariants
+    ok, detail = _invariants.check_validated_sql(final_sql, sql, tables)
+    if not ok:
+        _invariants.fail("nlsql_validated", detail)
+        return None
     def _cast_param(p) -> int | float | str:
         """参数智能转类型：纯数字转 int/float（LIMIT %s 不接受字符串参数——
         曾"谁的报销最多"生成 ORDER BY ... LIMIT %s，'1' 字符串直接语法报错）；

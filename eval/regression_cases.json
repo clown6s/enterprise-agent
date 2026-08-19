@@ -10,7 +10,13 @@
       "answer_not_contain": [
         "暂无法回答"
       ],
-      "max_seconds": 30
+      "max_seconds": 30,
+      "verify_sql": [
+        {
+          "sql": "SELECT COUNT(*) FROM employee WHERE status=1",
+          "expect_value": ["COUNT(*)", "8"]
+        }
+      ]
     }
   },
   {
@@ -49,7 +55,13 @@
       "answer_not_contain": [
         "暂无法回答"
       ],
-      "max_seconds": 30
+      "max_seconds": 30,
+      "verify_sql": [
+        {
+          "sql": "SELECT SUM(amount) FROM biz_expense WHERE emp_name='赵敏'",
+          "expect_value": ["SUM(amount)", "3636.00"]
+        }
+      ]
     }
   },
   {
@@ -162,7 +174,13 @@
         "校验未通过",
         "暂无法回答"
       ],
-      "max_seconds": 60
+      "max_seconds": 60,
+      "verify_sql": [
+        {
+          "sql": "SELECT COUNT(*) FROM oa_leave_application WHERE user_name='李娜' AND status=1 AND create_time > NOW() - INTERVAL 1 HOUR",
+          "expect_min_rows": 1
+        }
+      ]
     }
   },
   {

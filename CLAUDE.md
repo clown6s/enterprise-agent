@@ -46,6 +46,13 @@ eval/                   # regression_cases.json（15 用例）+ retrieval_baseli
 - 回归：`python scripts/run_eval.py regression`（基线 15/15）
 - 检索评测：`python scripts/run_eval.py retrieval`（基线 100% / MRR 0.92）
 
+## 制度（2026-08-19 借鉴 deepseek-harness 落地，见 docs/dsh-highlights.md）
+
+- **改行为的变更必附决策记录**（docs/decisions/，四段式 Problem→Decision→Alternatives→Consequences）
+- **重大实况修复必附 postmortem**（docs/postmortem/，硬性要求：每篇产生至少一条防回归测试或规则）
+- **大改后必跑**：`python scripts/smoke_qa.py`（真实链路冒烟+外部验证）→ `python scripts/test_matrix_human.py`（变体矩阵）→ 回归 → 不变量
+- **验证外部世界，而非自我报告**：落库/状态类断言用 verify_sql 查真实库，不只用 answer_contain 关键词
+
 ## 设计原则（不可违反）
 
 0. **要智能（用户 2026-08-19 暴怒定调，最高优先级）**：

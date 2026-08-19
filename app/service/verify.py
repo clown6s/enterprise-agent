@@ -170,18 +170,13 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
     else:
         _verify_failures = 0
 
-    # 确定性守卫顺序：兜底句式混入清理 → 提示词回显硬删 → 缺失术语硬删除
-    # →（图谱-only 数字硬删）→ 鉴伪断言 → 空标题清理 → 格式修复。
+    # 确定性守卫链（2026-08-19 单调守卫化：从 guards.GUARD_REGISTRY 装配，
+    # 只读否决契约——注册顺序无法把否决翻回放行；顺序与历史硬编码一致：
+    # 兜底句式清理 → 提示词回显硬删 → 缺失术语硬删除 →（图谱-only 数字硬删）
+    # → 鉴伪断言 → 空标题清理 → 格式修复。
     # missing 用校验前的答案算：校验器已删掉的术语不误伤，漏删的在此兜底。
-    answer = guards.strip_no_answer_hedge(answer)
-    answer = guards.strip_history_echo(answer)
-    answer = guards.strip_missing_terms(answer, missing)
-    if graph_only:
-        # 图谱-only 数字硬删（软约束管不住模型补数字——图谱编造最危险形态）
-        answer = guards.strip_graph_only_numbers(answer, context)
-    answer = guards.strip_assertions(answer, context)
-    answer = guards.collapse_empty_headings(answer)
-    answer = guards.fix_output(answer) or guards.NO_ANSWER
+    answer = guards.run_guard_chain(answer, missing=missing, context=context,
+                                    graph_only=graph_only)
     if graph_only and answer == guards.NO_ANSWER and context.strip():
         # 数字硬删清空答案时回退确定性关系回显（数字编造拦住了，图谱关系
         # 本身仍可答——曾清空直接兜底，连合法关系内容也没了的 guard-014 实况）

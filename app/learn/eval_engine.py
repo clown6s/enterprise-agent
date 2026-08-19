@@ -22,6 +22,41 @@ _EVAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 
 # ---------------- 1. 问答回归 ----------------
 
+def _verify_sql(ext: dict) -> tuple[bool, str]:
+    """外部验证：只读 SELECT 查真实库，断言 expect_rows/expect_min_rows/
+    expect_value(列,值)。SQL 来自 eval 用例文件（测试代码，非用户输入）。
+    数据库不可用返回失败（外部验证失败必须红，不能静默跳过）"""
+    sql = (ext.get("sql") or "").strip()
+    if not sql or not sql.lower().startswith("select"):
+        return False, "verify_sql 必须是以 SELECT 开头的只读查询"
+    try:
+        import pymysql
+        from .. import config
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                               user="root", password=config.MYSQL_PASSWORD,
+                               database=config.MYSQL_DB, charset="utf8mb4",
+                               connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+        conn.close()
+    except Exception as e:
+        return False, f"verify_sql 执行失败: {e!r}"
+    if "expect_rows" in ext and len(rows) != ext["expect_rows"]:
+        return False, f"行数 {len(rows)} != {ext['expect_rows']}"
+    if "expect_min_rows" in ext and len(rows) < ext["expect_min_rows"]:
+        return False, f"行数 {len(rows)} < {ext['expect_min_rows']}"
+    if "expect_value" in ext:
+        col, val = ext["expect_value"]
+        if col not in cols:
+            return False, f"列 {col} 不存在（现有 {cols}）"
+        if not rows or str(rows[0][cols.index(col)]) != str(val):
+            got = str(rows[0][cols.index(col)]) if rows else "（空）"
+            return False, f"{col} 期望 {val!r} 实际 {got!r}"
+    return True, f"{len(rows)} 行"
+
+
 def run_answer_case(case: dict) -> dict:
     """执行一条断言用例，返回 {id, query, passed, checks, seconds}。
     每用例独立会话（多轮历史/待确认单不串用例）；followup 字段支持二轮断言
@@ -69,6 +104,11 @@ def run_answer_case(case: dict) -> dict:
         check("chart", has_chart == expect["chart_present"], f"chart={has_chart}")
     if "max_seconds" in expect:
         check("max_seconds", seconds <= expect["max_seconds"], f"{seconds:.1f}s")
+    # 外部世界验证（2026-08-19 借鉴 dsh「验证外部世界，而非自我报告」：
+    # 断言实际数据库状态——关键词探测会让作弊 agent 通过，落库/真实行才是凭据）
+    for ext in expect.get("verify_sql", []):
+        ok, detail = _verify_sql(ext)
+        check(f"verify_sql:{str(ext.get('sql', ''))[:40]}", ok, detail)
 
     failed = [c for c in checks if not c[1]]
     return {

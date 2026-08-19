@@ -586,6 +586,45 @@ def clean_cjk_spacing(text: str) -> str:
     return text
 
 
+# ---------------- 7. 守卫注册表（单调守卫化） ----------------
+# 2026-08-19 借鉴 dsh 单调守卫契约：守卫只能输出「等于或更严格于」输入
+# （改写/剥除/清空/回兜底），不存在 allow/放行结果——注册顺序永远无法把
+# 一个已被否决的内容翻回放行。verify 链从本注册表装配（不再硬编码调用顺序），
+# 新增守卫 = 加一行条目。
+# needs_missing/needs_context：守卫签名需要的额外参数；when_graph_only：仅图谱兜底启用。
+
+GUARD_REGISTRY: list[dict] = [
+    {"name": "strip_no_answer_hedge", "fn": strip_no_answer_hedge},
+    {"name": "strip_history_echo", "fn": strip_history_echo},
+    {"name": "strip_missing_terms", "fn": strip_missing_terms, "needs_missing": True},
+    {"name": "strip_graph_only_numbers", "fn": strip_graph_only_numbers,
+     "when_graph_only": True, "needs_context": True},
+    {"name": "strip_assertions", "fn": strip_assertions, "needs_context": True},
+    {"name": "collapse_empty_headings", "fn": collapse_empty_headings},
+    {"name": "fix_output", "fn": lambda text, **kw: fix_output(text) or NO_ANSWER},
+]
+
+
+def run_guard_chain(answer: str, missing=(), context: str = "",
+                    graph_only: bool = False) -> str:
+    """按注册顺序执行守卫链（单调否决：每步输出不宽松于上一步）。
+    守卫异常不炸链——单条失败跳过继续（dsh observe 逐监听器容错同款），
+    其余守卫仍收尾；返回值保证非空（fix_output 兜底 NO_ANSWER）。"""
+    for g in GUARD_REGISTRY:
+        if g.get("when_graph_only") and not graph_only:
+            continue
+        try:
+            kwargs = {}
+            if g.get("needs_missing"):
+                kwargs["missing"] = missing
+            if g.get("needs_context"):
+                kwargs["context"] = context
+            answer = g["fn"](answer, **kwargs)
+        except Exception:
+            continue
+    return answer
+
+
 def _norm(s: str) -> str:
     """比较用归一化：全角转半角（NFKC）+ 去空白 + 小写。
     曾只去空白——答案"II"vs 资料"Ⅱ"（罗马数字全角）判缺失的 sweep 实况，
