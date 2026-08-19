@@ -3,7 +3,7 @@
     "id": "guard-001-员工人数",
     "query": "公司有多少人",
     "expect": {
-      "route": "KNOWLEDGE_QA",
+      "route": "DATA",
       "answer_contain": [
         "8"
       ],

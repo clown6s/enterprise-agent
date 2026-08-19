@@ -14,6 +14,8 @@ import time
 import httpx
 
 from .. import config
+import logging
+log = logging.getLogger(__name__)
 
 # 官方 SDK 依赖较重且日志啰嗦，只在这里引入（软依赖：无 lark-oapi 则渠道禁用）
 try:
@@ -66,15 +68,15 @@ class FeishuChannel:
         try:
             n = self.sync_contacts()
             if n:
-                print(f"[飞书] 通讯录同步 {n} 人")
+                log.info(f"通讯录同步 {n} 人")
         except Exception as e:
-            print(f"[飞书] 通讯录同步异常: {e!r}")
+            log.warning(f"通讯录同步异常: {e!r}")
 
     def _run(self) -> None:
         try:
             self._ws.start()   # 阻塞；SDK 内部自动重连
         except Exception as e:
-            print(f"[飞书] 长连接异常退出: {e}")
+            log.warning(f"长连接异常退出: {e}")
 
     # ---------------- token ----------------
 
@@ -117,7 +119,7 @@ class FeishuChannel:
                                  timeout=10)
                 data = resp.json()
                 if data.get("code") != 0:
-                    print(f"[飞书] 通讯录拉取失败: {data.get('code')} {data.get('msg')}")
+                    log.warning(f"通讯录拉取失败: {data.get('code')} {data.get('msg')}")
                     return 0
                 d = data.get("data") or {}
                 for u in d.get("items") or []:
@@ -165,7 +167,7 @@ class FeishuChannel:
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"[飞书] 通讯录落库失败: {e!r}")
+            log.warning(f"通讯录落库失败: {e!r}")
             return 0
         return len(users)
 
@@ -192,7 +194,7 @@ class FeishuChannel:
             threading.Thread(target=self._handle, daemon=True,
                              args=(chat_id, message_id, mtype, content, open_id)).start()
         except Exception as e:
-            print(f"[飞书] 事件处理异常: {e}")
+            log.warning(f"事件处理异常: {e}")
 
     def _handle(self, chat_id: str, message_id: str, mtype: str, content: str,
                 open_id: str = "") -> None:
@@ -216,7 +218,7 @@ class FeishuChannel:
             self._handle_text_inner(chat_id, message_id, text, open_id)
         except Exception as e:
             # 生成链路意外异常（LLM 挂/嵌入挂等）→ 兜底回复，不让飞书用户石沉大海
-            print(f"[飞书] 文本处理异常: {e!r}")
+            log.warning(f"文本处理异常: {e!r}")
             self._reply(message_id, "抱歉，回答生成失败，请稍后重试。")
 
     def _handle_text_inner(self, chat_id: str, message_id: str, text: str, open_id: str = "") -> None:
@@ -260,7 +262,8 @@ class FeishuChannel:
                 from ..service import agent as _agent
                 suggestions = _agent.suggest_followups(text, result["answer"], open_id)
             card_msg_id = self._reply_card(message_id, self.build_answer_card(
-                result["answer"], result["sources"], suggestions)) or ""
+                result["answer"], result["sources"], suggestions,
+                route=result.get("route", ""))) or ""
             if not card_msg_id:
                 self._reply(message_id, result["answer"])
         # 按卡片消息 id 存问答（👍👎 回调用 open_message_id 精确对应——曾按
@@ -284,14 +287,15 @@ class FeishuChannel:
                 suggestions = agent.suggest_followups(q, result["answer"], open_id)
             if msg_id:
                 card_msg_id = self._reply_card(msg_id, self.build_answer_card(
-                    result["answer"], result["sources"], suggestions))
+                    result["answer"], result["sources"], suggestions,
+                    route=result.get("route", "")))
                 if card_msg_id:
                     self._last_answers[card_msg_id] = last   # 按卡片 id 存，反馈不错位
                     return
             self._reply(msg_id, result["answer"])
             self._last_answers[chat_id] = last
         except Exception as e:
-            print(f"[飞书] 延伸问答异常: {e!r}")
+            log.warning(f"延伸问答异常: {e!r}")
             self._reply(msg_id or "", "抱歉，回答生成失败，请稍后重试。")
 
     # ---------------- 图片 OCR ----------------
@@ -440,10 +444,15 @@ class FeishuChannel:
         }
 
     @staticmethod
-    def build_answer_card(answer: str, sources: list[str], suggestions: list[str] = ()) -> dict:
+    def build_answer_card(answer: str, sources: list[str], suggestions: list[str] = (),
+                          route: str = "") -> dict:
         """回答卡片（schema 1.0）：markdown 正文 + 来源 note + 延伸追问按钮 + 👍👎。
-        suggestions：'你可能还想问'按钮（点击即追问）。"""
-        source_note = "、".join(sources) if sources else "无来源"
+        suggestions：'你可能还想问'按钮（点击即追问）。
+        route=DATA（数据查询类答案，走 NL2SQL 现查）时不显示 👍/👎 反馈按钮 +
+        来源标"数据查询"——确定性库查询答案，反馈无意义且"无来源"误导
+        （曾数据答案带"无来源"+反馈按钮的实况）。"""
+        is_data = route == "DATA"
+        source_note = "数据查询" if is_data else ("、".join(sources) if sources else "无来源")
         # schema 1.0：无 schema 键 = 1.0，elements 在顶层；
         # action 按钮/note 组件在 1.0 支持（2.0 会拒 unsupported tag action）
         actions = [{
@@ -451,25 +460,28 @@ class FeishuChannel:
             "text": {"tag": "plain_text", "content": f"💡 {s[:28]}"},
             "type": "default", "value": {"action": "suggest", "q": s},
         } for s in suggestions]
-        actions += [
-            {"tag": "button",
-             "text": {"tag": "plain_text", "content": "👍 有帮助"},
-             "type": "primary", "value": {"action": "helpful"}},
-            {"tag": "button",
-             "text": {"tag": "plain_text", "content": "👎 无帮助"},
-             "type": "default", "value": {"action": "unhelpful"}},
+        if not is_data:
+            actions += [
+                {"tag": "button",
+                 "text": {"tag": "plain_text", "content": "👍 有帮助"},
+                 "type": "primary", "value": {"action": "helpful"}},
+                {"tag": "button",
+                 "text": {"tag": "plain_text", "content": "👎 无帮助"},
+                 "type": "default", "value": {"action": "unhelpful"}},
+            ]
+        elements = [
+            {"tag": "markdown", "content": answer[:6000]},
+            {"tag": "hr"},
+            {"tag": "note", "elements": [
+                {"tag": "plain_text", "content": "📄 来源：" + source_note}]},
         ]
+        if actions:
+            elements.append({"tag": "action", "actions": actions})
         return {
             "config": {"wide_screen_mode": True},
             "header": {"title": {"tag": "plain_text", "content": "🤖 数字员工回答"},
                        "template": "blue"},
-            "elements": [
-                {"tag": "markdown", "content": answer[:6000]},
-                {"tag": "hr"},
-                {"tag": "note", "elements": [
-                    {"tag": "plain_text", "content": "📄 来源：" + source_note}]},
-                {"tag": "action", "actions": actions},
-            ],
+            "elements": elements,
         }
 
     def _reply_card(self, message_id: str, card: dict) -> str:
@@ -488,12 +500,12 @@ class FeishuChannel:
                 timeout=15,
             )
             if resp.status_code != 200:
-                print(f"[飞书] 卡片发送失败 http={resp.status_code} body={resp.text[:300]}")
+                log.warning(f"卡片发送失败 http={resp.status_code} body={resp.text[:300]}")
                 return ""
             body = resp.json()
             if body.get("code") != 0:
-                print(f"[飞书] 卡片业务拒绝 code={body.get('code')} "
-                      f"msg={body.get('msg')} body={resp.text[:300]}")
+                log.warning(f"卡片业务拒绝 code={body.get('code')} "
+                            f"msg={body.get('msg')} body={resp.text[:300]}")
                 return ""
             return (body.get("data") or {}).get("message_id", "") or ""
         except (httpx.HTTPError, ValueError):
@@ -561,7 +573,7 @@ class FeishuChannel:
                 toast.content = "未知操作"
         except Exception as e:
             toast.content = "反馈处理异常"
-            print(f"[飞书] 卡片回调异常: {e}")
+            log.warning(f"卡片回调异常: {e}")
         resp.toast = toast
         return resp
 
@@ -582,7 +594,7 @@ class FeishuChannel:
                 timeout=15,
             )
         except httpx.HTTPError as e:
-            print(f"[飞书] 回复失败 messageId={message_id}: {e}")
+            log.warning(f"回复失败 messageId={message_id}: {e}")
 
     def send_to_user(self, open_id: str, text: str) -> bool:
         """给指定用户发消息（审批通知等主动推送；需 im:message 权限）。
@@ -604,7 +616,7 @@ class FeishuChannel:
             )
             return resp.json().get("code") == 0
         except httpx.HTTPError as e:
-            print(f"[飞书] 推送给 {open_id} 失败: {e}")
+            log.warning(f"推送给 {open_id} 失败: {e}")
             return False
 
 

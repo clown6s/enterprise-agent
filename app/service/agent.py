@@ -441,7 +441,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         mh_ans = None
     if mh_ans:
         return {"answer": guards.fix_output(mh_ans), "sources": [],
-                "route": "KNOWLEDGE_QA", "chart": None}
+                "route": "DATA", "chart": None}
 
     # 对话历史提前加载：NL2SQL 追问改写 + 后续 route 判定共用。
     # 2026-08-19 飞书实况："他的手机号多少"（上一轮问了王强）直接进 NL2SQL
@@ -462,7 +462,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         sql_ans = None
     if sql_ans:
         return {"answer": guards.fix_output(sql_ans), "sources": [],
-                "route": "KNOWLEDGE_QA", "chart": None}
+                "route": "DATA", "chart": None}
 
     # 文档多轮修改（会话有进行中文档 + 修改指令 → 回写同一份云文档）
     if tools.is_enabled("doc_wizard"):
@@ -668,7 +668,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     except Exception:
         mh_ans = None
     if mh_ans:
-        yield "route", "KNOWLEDGE_QA"
+        yield "route", "DATA"
         yield "token", guards.fix_output(mh_ans)
         yield "sources", []
         yield "done", "[DONE]"
@@ -684,7 +684,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     except Exception:
         sql_ans = None
     if sql_ans:
-        yield "route", "KNOWLEDGE_QA"
+        yield "route", "DATA"
         yield "token", guards.fix_output(sql_ans)
         yield "sources", []
         yield "done", "[DONE]"
