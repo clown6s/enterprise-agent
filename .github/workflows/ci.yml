@@ -15,9 +15,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5   # v5 原生 Node 24，消 Node 20 弃用警告
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5   # setup-python 暂无 Node 24 版（v6 未发布），
+        with:                           # 其 Node 20 警告非致命——强制跑 Node 24，照常工作
         with:
           python-version: '3.13'
 
