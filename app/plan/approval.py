@@ -235,7 +235,12 @@ def list_applications(business_type: str = "", status=None) -> list[dict]:
 
 import re  # noqa: E402
 
-_COMMAND = re.compile(r"(同意|通过|拒绝|驳回)\s*([A-Z]+\d{8,})")
+# apply_no = 前缀(大写字母) + 8位日期 + 8位hex(含 A-F 字母)。
+# 曾用 [A-Z]+\d{8,}——\d{8,} 贪婪遇到 hex 后缀的字母就停，只截到
+# "LEAVE2026082042"，丢掉 hex 后缀 "DFC925" → 永远匹配不到真实单号，
+# 「同意 <单号>」对话审批从未生效（补覆盖时发现，回归无此路径用例）。
+# 修：\d{8} 精确匹配 8 位日期，[0-9A-Z]* 吃掉 hex 后缀。
+_COMMAND = re.compile(r"(同意|通过|拒绝|驳回)\s*([A-Z]+\d{8}[0-9A-Z]*)")
 _PREFIX_BIZ = registry.PREFIX_MAP
 
 
