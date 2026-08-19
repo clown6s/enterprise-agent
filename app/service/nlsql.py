@@ -47,9 +47,10 @@ _GEN_PROMPT = """你是数据库查询生成器。根据下面的表结构描述
    与表结构无关的闲聊——你只负责查表，不是查询就不生成 SQL
 5. 今天日期是 {today}。"最近 N 天"用参数化区间条件写：expense_date >= CURDATE() - INTERVAL %s DAY，
    params 填数字 N（不要自己算日期，跨月容易算错——曾模型自算日期导致查错窗口）
-6. 跨表问法（"某人的部门的报销"= 先定位部门再查该部门数据）用 JOIN：
-   ON 条件只允许用【表结构】中含义相同的关联列（如 employee.dept = biz_expense.dept_name），
-   表别名用单字母（employee e / biz_expense b），JOIN 后必须保留 WHERE/LIMIT
+6. 跨表问法：当问句同时涉及多张表的字段时，查【关联关系】获取表间连接条件
+   - 观察问句涉及哪几张表 → 在【关联关系】中找对应的表对 → 直接用其 ON 条件拼 JOIN
+   - 不要臆测 JOIN 条件；关联关系里没有的不要硬连
+7. 表别名用单字母（如 a、b、c），JOIN 后 WHERE/LIMIT 仍需保留
 
 【表结构】
 {schema}
@@ -134,7 +135,8 @@ def register_table(table_name: str, description: str,
 
 
 def _visible_tables(user: str) -> list[dict]:
-    """注册表 → 当前用户可见的表清单（grants 过滤，与 doc_acl 同口径）"""
+    """注册表 → 当前用户可见的表清单（grants 过滤，与 doc_acl 同口径）。
+    返回的 columns 含非 PII 列；_raw_columns() 额外提供全量列用于 JOIN 校验。"""
     _ensure_tables()
     try:
         import pymysql
@@ -152,7 +154,6 @@ def _visible_tables(user: str) -> list[dict]:
     emp = acl.resolve_employee(user)
     out = []
     for name, desc, cols_json, grants in rows:
-        # grants 解析与 doc_acl 同款（JSON 数组或裸逗号串）
         ids = acl._parse_grants(grants or "")
         if ids and emp not in ids:
             continue
@@ -161,11 +162,73 @@ def _visible_tables(user: str) -> list[dict]:
         except ValueError:
             continue
         if isinstance(cols, list) and all(isinstance(c, dict) for c in cols):
-            # 字段级权限过滤：PII 列（如员工电话）对未授权用户直接不可见
             cols = [c for c in cols if acl.field_visible(name, c.get("name", ""), user)]
             if cols:
                 out.append({"table": name, "description": desc or "", "columns": cols})
     return out
+
+
+# 表间关联关系（跨表 JOIN 用——模型需要知道怎么连，不只是能连）
+# 格式：(源表, 目标表, ON 条件, 语义描述)
+# 只用 query_schema 已注册列：employee.dept（部门文本）、biz_expense.dept_name（部门文本）、
+# biz_expense.emp_name = employee.name（人名匹配）
+_JOINS = [
+    ("biz_expense", "employee",
+     "biz_expense.dept_name = employee.dept",
+     "报销→员工（按部门名匹配）：查某人所在部门的所有报销记录"),
+    ("employee", "biz_expense",
+     "employee.dept = biz_expense.dept_name",
+     "员工→报销（按部门名匹配）：查某部门所有员工的报销汇总"),
+]
+
+# 注册表原始列（含 PII）快照——_validate 校验 JOIN ON 条件引用列时需要
+_TABLE_COLS_RAW: dict[str, list[str]] = {}
+
+
+def _raw_columns(table_name: str) -> list[dict]:
+    """取一张表的全部注册列（含 PII），不做过滤——校验层用，不给模型看"""
+    _ensure_tables()
+    if table_name in _TABLE_COLS_RAW:
+        return [{"name": n} for n in _TABLE_COLS_RAW[table_name]]
+    try:
+        import pymysql
+        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                               user="root", password=config.MYSQL_PASSWORD,
+                               database=config.MYSQL_DB, charset="utf8mb4",
+                               connect_timeout=3)
+        with conn.cursor() as cur:
+            cur.execute("SELECT columns_json FROM query_schema "
+                        "WHERE table_name=%s AND status=1", (table_name,))
+            row = cur.fetchone()
+        conn.close()
+        if row:
+            cols = json.loads(row[0])
+            _TABLE_COLS_RAW[table_name] = [c["name"] for c in cols]
+            return cols
+    except Exception:
+        pass
+    return []
+
+
+def _build_schema_with_joins(tables: list[dict]) -> str:
+    """构建含关联关系的表结构描述：每张表的列 + 表间 JOIN 条件。
+    模型看到关联关系后才能生成正确的跨表 JOIN。"""
+    table_set = {t["table"] for t in tables}
+    # 表结构块
+    parts = []
+    for t in tables:
+        cols_text = "，".join(
+            f"{c['name']}({c.get('desc', '')}，如：{c.get('sample', '')})"
+            for c in t["columns"])
+        parts.append(f"表 {t['table']}：{t['description']}\n{cols_text}")
+    # 关联关系块（只注入两端表都已注册的 JOIN）
+    join_lines = []
+    for src, dst, on, desc in _JOINS:
+        if src in table_set and dst in table_set:
+            join_lines.append(f"- {desc}：{on}")
+    if join_lines:
+        parts.append("【关联关系】\n" + "\n".join(join_lines))
+    return "\n\n".join(parts)
 
 
 def _validate(sql: str, params: list, tables: list[dict]) -> str | None:
@@ -184,8 +247,13 @@ def _validate(sql: str, params: list, tables: list[dict]) -> str | None:
         return None
     # 列白名单：模板中每个裸标识符必须可解释为 关键字/注册表名/注册列名/
     # AS 别名（安全扫描抓出曾只算 allowed_cols 从未使用——列检查是死代码；
-    # 占位符先剥掉，否则 %s 的 s 会被当单字母标识符误拒）
-    allowed_cols = {c["name"].lower() for t in tables for c in t["columns"]}
+    # 占位符先剥掉，否则 %s 的 s 会被当单字母标识符误拒）。
+    # 允许列取全量注册列（含 PII）：JOIN ON 条件可能引用被过滤的列
+    # （如 employee.mobile），但模型在 SELECT 中不会引用——
+    # 字段级过滤在 schema 层（模型不可见），校验层放行以支持 JOIN
+    allowed_cols = {c["name"].lower()
+                    for t in tables
+                    for c in _raw_columns(t["table"])}
     low_clean = low.replace("%s", " ")
     aliases = set(re.findall(r"\bas\s+([a-z_][a-z0-9_]*)", low_clean))
     # JOIN 裸别名（JOIN employee e ON e.dept=... 里 e 无 AS——
@@ -233,11 +301,7 @@ def try_answer(query: str, user: str = "") -> str | None:
     tables = _visible_tables(user)
     if not tables:
         return None
-    schema_block = "\n\n".join(
-        f"表 {t['table']}：{t['description']}\n" +
-        "，".join(f"{c['name']}({c.get('desc', '')}，如：{c.get('sample', '')})"
-                  for c in t["columns"])
-        for t in tables)
+    schema_block = _build_schema_with_joins(tables)
     from datetime import datetime
     sql, params = "", []
     # 生成重试 3 次（曾"最近7天"窗口问法偶发生成失败/空模板漏回兜底，9/10 稳定性；
