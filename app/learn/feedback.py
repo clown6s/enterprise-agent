@@ -19,6 +19,8 @@ from datetime import datetime
 import pymysql
 
 from .. import config, embeddings, milvus_store
+import logging
+log = logging.getLogger(__name__)
 
 # 本地计算 eval 目录（勿从 eval_engine 导入——agent→feedback→eval_engine→agent 循环导入）
 _EVAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "eval")
@@ -123,7 +125,7 @@ def enqueue_review(query: str, answer: str, sources: str = "") -> bool:
         conn.close()
         return True
     except Exception as e:
-        print(f"[review] 审核入队失败: {e!r}")
+        log.warning(f"审核入队失败: {e!r}")
         return False
 
 

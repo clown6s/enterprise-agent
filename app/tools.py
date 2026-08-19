@@ -12,6 +12,8 @@
 import threading
 import time
 from dataclasses import dataclass
+import logging
+log = logging.getLogger(__name__)
 
 TTL_SECONDS = 30
 
@@ -75,7 +77,7 @@ def _load_enabled_from_db() -> set[str]:
                     enabled.add(code)
         return enabled
     except Exception as e:
-        print(f"[tools] skill 表读取失败（全部启用）: {e!r}")
+        log.warning(f"skill 表读取失败（全部启用）: {e!r}")
         return {t.code for t in TOOLS}
 
 

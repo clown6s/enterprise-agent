@@ -17,6 +17,8 @@ import httpx
 
 from . import config
 from .learn import usage
+import logging
+log = logging.getLogger(__name__)
 
 # OpenAI 兼容的对话消息角色名（系统/用户/助手）
 _ROLES = ("system", "user", "assistant")
@@ -63,7 +65,7 @@ def chat_chain(system: str, user: str, *,
                         **opts, **kw)
         except Exception as e:
             last = e
-            print(f"[llm] {purpose} 调用失败，降级下一棒: {e!r}")
+            log.warning(f"{purpose} 调用失败，降级下一棒: {e!r}")
     raise last
 
 
@@ -84,10 +86,10 @@ def chat_stream_chain(system: str, user: str, *,
             return
         except Exception as e:
             if started:
-                print(f"[llm] {purpose} 流式中断，保留已生成部分")
+                log.warning(f"{purpose} 流式中断，保留已生成部分")
                 return
             last = e
-            print(f"[llm] {purpose} 流式失败，降级下一棒: {e!r}")
+            log.warning(f"{purpose} 流式失败，降级下一棒: {e!r}")
     raise last
 
 

@@ -13,6 +13,8 @@ import time
 from datetime import datetime
 
 from .. import config, guards, llm, prompts
+import logging
+log = logging.getLogger(__name__)
 
 # 校验层自动熔断：校验模型连续失败 3 次 → 停用 5 分钟（防延迟雪崩），
 # 到点自动恢复。校验是增强不是必需——熔断期间答案只过确定性守卫。
@@ -98,7 +100,7 @@ def _relevance_gate(query: str, answer: str) -> str:
     if not valid:
         return answer
     if min(valid) < _RELEVANCE_MIN:
-        print(f"[verify] 相关性闸门拒绝（分数 {valid}）：{query[:40]}")
+        log.info(f"相关性闸门拒绝（分数 {valid}）：{query[:40]}")
         return guards.NO_ANSWER
     return answer
 
@@ -165,8 +167,8 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
         if _verify_failures >= 3:
             _verify_suspended_until = time.time() + 300
             _verify_failures = 0
-            print(f"[熔断] 校验模型连续失败，verify 停用 5 分钟至 "
-                  f"{datetime.fromtimestamp(_verify_suspended_until):%H:%M:%S}")
+            log.warning(f"校验模型连续失败，verify 停用 5 分钟至 "
+                        f"{datetime.fromtimestamp(_verify_suspended_until):%H:%M:%S}")
     else:
         _verify_failures = 0
 

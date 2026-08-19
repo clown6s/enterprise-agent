@@ -19,6 +19,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import guards, mysql_store
 from ..service import agent, history
+import logging
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -88,7 +90,7 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
                 yield event, data
         except Exception as e:
             failed = True
-            print(f"[chat] 流式异常: {e!r}")
+            log.error(f"流式异常: {e!r}")
             yield "token", "抱歉，回答生成失败，请稍后重试。"
         if not done_sent:
             yield "done", "[DONE]"

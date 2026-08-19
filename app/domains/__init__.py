@@ -9,6 +9,8 @@ import re
 
 from .. import config
 from .base import DomainPlugin
+import logging
+log = logging.getLogger(__name__)
 
 
 def _load() -> list[DomainPlugin]:
@@ -20,7 +22,7 @@ def _load() -> list[DomainPlugin]:
             mod = importlib.import_module(f".{n}", __name__)
             plugins.append(mod.PLUGIN)
         except Exception as e:
-            print(f"[domains] 插件 {n} 加载失败（跳过）: {e!r}")
+            log.warning(f"插件 {n} 加载失败（跳过）: {e!r}")
     return plugins
 
 

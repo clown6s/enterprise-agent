@@ -15,6 +15,8 @@ import hashlib
 import io
 import re
 import statistics
+import logging
+log = logging.getLogger(__name__)
 
 # 图片 OCR 门控（成本控制：单文档上限/尺寸上下限——图片是加分项不是必需品，
 # 失败或超限一律跳过，不阻断文档摄入）
@@ -153,7 +155,7 @@ def _parse_docx(data: bytes) -> str:
         return "\n".join(parts)
     except Exception as e:
         # 解析异常必须可见（曾静默返空——上传失败无法区分"格式不对"和"解析 bug"）
-        print(f"[parse] docx 解析失败: {type(e).__name__}: {str(e)[:150]}")
+        log.warning(f"docx 解析失败: {type(e).__name__}: {str(e)[:150]}")
         return ""
 
 
@@ -193,7 +195,7 @@ def _ocr_image(image: bytes) -> str:
         norm = out.rstrip("。.!！?？;；")
         return "" if norm in ("", "无", "没有文字", "无文字") else out
     except Exception as e:
-        print(f"[parse] 图片 OCR 失败（跳过该图）: {e!r}")
+        log.warning(f"图片 OCR 失败（跳过该图）: {e!r}")
         return ""
 
 
@@ -242,7 +244,7 @@ def _parse_pdf(data: bytes) -> str:
                     continue
         full = "\n".join(parts)
         if full and _is_garbled(full):
-            print("[parse] PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
+            log.warning("PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
             return ""
         # 内嵌图片 OCR：无论有无文本层都跑（扫描件 PDF 无文本层，
         # 内容全靠图片 OCR——曾 parts 为空时直接回退，图片段没机会执行）
@@ -265,7 +267,7 @@ def _parse_pdf(data: bytes) -> str:
         pages = [(page.extract_text() or "") for page in reader.pages]
         full = "\n".join(pages)
         if _is_garbled(full):
-            print("[parse] PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
+            log.warning("PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
             return ""
         return full
     except Exception:

@@ -18,6 +18,8 @@ from fastapi.responses import JSONResponse
 from .. import config, milvus_store, mysql_store
 from ..learn import feedback, gap_discovery, usage
 from ..service import agent
+import logging
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -71,7 +73,7 @@ def _exec(sql: str, args: tuple = ()) -> None:
         conn.close()
     except pymysql.MySQLError as e:
         # 管理操作失败必须可见（曾静默吞错——前端看到成功但实际没执行）
-        print(f"[admin] 写操作失败: {e!r} | {sql[:60]}")
+        log.error(f"写操作失败: {e!r} | {sql[:60]}")
 
 
 # ---------------- 账号 ----------------
@@ -571,7 +573,7 @@ def _run_eval_task(task_id: str, set_id: str) -> None:
         }
     except Exception as e:
         # 评测任务异常必须可见可查（曾线程内裸崩——task 永远 RUNNING，前端死等）
-        print(f"[admin] 评测任务失败: {e!r}")
+        log.error(f"评测任务失败: {e!r}")
         status, payload = "FAILED", {"setId": set_id, "error": str(e)[:200]}
     with _eval_lock:
         _eval_tasks[task_id] = {"status": status, "result": payload}

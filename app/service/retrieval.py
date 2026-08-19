@@ -15,6 +15,8 @@ import os
 import re
 
 from .. import config, embeddings, milvus_store
+import logging
+log = logging.getLogger(__name__)
 
 _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _TUNED_FILE = os.path.join(_BASE, "data", "tuned_params.json")
@@ -66,7 +68,7 @@ def retrieve(query: str, *, top_k: int | None = None,
         vec = embeddings.embed(query)
     except Exception as e:
         # 软依赖：嵌入服务抖动时检索整体降级为空（问答走兜底），不炸 500
-        print(f"[retrieval] 嵌入失败: {e!r}")
+        log.error(f"嵌入失败: {e!r}")
         return []
     hits = milvus_store.search(vec, query, top_k=top_k, expr=expr)
     if not hits:

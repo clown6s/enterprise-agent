@@ -18,6 +18,8 @@ import re
 
 from .. import config, llm
 from . import acl
+import logging
+log = logging.getLogger(__name__)
 
 _SAFE_TABLE = re.compile(r"^[a-z_][a-z0-9_]{0,63}$")
 _SQL_KEYWORDS = {
@@ -370,7 +372,7 @@ def try_answer(query: str, user: str = "") -> str | None:
             cols = [d[0] for d in cur.description]
         conn.close()
     except Exception as e:
-        print(f"[nlsql] 执行失败: {e!r} | {final_sql}")
+        log.error(f"执行失败: {e!r} | {final_sql}")
         return None
     labels = {c["name"].lower(): (c.get("desc") or c["name"]) for t in tables for c in t["columns"]}
     # 聚合别名回退（模型起的 total_count/sum_amount 等别名尾缀匹配不上注册列
@@ -462,6 +464,6 @@ def _answer_with_llm(query: str, data_text: str, rows: list[tuple]) -> str:
     # 允许数字集合 = 查询结果/衍生信息 + 用户问句中的数字（"8月营收"答"8月"
     # 的 8 来自问句不算编造——曾把问句数字当越界误杀回退原文）
     if not _numbers_in(ans) <= (_numbers_in(source) | _numbers_in(query)):
-        print(f"[nlsql] 包装层数字越界，回退原文: {ans[:80]!r}")
+        log.warning(f"包装层数字越界，回退原文: {ans[:80]!r}")
         return data_text
     return ans

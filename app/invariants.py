@@ -15,6 +15,8 @@
 import re
 import time
 from datetime import datetime
+import logging
+log = logging.getLogger(__name__)
 
 _REGISTRY: dict[str, callable] = {}
 # 失败去重窗口：同名检查 5 分钟内只告警一次（防告警风暴）
@@ -33,7 +35,7 @@ def fail(name: str, detail: str) -> None:
     if now - _FAILED_AT.get(name, 0.0) <= 300:
         return
     _FAILED_AT[name] = now
-    print(f"[invariant] {name} 失败: {detail}")
+    log.warning(f"{name} 失败: {detail}")
     _alert(name, detail)
 
 

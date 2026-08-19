@@ -10,6 +10,8 @@
 兜底句式/GUARD 拦截的轮次不落库（无信息量且注入文本不可回流）。
 """
 from .. import config
+import logging
+log = logging.getLogger(__name__)
 
 _MAX_TURNS = 4           # 注入最近 4 轮
 _MAX_TURN_CHARS = 300    # 单轮单侧截断
@@ -48,7 +50,7 @@ def _ensure_table() -> None:
         conn.close()
         _ensured = True
     except Exception as e:
-        print(f"[history] 建表失败: {e!r}")
+        log.warning(f"建表失败: {e!r}")
 
 
 def save_turn(conversation_id: str, query: str, answer: str) -> None:
@@ -65,7 +67,7 @@ def save_turn(conversation_id: str, query: str, answer: str) -> None:
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[history] 历史落库失败: {e!r}")
+        log.warning(f"历史落库失败: {e!r}")
 
 
 def clear_conversation(conversation_id: str) -> None:

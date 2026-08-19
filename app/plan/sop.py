@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 from .. import config, llm
+import logging
+log = logging.getLogger(__name__)
 
 _AUDIT_FILE = os.path.join(config.LOG_DIR, "execution.jsonl")
 
@@ -163,7 +165,7 @@ def save_pending(chat_id: str, params: dict, emp: dict, sop_code: str = "leave_a
         conn.close()
         return True
     except Exception as e:
-        print(f"[sop] 待确认单保存失败（降级直接提交）: {e!r}")
+        log.warning(f"待确认单保存失败（降级直接提交）: {e!r}")
         return False
 
 

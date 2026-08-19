@@ -23,6 +23,8 @@ from pymilvus import (AnnSearchRequest, CollectionSchema, DataType, FieldSchema,
 from pymilvus.milvus_client import IndexParams
 
 from . import config
+import logging
+log = logging.getLogger(__name__)
 
 _client = None
 _last_ping: dict = {"ts": 0.0}
@@ -44,11 +46,11 @@ def _ensure_database() -> None:
         try:
             if config.MILVUS_DB not in client.list_databases():
                 client.create_database(config.MILVUS_DB)
-                print(f"[milvus] 数据库 {config.MILVUS_DB} 已创建")
+                log.info(f"数据库 {config.MILVUS_DB} 已创建")
         finally:
             client.close()
     except Exception as e:
-        print(f"[milvus] 数据库就绪检查失败（继续尝试直连业务库）: {e!r}")
+        log.warning(f"数据库就绪检查失败（继续尝试直连业务库）: {e!r}")
 
 
 def _build_schema() -> CollectionSchema:
@@ -94,16 +96,16 @@ def _ensure_collection(client: MilvusClient) -> bool:
     try:
         if not client.has_collection(name):
             client.create_collection(name, schema=_build_schema())
-            print(f"[milvus] 集合 {name} 已创建（dense={config.EMBED_DIM}维）")
+            log.info(f"集合 {name} 已创建（dense={config.EMBED_DIM}维）")
         existing = set(client.list_indexes(name))
         for ip in _build_index_params():
             if ip.index_name in existing:
                 continue
             client.create_index(name, IndexParams([ip]))
-            print(f"[milvus] 索引 {ip.field_name} 已补建")
+            log.info(f"索引 {ip.field_name} 已补建")
         return True
     except Exception as e:
-        print(f"[milvus] 集合创建失败: {e!r}")
+        log.error(f"集合创建失败: {e!r}")
         return False
 
 
@@ -119,7 +121,7 @@ def _get_client() -> MilvusClient:
             _client.has_collection(config.MILVUS_COLLECTION)   # 轻量心跳（走同一通道）
             _last_ping["ts"] = now
         except Exception:
-            print("[milvus] 连接失效，自动重连")
+            log.warning("连接失效，自动重连")
             try:
                 _client.close()
             except Exception:
@@ -131,7 +133,7 @@ def _get_client() -> MilvusClient:
                 try:
                     _ensure_database()
                 except Exception as e:
-                    print(f"[milvus] 数据库就绪失败: {e!r}")
+                    log.warning(f"数据库就绪失败: {e!r}")
                 _client = MilvusClient(uri=_uri(), db_name=config.MILVUS_DB,
                                        timeout=30)   # 请求超时：检索/写入不无限挂起
                 try:
@@ -139,7 +141,7 @@ def _get_client() -> MilvusClient:
                     # 幂等 load：已加载为 no-op；覆盖服务端重启后集合脱载的场景
                     _client.load_collection(config.MILVUS_COLLECTION)
                 except Exception as e:
-                    print(f"[milvus] 集合就绪/加载失败: {e!r}")
+                    log.warning(f"集合就绪/加载失败: {e!r}")
                 _last_ping["ts"] = time.time()
     return _client
 
@@ -157,7 +159,7 @@ def create_collection_v2(drop_existing: bool = False) -> bool:
             client.load_collection(name)   # drop 重建后必须重新加载
         return ok
     except Exception as e:
-        print(f"[milvus] 集合创建失败: {e!r}")
+        log.error(f"集合创建失败: {e!r}")
         return False
 
 
@@ -205,7 +207,7 @@ def search(vector: list[float], query_text: str, top_k: int = config.TOP_K,
         ]
     except Exception as e:
         # 失败可见：挂了 vs 没命中必须可区分（此前静默返回空，诊断无从下手）
-        print(f"[milvus] 混合检索失败: {e!r}")
+        log.error(f"混合检索失败: {e!r}")
         return []
 
 
@@ -328,7 +330,7 @@ def update_document_meta(document_id: str, title: str | None = None,
         _get_client().flush(config.MILVUS_COLLECTION)
         return len(rows)
     except Exception as e:
-        print(f"[milvus] 元数据更新失败: {e!r}")
+        log.warning(f"元数据更新失败: {e!r}")
         return 0
 
 
@@ -369,5 +371,5 @@ def dense_search(vector: list[float], top_k: int, expr: str | None = None) -> li
             for h in hits[0]
         ]
     except Exception as e:
-        print(f"[milvus] 纯稠密检索失败: {e!r}")
+        log.error(f"纯稠密检索失败: {e!r}")
         return []

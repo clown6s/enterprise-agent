@@ -20,6 +20,8 @@
 import json
 import threading
 import time
+import logging
+log = logging.getLogger(__name__)
 
 _TTL = 60
 
@@ -229,5 +231,5 @@ def allowed_expr(user: str) -> str | None:
         ids = '", "'.join(visible)
         return f'document_id in ["{ids}"]'
     except Exception as e:
-        print(f"[acl] 权限表达式构造失败（不过滤）: {e!r}")
+        log.warning(f"权限表达式构造失败（不过滤）: {e!r}")
         return None

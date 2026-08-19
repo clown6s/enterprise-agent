@@ -13,6 +13,8 @@ import sys
 
 from ..service.retrieval import current_params, retrieve
 from . import eval_engine
+import logging
+log = logging.getLogger(__name__)
 
 _BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _OUT = os.path.join(_BASE, "data", "tuned_params.json")
@@ -24,7 +26,7 @@ GRID_MIN_SCORE = [0.2, 0.3, 0.4, 0.5]
 
 def tune() -> dict:
     current = current_params()
-    print(f"当前参数: {current}")
+    log.info(f"当前参数: {current}")
     results = []
     best = None
     for top_k in GRID_TOP_K:
@@ -37,8 +39,8 @@ def tune() -> dict:
                 "hit_rate": report["hit_rate"],
                 "mrr": report["mrr"],
             })
-            print(f"top_k={top_k:>2} min_score={min_score} → "
-                  f"hitRate={report['hit_rate']:.2%} MRR={report['mrr']}")
+            log.info(f"top_k={top_k:>2} min_score={min_score} → "
+                     f"hitRate={report['hit_rate']:.2%} MRR={report['mrr']}")
             if best is None or (report["hit_rate"], report["mrr"]) > (best[1], best[2]):
                 best = (top_k, report["hit_rate"], report["mrr"], min_score)
 
@@ -63,17 +65,17 @@ def tune() -> dict:
     }
     # 只接受严格更优：平局不换参（缩小 top_k 在评测集上无差异，但会削弱未见查询的召回面）
     if best_hr <= current_hr:
-        print(f"[保持] 最优组合 {best_top_k}/{best_th}（{best_hr:.2%}）不优于当前"
-              f"（{current_hr:.2%}），参数不变。网格平局说明评测集内参数已达最优"
-              f"（瓶颈在未见查询的召回面）。")
+        log.info(f"最优组合 {best_top_k}/{best_th}（{best_hr:.2%}）不优于当前"
+                 f"（{current_hr:.2%}），参数不变。网格平局说明评测集内参数已达最优"
+                 f"（瓶颈在未见查询的召回面）。")
         payload["top_k"] = current["top_k"]
         payload["min_score"] = current["min_score"]
     else:
         os.makedirs(os.path.dirname(_OUT), exist_ok=True)
         with open(_OUT, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        print(f"[OK] 写入 data/tuned_params.json: top_k={best_top_k} min_score={best_th}"
-              f"（hitRate {best_hr:.2%}, MRR {best_mrr}）")
+        log.info(f"写入 data/tuned_params.json: top_k={best_top_k} min_score={best_th}"
+                 f"（hitRate {best_hr:.2%}, MRR {best_mrr}）")
     return payload
 
 
