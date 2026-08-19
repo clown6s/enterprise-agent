@@ -43,6 +43,8 @@ class ApprovalDef:
     extra_rules: str           # 提取规则（业务特有）
     validate: Callable         # (params, employees) → 错误文案 | None
     receipt_detail: Callable   # (params) → 回执详情文本（给回执提示词拼）
+    col_labels: dict = None    # 表列名 → 中文名（摘要文案用；None=用英文列名兜底）
+    summary_cols: tuple = None # 摘要精选 DB 列子集（None=不展示摘要列）
 
     def prompt(self, query: str, names: str) -> str:
         now = datetime.now()
@@ -170,7 +172,10 @@ APPROVAL_DEFS: list[ApprovalDef] = [
                      "合同名称通常含\"合同/协议\"字样）"),
         validate=_v_contract,
         receipt_detail=lambda p: (f"合同：{p.get('contractName', '')}，"
-                                   f"对方：{p.get('counterparty', '')}")),
+                                   f"对方：{p.get('counterparty', '')}"),
+        col_labels={"contract_name": "合同", "counterparty": "对方",
+                    "amount": "金额", "reason": "事由"},
+        summary_cols=("contract_name", "counterparty", "reason")),
     ApprovalDef(
         code="expense_action", name="报销申请", prefix="EXPENSE",
         table="expense_application", business_type="expense",
@@ -181,7 +186,10 @@ APPROVAL_DEFS: list[ApprovalDef] = [
                         '"amount": 数字, "expenseDate": "yyyy-MM-dd", "reason": "事由"}}'),
         extra_rules="报销日期没说就默认今天；金额是报销总金额",
         validate=_v_expense,
-        receipt_detail=lambda p: f"报销类型：{p.get('expenseType', '')}，金额：{p.get('amount', 0)} 元"),
+        receipt_detail=lambda p: f"报销类型：{p.get('expenseType', '')}，金额：{p.get('amount', 0)} 元",
+        col_labels={"expense_type": "类型", "amount": "金额",
+                    "expense_date": "日期", "reason": "事由"},
+        summary_cols=("expense_type", "amount", "reason")),
     ApprovalDef(
         code="travel_action", name="出差申请", prefix="TRAVEL",
         table="travel_application", business_type="travel",
@@ -193,7 +201,10 @@ APPROVAL_DEFS: list[ApprovalDef] = [
         extra_rules="出差当天往返时 endDate 与 startDate 相同",
         validate=_v_travel,
         receipt_detail=lambda p: (f"目的地：{p.get('destination', '')}，"
-                                   f"时间：{p.get('startDate', '')} 至 {p.get('endDate', '')}")),
+                                   f"时间：{p.get('startDate', '')} 至 {p.get('endDate', '')}"),
+        col_labels={"destination": "目的地", "start_date": "出发日期",
+                    "end_date": "返回日期", "reason": "事由"},
+        summary_cols=("destination", "start_date", "reason")),
     ApprovalDef(
         code="purchase_action", name="采购申请", prefix="PURCHASE",
         table="purchase_application", business_type="purchase",
@@ -205,7 +216,10 @@ APPROVAL_DEFS: list[ApprovalDef] = [
         extra_rules="quantity 是数量，amount 是总金额",
         validate=_v_purchase,
         receipt_detail=lambda p: (f"物品：{p.get('itemName', '')}，数量：{p.get('quantity', 0)}，"
-                                   f"金额：{p.get('amount', 0)} 元")),
+                                   f"金额：{p.get('amount', 0)} 元"),
+        col_labels={"item_name": "物品", "quantity": "数量",
+                    "amount": "金额", "reason": "事由"},
+        summary_cols=("item_name", "amount", "reason")),
 ]
 
 

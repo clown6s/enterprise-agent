@@ -42,7 +42,6 @@ LEAVE_DEF = ApprovalDef(
               "请三天假", "请半天假", "请假一天", "请假两天", "请假三天",
               "天假", "天事假", "天病假", "天年假", "天调休"],
     fields={
-        "userName": ("user_name", str),
         "leaveType": ("leave_type", lambda v: int(v or 1)),
         "startTime": ("start_time", _fdate_start),
         "endTime": ("end_time", _fdate_end),
@@ -55,6 +54,9 @@ LEAVE_DEF = ApprovalDef(
                  "2. \"下午/上午/半天\"记 days=0.5；days 必须与 startTime/endTime 一致"),
     validate=_v_leave,
     receipt_detail=lambda p: f"{p.get('startTime', '')} 至 {p.get('endTime', '')}",
+    col_labels={"user_name": "姓名", "leave_type": "请假类型", "start_time": "开始",
+                "end_time": "结束", "days": "天数", "reason": "事由"},
+    summary_cols=("leave_type", "days", "reason"),
 )
 
 # 注册进 sop 引擎（与 approvals.py 底部同模式）
