@@ -75,7 +75,7 @@ _enabled_cache: dict = {"ts": 0.0, "val": {}}
 _ENABLED_TTL = 60
 
 
-def is_enabled(code: str = "leave_action") -> bool:
+def is_enabled(code: str = "") -> bool:
     """sop 表 enabled 开关（无记录=启用，表不可用=启用——软依赖）。
     2026-08-19 泛化：按 code 查（曾写死 leave_action，新 SOP 开关失灵）"""
     now = time.time()
@@ -298,7 +298,7 @@ def _h_load_employees(state: dict) -> tuple[bool, dict | None]:
     employees = _load_employees_db()
     _audit(state["sop"], "employee_list", {}, f"{len(employees)}人", time.time() - start_ts)
     if not employees:
-        return True, {"answer": "请假服务暂不可用（员工目录未响应），请稍后再试。", "route": "SOP"}
+        return True, {"answer": "服务暂不可用（员工目录未响应），请稍后再试。", "route": "SOP"}
     state["employees"] = employees
     return False, None
 

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """请假 SOP 定义（从 sop.py 抽出，统一走 ApprovalDef 组件化）。
 新增业务 = 本文件加一个 ApprovalDef 实例，其余模块自动感知。"""
-from .approvals import ApprovalDef, _check_name, _check_reason, _check_date
+from .approvals import ApprovalDef, _check_name, _check_reason, _check_date, _build_sop
+from . import sop as _sop
 from datetime import datetime
 
 
@@ -55,3 +56,6 @@ LEAVE_DEF = ApprovalDef(
     validate=_v_leave,
     receipt_detail=lambda p: f"{p.get('startTime', '')} 至 {p.get('endTime', '')}",
 )
+
+# 注册进 sop 引擎（与 approvals.py 底部同模式）
+_sop.register(_build_sop(LEAVE_DEF))

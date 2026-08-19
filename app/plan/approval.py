@@ -209,7 +209,6 @@ def list_applications(business_type: str = "", status=None) -> list[dict]:
     tables = (registry.TABLE_MAP if not business_type
               else ({business_type: registry.TABLE_MAP[business_type]}
                     if business_type in registry.TABLE_MAP else {}))
-    _BIZ_NAMES = registry.BIZ_NAME_MAP
     out = []
     for bt, table in tables.items():
         try:
