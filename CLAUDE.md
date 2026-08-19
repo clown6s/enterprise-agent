@@ -9,6 +9,7 @@
 run.py                  # 启动入口：python run.py（--reload 热重载）→ 8080
 app/
   config.py             # .env 加载（根目录 .env，不是 app/.env）
+  logging_config.py     # 统一日志配置 setup()（print→logging 迁移后启动接线）
   llm.py                # LLM 注册表 + 降级链（chat_chain/chat_stream_chain/verify_chat）
                         # 手写 httpx OpenAI 兼容客户端；校验=智谱 GLM-4.6 独立裁判
   prompts.py            # 提示词集中管理（系统/校验/图谱收紧规则；改提示词必须跑回归）
@@ -24,8 +25,10 @@ app/
   service/graph.py      # Neo4j 图谱-only 兜底（无向两跳遍历）
   service/docwizard.py  # 文档生成：触发词→标题→LLM→飞书云文档直出 + 多轮修改回写
   service/nlsql.py      # NL2SQL 数据面（query_schema 注册表 + 五关校验 + 中文标签）
-  plan/sop.py           # SOP 状态机引擎（组件化：SopDefinition steps+handlers）
+  plan/sop.py           # SOP 状态机引擎（组件化：SopDefinition steps+handlers；零业务逻辑）
+  plan/leave.py         # 请假 ApprovalDef（业务定义从 sop.py 外移）
   plan/approvals.py     # 审批类 SOP 定义（报销/出差/采购/合同用印，ApprovalDef 组件）
+  plan/registry.py      # SOP 中央注册表（单一数据源：ALL_DEFS + 派生 TABLE_MAP/COL_LABELS…）
   plan/approval.py      # 审批动作层（通过/拒绝 → 审批记录 + 多级状态机推进 + 对话审批入口）
   learn/                # 自我优化：反馈回流 / 缺口聚类 / 用量追踪 / 校验熔断
   channels/feishu.py    # 飞书：lark-oapi WS + 卡片 + 图片 OCR + 通讯录同步 + 主动推送
@@ -34,9 +37,30 @@ scripts/
   watchdog.py           # 探活 8080/7000，挂了自动拉起（独立 python 进程常驻）
   run_eval.py           # python scripts/run_eval.py regression|retrieval|all
   test_guards.py        # guards 形态测试矩阵 18 用例（改 guards 先跑）
-  test_invariants.py    # 不变量套件 38 项（契约锁+入口模糊，全离线——改跨模块契约先跑）
-eval/                   # regression_cases.json（15 用例）+ retrieval_baseline.json
+  test_invariants.py    # 不变量套件 60 项（契约锁+入口模糊，全离线——改跨模块契约先跑）
+  test_approval.py     # 审批动作层 23 项（真实 MySQL + 测试数据清理）
+  test_routers.py      # 路由层 21 项（TestClient + 注入 token，跳过飞书 lifespan）
+  test_parse.py        # 文档解析 27 项（离线 + 内存构造 docx）
+  test_pipeline.py     # 摄入管线 27 项（切分核心 + mock 嵌入/Milvus）
+eval/                   # regression_cases.json（29 用例）+ retrieval_baseline.json
 ```
+
+## 新增/修改归属表（"我要加 X → 改哪里"）
+
+| 我要加/改… | 改这里 | 不动（零代码） |
+|---|---|---|
+| 新审批业务（加班/调岗…） | `plan/xxx.py` 一个 `ApprovalDef` + `plan/registry.py` 加一行 import + 后台建表 + `oa_approval_flow` 配审批链 | `sop.py`/`approval.py`/`tools.py`/`admin.py` 引擎（业务解耦，改业务零代码） |
+| 新可查询数据表（"问法不碰代码"） | `nlsql.py` `query_schema` 注册表加条目 + 列中文名 | NL2SQL 引擎 |
+| 新守卫规则 | `guards.py` `GUARD_REGISTRY`（只读否决注册表） | 守卫顺序 |
+| 新 LLM 模型/用途 | `config.py` `MODEL_REGISTRY`（.env 声明式） | 调用点（厂商参数随条目走） |
+| 降级链加棒 | `llm.py` `_GEN_CHAIN`/`_VERIFY_CHAIN` + `MODEL_REGISTRY` 条目 | 调用方 |
+| 新领域知识 | `app/domains/` 插件（`.env` `DOMAIN_PLUGINS` 开关） | 主流程 |
+| 新提示词 | `prompts.py` + `render_prompt` 装配（严格插值 fail-loud） | |
+| 新 HTTP 端点 | `routers/` 加路由 | |
+| 新测试套件 | `scripts/test_*.py` + `.github/workflows/ci.yml` 加一行 | |
+| 诊断日志 | `log.{info/warning/error}`（已迁离 print；`logging_config.setup()` 启动接线） | JSONL 审计日志（`_audit`/`_log` 那套保持不动） |
+
+> 改动循环本身（加新"类"的扩展机制）时，同步更新本表 + 目录树。
 
 ## 运行与测试
 
