@@ -41,3 +41,4 @@
 | 2026-08-19 | [路由去预判：无预闸架构](implemented/2026-08-19-no-pregating-routing.md) | implemented |
 | 2026-08-19 | [NL2SQL 结果包装层：数据≠答案](implemented/2026-08-19-nlsql-answer-wrapper.md) | implemented |
 | 2026-08-19 | [去 OA 化：审批业务直连本库](implemented/2026-08-19-de-oa-approval-direct-db.md) | implemented |
+| 2026-08-20 | [SOP 五段式全形式化重构（暂缓）](rejected/2026-08-20-sop-five-aspect-full-refactor.md) | rejected |
