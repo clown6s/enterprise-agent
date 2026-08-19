@@ -143,10 +143,10 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
     missing = (missing + spliced_hard)[:12]
     try:
         checked = llm.verify_chat(
-            "", prompts.VERIFY_PROMPT.format(missing=missing_block,
-                                             spliced=spliced_block,
-                                             graph_only_rule=prompts.GRAPH_ONLY_RULE if graph_only else "",
-                                             context=context[:6000], answer=answer),
+            "", prompts.render_prompt(prompts.VERIFY_PROMPT,
+                                      missing=missing_block, spliced=spliced_block,
+                                      graph_only_rule=prompts.GRAPH_ONLY_RULE if graph_only else "",
+                                      context=context[:6000], answer=answer),
             temperature=0.2,
         ).strip()
         if checked.startswith("```"):

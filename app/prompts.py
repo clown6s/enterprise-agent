@@ -4,7 +4,34 @@
 
 调提示词只看这一个文件；改提示词必须跑回归（评测是棘轮，见 scripts/run_eval.py）。
 str.format 大括号坑：JSON 示例进模板必须写 {{}}（本文件暂无，写新提示词时注意）。
+
+严格插值（dsh 一-10）：用 render_prompt 装配提示词——占位符与实参必须完全匹配，
+多余/缺失都装配期 fail-loud（拼提示词失败比拼出错的提示词好）。str.format 本就
+对缺失占位符 KeyError，但多余实参静默吞掉（模板忘了引用也无声），render_prompt 补这道。
 """
+import string
+
+_formatter = string.Formatter()
+
+
+def _placeholders(template: str) -> list[str]:
+    """枚举模板 {var} 占位符名（{{}} 转义不算；未转义裸 { 会当字段名报出，提示修）"""
+    return [f for _, f, _, _ in _formatter.parse(template) if f]
+
+
+def render_prompt(template: str, **vars) -> str:
+    """严格提示词插值（dsh 一-10）：占位符与实参必须完全匹配，否则装配期 fail-loud。
+    缺变量→明确报缺失名；多变量→报多余名（模板未引用却传了，曾静默吞，残缺提示词出门）。
+    拼提示词失败比拼出错的提示词好——宁可炸在装配期也别让坏提示词出门。"""
+    need = set(_placeholders(template))
+    have = set(vars)
+    missing = need - have
+    extra = have - need
+    if missing:
+        raise ValueError(f"提示词插值缺变量 {sorted(missing)}（模板需要 {sorted(need)}）")
+    if extra:
+        raise ValueError(f"提示词插值多变量 {sorted(extra)}（模板未引用；需要 {sorted(need)}）")
+    return template.format(**vars)
 
 # 系统提示词（{date} 占位符由调用方用当天日期填充）
 SYSTEM_PROMPT = """你是企业知识问答助手。请严格按以下规则回答：

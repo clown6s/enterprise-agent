@@ -205,7 +205,7 @@ def _try_synonym_recovery(query: str, search_query: str, turns: list[dict],
         prefix += f"\n\n【文件上下文】\n{fb}"
     gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                   else f"{prefix}\n\n【用户问题】\n{query}")
-    raw = llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
+    raw = llm.chat_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()), gen_prompt)
     vctx = context
     if fb:
         vctx = f"{vctx}\n{fb}"
@@ -246,7 +246,7 @@ def _try_graph_fallback(query: str, turns: list[dict], fb: str,
     user_prompt = f"【资料】\n{context}\n\n【用户问题】\n{query}"
     if fb:
         user_prompt = f"【文件上下文】\n{fb}\n\n" + user_prompt
-    raw = llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
+    raw = llm.chat_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()) + "\n" + prompts.GRAPH_ONLY_RULE,
                    user_prompt)
     final = verify.verify(raw, context, graph_only=True, query=query)
     if final == guards.NO_ANSWER:
@@ -506,7 +506,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         # 闲聊不带历史（曾先提报销确认单后说"你好"，模型复读历史里的
         # "请确认报销申请：王强…"话术——闲聊是开场语，历史无益且污染）
         return {"answer": guards.clean_cjk_spacing(
-                    llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), query)),
+                    llm.chat_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()), query)),
                 "sources": [], "route": "CHAT", "chart": None}
     if r == "CLARIFY":
         return {"answer": "抱歉，我没太理解你的问题。可以再具体一点吗？比如补充对象、时间或背景。",
@@ -545,7 +545,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             # 历史转述必评 1 分误杀——与指代问题用改写句评审的对称处理
             user_prompt = (f"【资料】\n{hblock}\n\n【文件上下文】\n{fb}\n\n【用户问题】\n{query}"
                            if fb else f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
-            raw = llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), user_prompt)
+            raw = llm.chat_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()), user_prompt)
             final = verify.verify(raw, f"{hblock}\n{fb}" if fb else hblock, query="")
             _maybe_enqueue_review(conversation_id, query, final)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
@@ -553,7 +553,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
             # 文件上下文作答（图片 OCR 等）：依据=文件内容本身。曾 fb 只在
             # 检索命中时注入——检索空手时图片问答错走历史/图谱兜底
             user_prompt = f"【资料】\n{fb}\n\n【用户问题】\n{query}"
-            raw = llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), user_prompt)
+            raw = llm.chat_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()), user_prompt)
             final = verify.verify(raw, fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
@@ -580,7 +580,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         prefix += f"\n\n【文件上下文】\n{fb}"
     gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                   else f"{prefix}\n\n【用户问题】\n{query}")
-    raw = llm.chat_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt)
+    raw = llm.chat_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()), gen_prompt)
     # 校验依据含文件上下文与历史：引用图片/上一轮事实时不被误判为"资料外"
     vctx = context
     if fb:
@@ -743,7 +743,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         # 闲聊不带历史（与非流式同口径——曾复读待确认单话术）
         user_prompt = query
         carry = ""
-        for chunk in llm.chat_stream_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+        for chunk in llm.chat_stream_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()),
                                      user_prompt):
             text = carry + chunk
             carry = ""
@@ -789,7 +789,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
             user_prompt = (f"【资料】\n{hblock}\n\n【文件上下文】\n{fb}\n\n【用户问题】\n{query}"
                            if fb else f"【资料】\n{hblock}\n\n【用户问题】\n{query}")
             parts = []
-            for chunk in llm.chat_stream_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+            for chunk in llm.chat_stream_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()),
                                           user_prompt):
                 parts.append(chunk)
             final = verify.verify("".join(parts), f"{hblock}\n{fb}" if fb else hblock, query="")
@@ -801,7 +801,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
         if fb:
             # 文件上下文作答（同步非流式——曾 fb 只在检索命中时注入）
             parts = []
-            for chunk in llm.chat_stream_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()),
+            for chunk in llm.chat_stream_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()),
                                           f"【资料】\n{fb}\n\n【用户问题】\n{query}"):
                 parts.append(chunk)
             final = verify.verify("".join(parts), fb, query=query)
@@ -842,7 +842,7 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                   else f"{prefix}\n\n【用户问题】\n{query}")
     parts = []
-    for chunk in llm.chat_stream_chain(prompts.SYSTEM_PROMPT.format(date=_today_line()), gen_prompt):
+    for chunk in llm.chat_stream_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()), gen_prompt):
         parts.append(chunk)
     # 校验依据含文件上下文与历史：引用图片/上一轮事实时不被误判为"资料外"
     vctx = context

@@ -203,6 +203,29 @@ check("生成链异厂商",
       config.MODEL_REGISTRY["main"]["base"] != config.MODEL_REGISTRY["main_fallback"]["base"]
       and "verify" in config.MODEL_REGISTRY and "verify_fallback" in config.MODEL_REGISTRY)
 
+# 15b. 提示词严格插值（dsh 一-10）：占位符与实参必须完全匹配，多/缺都 fail-loud
+from app import prompts as _prompts
+check("render_prompt 正常插值",
+      _prompts.render_prompt("今天{date}问{q}", date="8/20", q="你好") == "今天8/20问你好")
+try:
+    _prompts.render_prompt("{a}{b}", a="1")  # 缺 b
+    check("render_prompt 缺变量 fail-loud", False, "未抛")
+except ValueError:
+    check("render_prompt 缺变量 fail-loud", True)
+try:
+    _prompts.render_prompt("{a}", a="1", b="2")  # 多 b
+    check("render_prompt 多变量 fail-loud", False, "未抛")
+except ValueError:
+    check("render_prompt 多变量 fail-loud", True)
+check("render_prompt {{}} 转义不算占位符",
+      _prompts.render_prompt("示例 {{json}} 值{v}", v="X") == "示例 {json} 值X")
+# 核心提示词装配不炸（占位符与实参匹配）
+check("SYSTEM_PROMPT 装配",
+      "今天" in _prompts.render_prompt(_prompts.SYSTEM_PROMPT, date="2026-08-20"))
+check("VERIFY_PROMPT 装配",
+      "资料" in _prompts.render_prompt(_prompts.VERIFY_PROMPT, missing="", spliced="",
+                                       graph_only_rule="", context="C", answer="A"))
+
 # ================= 四、路由与领域插件契约 =================
 
 # 16. route 确定性（不调模型——设计原则 1）
