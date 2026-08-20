@@ -64,6 +64,7 @@ eval/                   # regression_cases.json（29 用例）+ retrieval_baseli
 | 新 HTTP 端点 | `routers/` 加路由 | |
 | 新测试套件 | `scripts/test_*.py` + `.github/workflows/ci.yml` 加一行 | |
 | 诊断日志 | `log.{info/warning/error}`（已迁离 print；`logging_config.setup()` 启动接线） | JSONL 审计日志（`_audit`/`_log` 那套保持不动） |
+| 术语规范 | `docs/glossary.md` 定义 canonical term + 禁用别名 | 不批量重命名稳定代码字段 |
 
 > 改动循环本身（加新"类"的扩展机制）时，同步更新本表 + 目录树。
 
