@@ -41,3 +41,7 @@
 | 编号 | 标题 | 日期 | 状态 |
 |---|---|---|---|
 | 0001 | [路由预判正则三轮补丁全废](0001-routing-pregate-regex-three-rounds-failed.md) | 2026-08-19 | 已解决 |
+| 0002 | [审批指令正则截断 hex 后缀](0002-approval-command-regex-hex-truncation.md) | 2026-08-20 | 已解决 |
+| 0003 | [LEAVE_DEF 定义了但从未注册进 SOP_REGISTRY](0003-leave-def-never-registered.md) | 2026-08-20 | 已解决 |
+| 0004 | [SUMMARY_MAP 用参数键而非 DB 列名，摘要全空](0004-summary-map-param-keys-vs-db-columns.md) | 2026-08-20 | 已解决 |
+| 0005 | [mysql_store.py docstring 泄露凭据](0005-mysql-store-credential-leak-in-docstring.md) | 2026-08-20 | 已解决 |
