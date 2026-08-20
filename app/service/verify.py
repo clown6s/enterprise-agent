@@ -10,6 +10,7 @@ agent.py 只管"什么时候校验"。改守卫顺序/熔断参数只动这个�
 """
 import re
 import time
+from contextvars import copy_context
 from datetime import datetime
 
 from .. import config, guards, llm, prompts
@@ -92,9 +93,10 @@ def _relevance_gate(query: str, answer: str) -> str:
     时放行（软依赖；系统性故障由校验熔断机制兜底）。
     """
     from concurrent.futures import ThreadPoolExecutor
+    # ContextVar 默认不跨线程；copy_context 确保校验并发线程继承同一个 request_id。
     with ThreadPoolExecutor(max_workers=_RELEVANCE_ROUNDS) as pool:
-        futures = [pool.submit(_relevance_score, query, answer, _SCORE_PROMPT),
-                   pool.submit(_relevance_score, query, answer, _REVERSE_SCORE_PROMPT)]
+        futures = [pool.submit(copy_context().run, _relevance_score, query, answer, _SCORE_PROMPT),
+                   pool.submit(copy_context().run, _relevance_score, query, answer, _REVERSE_SCORE_PROMPT)]
         scores = [f.result() for f in futures]
     valid = [s for s in scores if s is not None]
     if not valid:

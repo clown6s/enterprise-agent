@@ -47,6 +47,18 @@ _GEN_CHAIN = ("main", "main_fallback")
 _VERIFY_CHAIN = ("verify", "verify_fallback")
 
 
+def _provider_name(base: str) -> str:
+    """只从 host 推导厂商名，不把完整 URL 写入日志。"""
+    host = (base or "").lower()
+    if "bigmodel" in host or "zhipu" in host:
+        return "zhipu"
+    if "dashscope" in host or "aliyun" in host:
+        return "dashscope"
+    if "siliconflow" in host:
+        return "siliconflow"
+    return "unknown"
+
+
 def _classify_err(e: Exception) -> str:
     """异常分类（dsh 一-9：降级只对确认的 LLM/网络失败，不拿降级掩盖 bug）。
     http=HTTPStatusError（4xx/5xx，明确服务端失败）；transient=httpx 网络层
@@ -83,7 +95,18 @@ def chat_chain(system: str, user: str, *,
             if cat == "bug":
                 raise   # 编程错误不降级——不拿换棒掩盖 bug（dsh 一-9）
             last = e
-            log.warning(f"{purpose} 调用失败（{cat}）降级下一棒: {e!r}")
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            provider = _provider_name(m.get("base", ""))
+            fallback_to = None
+            # chain 中下一个条目仅用于观测，不改变降级逻辑
+            try:
+                fallback_to = model_config(purposes[purposes.index(purpose) + 1])["model"]
+            except (ValueError, IndexError, KeyError):
+                pass
+            log.warning("llm_fallback", extra={"event": "llm_fallback", "fields": {
+                "purpose": purpose, "model": m.get("model"), "provider": provider,
+                "fallback_to": fallback_to, "error_class": cat,
+                "error_type": type(e).__name__, "status_code": status}})
     raise last
 
 
@@ -105,7 +128,8 @@ def chat_stream_chain(system: str, user: str, *,
             return
         except Exception as e:
             if started:
-                log.warning(f"{purpose} 流式中断，保留已生成部分")
+                log.warning("llm_stream_interrupted", extra={"event": "llm_stream_interrupted", "fields": {
+                    "purpose": purpose, "partial": True}})
                 return
             cat = _classify_err(e)
             if cat == "bug":

@@ -64,15 +64,34 @@ try:
 finally:
     feishu_mod.channel.enabled = _ORIG_ENABLED
 
-# 4. Feishu 入口：message_id 设上下文后恢复；用对象 stub 避免真实回复
+# 4. ThreadPoolExecutor 校验并发继承 request_id
+try:
+    from app.service import verify as verify_mod
+    seen_ids = []
+    original_score = verify_mod._relevance_score
+    def _fake_score(query, answer, prompt):
+        seen_ids.append(get_request_id())
+        return 5
+    verify_mod._relevance_score = _fake_score
+    tok = set_request_id("rid-thread-004")
+    try:
+        verify_mod._relevance_gate("问题", "答案")
+        check("校验线程继承 request_id", seen_ids == ["rid-thread-004", "rid-thread-004"], str(seen_ids))
+    finally:
+        reset_request_id(tok)
+        verify_mod._relevance_score = original_score
+except Exception as exc:
+    check("校验线程继承 request_id", False, repr(exc))
+
+# 5. Feishu 入口：message_id 设上下文后恢复；用对象 stub 避免真实回复
 try:
     from app.channels.feishu import FeishuChannel  # noqa: E402
     channel = FeishuChannel()
     channel._reply = lambda *args: None
     channel._handle_text_inner_impl = lambda *args: check(
-        "Feishu 线程绑定 message_id", get_request_id() == "feishu-msg-004")
+        "Feishu 线程绑定 message_id", get_request_id() == "feishu-msg-005")
     check_before = get_request_id()
-    channel._handle_text_inner("chat", "feishu-msg-004", "清除文件", "open")
+    channel._handle_text_inner("chat", "feishu-msg-005", "清除文件", "open")
     check("Feishu 处理后恢复上下文", get_request_id() == check_before)
 except Exception as exc:
     check("Feishu 入口可测试", False, repr(exc))
