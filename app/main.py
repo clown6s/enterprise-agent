@@ -20,6 +20,7 @@ enterprise-agent 入口：FastAPI 应用装配。
 """
 from contextlib import asynccontextmanager
 import logging
+import time
 import uuid
 
 from fastapi import FastAPI, Request
@@ -58,10 +59,22 @@ async def request_id_middleware(request: Request, call_next):
     支持 X-Request-ID 头溯源（飞书/网关转发时保留原 ID）。"""
     rid = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:16]
     token = set_request_id(rid)
+    t0 = time.time()
+    log.info("request_start", extra={"event": "request_start", "fields": {
+        "method": request.method, "path": request.url.path, "request_id": rid}})
     try:
         response = await call_next(request)
         response.headers["X-Request-Id"] = rid
+        log.info("request_end", extra={"event": "http_request", "fields": {
+            "method": request.method, "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": int((time.time() - t0) * 1000)}})
         return response
+    except Exception:
+        log.exception("request_error", extra={"event": "request_error", "fields": {
+            "method": request.method, "path": request.url.path,
+            "duration_ms": int((time.time() - t0) * 1000)}})
+        raise
     finally:
         reset_request_id(token)
 

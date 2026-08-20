@@ -38,6 +38,7 @@ jobs:
           coverage run --source=app --append scripts/test_parse.py
           coverage run --source=app --append scripts/test_pipeline.py
           coverage run --source=app --append scripts/test_startup.py
+          coverage run --source=app --append scripts/test_logging.py
 
       - name: 文档签名防漂移检查
         run: python scripts/verify_doc_types.py
