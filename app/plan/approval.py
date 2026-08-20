@@ -147,10 +147,12 @@ def act_on_application(business_type: str, apply_id: int, approver_id: int,
                 (apply_id, row.get("apply_no"), approver_id, approver_name, level,
                  action, comment))
             table = registry.TABLE_MAP[business_type]
+            from_status = row.get("status")
             if action == ACT_REJECT:
                 cur.execute(f"UPDATE {table} SET status=4 WHERE id=%s", (apply_id,))
                 message = "已拒绝该申请。"
                 next_level = None
+                new_status = 4
             else:
                 next_approver = _resolve_level_approver(business_type, level + 1,
                                                         row.get("dept_id"))
@@ -158,11 +160,13 @@ def act_on_application(business_type: str, apply_id: int, approver_id: int,
                     cur.execute(f"UPDATE {table} SET status=3 WHERE id=%s", (apply_id,))
                     message = "已通过，流程走完。"
                     next_level = None
+                    new_status = 3
                 elif next_approver == -1:
                     # 下一级配置存在但没绑定人——单子留在审批中，等后台配人后
                     # 由「催办/重解析」接续（v1 先留在 status=2 不动）
                     message = "已通过本级，但下一级审批人未配置，请联系管理员。"
                     next_level = -1
+                    new_status = from_status   # 不变
                 else:
                     cur.execute(
                         f"UPDATE {table} SET status=2, current_approver_id=%s WHERE id=%s",
@@ -171,6 +175,16 @@ def act_on_application(business_type: str, apply_id: int, approver_id: int,
                     r2 = cur.fetchone()
                     message = f"已通过，转交下一级审批（{(r2[0] if r2 else '待定')}）。"
                     next_level = next_approver
+                    new_status = 2
+        # 旁路双写：状态事件日志（dsh 一-12，审计事实源；失败不阻断）
+        try:
+            from . import status_events
+            status_events.record(
+                row.get("apply_no", ""), from_status, new_status,
+                "rejected" if action == ACT_REJECT else "approved",
+                actor_id=approver_id, comment=comment)
+        except Exception:
+            pass
         conn.commit()
         conn.close()
     except Exception as e:
