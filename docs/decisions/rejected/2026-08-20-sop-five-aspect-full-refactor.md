@@ -1,6 +1,12 @@
 # 决策：SOP 引擎五段式全形式化重构（暂缓）
 
-状态：rejected（评估后暂缓；引擎已隐含五段式精神，全形式化高风险低收益）
+状态：rejected（全形式化否决；最小版 hook 已实施——见下方更新说明）
+
+> **2026-08-20 更新**：本决策否决的是"全形式化"（5 个切面全注册表 + pre-execute
+> allow/deny/ask + around 分派 + post accept/replace/block + observe 逐监听器）。
+> 后续实施了**最小版**：SopDefinition 加默认空 `post_hooks`/`observe_hooks` 两槽，
+> graph-build 从裸线程迁到 observe hook，不改流水线/步骤/handler 签名。
+> 最小版 commit：`9ae75e7`。全形式化仍暂缓（pre/around 切面无真实需求驱动）。
 
 ## Problem（问题）
 
