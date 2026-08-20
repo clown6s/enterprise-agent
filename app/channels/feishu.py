@@ -326,9 +326,13 @@ class FeishuChannel:
                     and len(result["answer"]) > 50):
                 suggestions = agent.suggest_followups(q, result["answer"], open_id)
             if msg_id:
-                card_msg_id = self._reply_card(msg_id, self.build_answer_card(
-                    result["answer"], result["sources"], suggestions,
-                    route=result.get("route", "")))
+                if result.get("chart"):
+                    card_msg_id = self._reply_card(msg_id, self.build_data_card(
+                        result["answer"], result["chart"]))
+                else:
+                    card_msg_id = self._reply_card(msg_id, self.build_answer_card(
+                        result["answer"], result["sources"], suggestions,
+                        route=result.get("route", "")))
                 if card_msg_id:
                     with self._state_lock:
                         self._last_answers[card_msg_id] = last   # 按卡片 id 存，反馈不错位
@@ -459,7 +463,7 @@ class FeishuChannel:
                 elements.append({"tag": "markdown", "content": "**" + chart["summary"] + "**"})
         elements.append({"tag": "hr"})
         elements.append({"tag": "markdown",
-                         "content": "数据来源：OA 业务系统 · 图表由 VChart 渲染"})
+                         "content": "数据来源：数据查询 · 图表由 VChart 渲染"})
         return {
             "schema": "2.0",
             "config": {"update_multi": True},

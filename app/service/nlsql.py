@@ -299,8 +299,12 @@ def _fmt_rows(rows: list[tuple], cols: list[str], labels: dict[str, str],
     return "\n".join(lines)
 
 
-def try_answer(query: str, user: str = "") -> str | None:
-    """问句 → 已注册表的确定性查询答案；不可答/失败返回 None（调用方兜底）"""
+def try_answer_result(query: str, user: str = "") -> dict | None:
+    """问句 → 结构化数据结果；不可答/失败返回 None。
+
+    返回：{"answer": str, "table": {"headers": list[str], "rows": list[list]},
+    "summary": str|None}。table 仅在 rows>1 时出现，单值/聚合保持轻量文本。
+    """
     tables = _visible_tables(user)
     if not tables:
         return None
@@ -408,6 +412,30 @@ def try_answer(query: str, user: str = "") -> str | None:
         return col
 
     text = _fmt_rows(rows, cols, labels, _label)
+    heads = [_label(c) for c in cols]
+    table = None
+    if len(rows) > 1:
+        def _table_cell(value):
+            if value is None:
+                return "未录入"
+            if hasattr(value, "isoformat") and not isinstance(value, (str, bytes)):
+                return value.isoformat()
+            if hasattr(value, "as_tuple") and hasattr(value, "quantize"):
+                return float(value)
+            return value
+
+        table_rows = [[_table_cell(v) for v in r] for r in rows]
+        table = {
+            "headers": heads,
+            "columns": [{"key": f"c{i}", "label": heads[i],
+                         "data_type": "number" if all(
+                             isinstance(r[i], (int, float)) or
+                             (hasattr(r[i], "as_tuple") and hasattr(r[i], "quantize"))
+                             for r in rows if i < len(r))
+                         else "text"} for i in range(len(heads))],
+            "rows": table_rows,
+            "row_count": len(rows),
+        }
     # 空结果+问句带金额数字 = 提交语义（"王强报销96元交通费"模型偶发生成查询
     # SQL 查无记录）→ 漏回让 SOP 接（写操作不走数据面；空结果语义修正，
     # 不是路由预判——"李娜报销了多少"查空无金额仍答"查询结果为空"）
@@ -415,9 +443,15 @@ def try_answer(query: str, user: str = "") -> str | None:
         return None
     # 多行列表类结果不包装（曾包装层压缩明细列表时丢掉部门/姓名等标识列——
     # 列表本身可读性好，包装只用于单值/两行比较类）
-    if len(rows) > 2:
-        return text
-    return _answer_with_llm(query, text, rows)
+    if len(rows) > 1:
+        return {"answer": text, "table": table}
+    return {"answer": _answer_with_llm(query, text, rows), "table": None}
+
+
+def try_answer(query: str, user: str = "") -> str | None:
+    """兼容文本调用方：结构化数据层只返回 answer 文本。"""
+    result = try_answer_result(query, user=user)
+    return result.get("answer") if result else None
 
 
 # ---------------- 结果→回答包装（治类：数据≠答案） ----------------

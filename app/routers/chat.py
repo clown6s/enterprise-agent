@@ -49,7 +49,8 @@ def chat(body: dict, authorization: str | None = Header(default=None)):
                           user=(user or {}).get("username", ""))
     return {"success": True, "message": None,
             "data": {"answer": result["answer"], "sources": result["sources"],
-                     "route": result["route"], "conversationId": conv}}
+                     "route": result["route"], "chart": result.get("chart"),
+                     "conversationId": conv}}
 
 
 def _sse(events: Iterator[tuple[str, object]]) -> Iterator[str]:

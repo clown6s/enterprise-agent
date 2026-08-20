@@ -15,7 +15,6 @@
 import logging
 import re
 import time
-from datetime import datetime
 
 from ..time_context import now as business_now
 from .. import embeddings, guards, llm, milvus_store, prompts, tools
@@ -480,12 +479,18 @@ def _route_early(query: str, conversation_id: str, user: str,
     # NL2SQL 表查询层（追问改写前置：指代追问先补全再进数据面）
     nlsql_q = _resolve_query(query, turns)
     try:
-        sql_ans = nlsql.try_answer(nlsql_q, user=user)
+        sql_result = nlsql.try_answer_result(nlsql_q, user=user)
     except Exception:
-        sql_ans = None
-    if sql_ans:
-        return {"answer": guards.fix_output(sql_ans), "sources": [],
-                "route": Route.DATA, "chart": None}
+        sql_result = None
+    if sql_result:
+        table = sql_result.get("table")
+        chart = None
+        if table and table.get("row_count", 0) > 1:
+            chart = {"kind": "query_table", "table": [table["headers"]] + table["rows"],
+                     "columns": table.get("columns", []), "row_count": table["row_count"],
+                     "title": "数据查询", "chartType": "table",
+                     "summary": f"共 {table['row_count']} 条"}
+        return _result(guards.fix_output(sql_result["answer"]), Route.DATA, chart=chart)
 
     # 文档多轮修改 + 文档生成
     if tools.is_enabled("doc_wizard"):
@@ -693,6 +698,8 @@ def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", f
     if early is not None:
         yield "route", early.get("route", "KNOWLEDGE_QA")
         yield "token", early.get("answer", "")
+        if early.get("chart"):
+            yield "chart", early["chart"]
         yield "sources", early.get("sources", [])
         yield "done", "[DONE]"
         return
