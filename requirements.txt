@@ -6,5 +6,7 @@ pymysql>=1.1
 python-dotenv>=1.0
 lark-oapi>=1.4
 pdfplumber>=0.11
+pypdf>=5.0
+python-multipart>=0.0.9
 neo4j>=5.0
 python-docx>=1.1

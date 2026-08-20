@@ -177,7 +177,9 @@ def field_visible(table: str, column: str, user: str) -> bool:
         ids = _parse_grants(row[0] or "")
         return not ids or emp in ids
     except Exception:
-        return True
+        # 字段级权限查询异常 fail-closed——权限故障时宁可隐藏 PII 也不放行
+        log.warning(f"字段级权限查询异常（fail-closed）: {table}.{column}")
+        return False
 
 
 def save_field_acl(table: str, column: str, grants: str, status: int = 1) -> None:
@@ -210,7 +212,9 @@ def save_field_acl(table: str, column: str, grants: str, status: int = 1) -> Non
 
 
 def allowed_expr(user: str) -> str | None:
-    """用户 → Milvus 过滤 expr；None=不过滤。软依赖：任何失败返回 None。"""
+    """用户 → Milvus 过滤 expr；None=无 ACL 配置时不过滤。
+
+    ACL 查询/解析异常必须 fail-closed（恒假 expr），不能把权限故障变成全量放行。"""
     try:
         with _lock:
             now = time.time()
@@ -231,5 +235,5 @@ def allowed_expr(user: str) -> str | None:
         ids = '", "'.join(visible)
         return f'document_id in ["{ids}"]'
     except Exception as e:
-        log.warning(f"权限表达式构造失败（不过滤）: {e!r}")
-        return None
+        log.warning(f"权限表达式构造失败（fail-closed）: {e!r}")
+        return 'document_id == "__none__"'

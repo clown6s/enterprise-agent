@@ -39,7 +39,8 @@ def _make_replay():
 
 def run_regression() -> int:
     replay = _make_replay()
-    report = eval_engine.run_regression(replay=replay)
+    skip_external = "--skip-external" in sys.argv
+    report = eval_engine.run_regression(replay=replay, skip_external=skip_external)
     print(f"\n=== 问答回归: {report['passed']}/{report['total']} 通过 ===")
     for r in report["results"]:
         mark = "✓" if r["passed"] else "✗"

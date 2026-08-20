@@ -44,6 +44,9 @@ class FeishuChannel:
         # 按群的最近一次问答（卡片 👍👎 回调用，值只带 action 不带全文）
         self._last_answers: dict[str, dict] = {}
         self._seen: set[str] = set()
+        # WS 消息线程 + 卡片回调线程并发读写 _last_answers/_seen——需锁
+        # （曾反馈错位到错误问答的潜在竞态；postmortem 扫描发现）
+        self._state_lock = threading.RLock()
 
     # ---------------- 生命周期 ----------------
 
@@ -197,31 +200,32 @@ class FeishuChannel:
     def _mark_seen(self, message_id: str) -> bool:
         """事件去重：持久化表 feishu_event_seen 为第一层（重启不丢），
         内存 _seen 热缓存为第二层（减少 DB 访问）。返回 True=首次，False=重复。"""
-        # 热缓存命中 → 已处理
-        if message_id in self._seen:
-            return False
-        # 持久化层：INSERT 失败（主键冲突）= 已处理
-        try:
-            from .. import config
-            import pymysql
-            conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                                   user="root", password=config.MYSQL_PASSWORD,
-                                   database=config.MYSQL_DB, charset="utf8mb4",
-                                   connect_timeout=2)
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT IGNORE INTO feishu_event_seen (message_id) VALUES (%s)",
-                    (message_id,))
-            conn.commit()
-            conn.close()
-            if cur.rowcount == 0:
-                return False   # 主键冲突 → 已处理过
-        except Exception:
-            pass   # DB 不可用时回退到仅内存去重（不阻断消息）
-        self._seen.add(message_id)
-        if len(self._seen) > 2000:
-            self._seen.clear()
-        return True
+        with self._state_lock:
+            # 热缓存命中 → 已处理
+            if message_id in self._seen:
+                return False
+            # 持久化层：INSERT 失败（主键冲突）= 已处理
+            try:
+                from .. import config
+                import pymysql
+                conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                                       user="root", password=config.MYSQL_PASSWORD,
+                                       database=config.MYSQL_DB, charset="utf8mb4",
+                                       connect_timeout=2)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT IGNORE INTO feishu_event_seen (message_id) VALUES (%s)",
+                        (message_id,))
+                conn.commit()
+                conn.close()
+                if cur.rowcount == 0:
+                    return False   # 主键冲突 → 已处理过
+            except Exception:
+                pass   # DB 不可用时回退到仅内存去重（不阻断消息）
+            self._seen.add(message_id)
+            if len(self._seen) > 2000:
+                self._seen.clear()
+            return True
 
     def _handle(self, chat_id: str, message_id: str, mtype: str, content: str,
                 open_id: str = "") -> None:
@@ -303,10 +307,11 @@ class FeishuChannel:
                 self._reply(message_id, result["answer"])
         # 按卡片消息 id 存问答（👍👎 回调用 open_message_id 精确对应——曾按
         # chat_id 单槽存，连问两个问题后点第一个卡会采纳第二个的答案，污染知识库）
-        if card_msg_id:
-            self._last_answers[card_msg_id] = last
-        else:
-            self._last_answers[chat_id] = last   # 卡片失败回退纯文本
+        with self._state_lock:
+            if card_msg_id:
+                self._last_answers[card_msg_id] = last
+            else:
+                self._last_answers[chat_id] = last   # 卡片失败回退纯文本
 
     def _handle_suggestion(self, chat_id: str, msg_id: str, q: str, open_id: str = "") -> None:
         """延伸问题异步作答：回复新卡片（带新一轮延伸推荐）"""
@@ -325,10 +330,12 @@ class FeishuChannel:
                     result["answer"], result["sources"], suggestions,
                     route=result.get("route", "")))
                 if card_msg_id:
-                    self._last_answers[card_msg_id] = last   # 按卡片 id 存，反馈不错位
+                    with self._state_lock:
+                        self._last_answers[card_msg_id] = last   # 按卡片 id 存，反馈不错位
                     return
             self._reply(msg_id, result["answer"])
-            self._last_answers[chat_id] = last
+            with self._state_lock:
+                self._last_answers[chat_id] = last
         except Exception as e:
             log.warning(f"延伸问答异常: {e!r}")
             self._reply(msg_id or "", "抱歉，回答生成失败，请稍后重试。")
@@ -561,7 +568,9 @@ class FeishuChannel:
             # 优先按卡片 message_id 精确定位（曾按 chat_id 单槽——连续问答时
             # 点旧卡的👍会采纳最新一条答案，反馈错位污染知识库）
             card_msg_id = getattr(ctx, "open_message_id", None) or ""
-            last = self._last_answers.get(card_msg_id) or self._last_answers.get(chat_id)
+            with self._state_lock:
+                last = (self._last_answers.get(card_msg_id)
+                        or self._last_answers.get(chat_id))
             if not last:
                 toast.content = "未找到对应问答记录（可能已过期）"
                 resp.toast = toast

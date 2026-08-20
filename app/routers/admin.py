@@ -510,10 +510,16 @@ def _load_sets() -> list:
 
 
 def _load_set_items(set_id: str) -> list:
+    if not re.match(r"^[A-Za-z0-9_-]{1,64}$", set_id):
+        return []
     if set_id == "retrieval-baseline":
         return json.load(open(os.path.join(EVAL_DIR, "retrieval_baseline.json"), encoding="utf-8"))["items"]
     p = os.path.join(EVAL_SETS_DIR, f"{set_id}.json")
-    return json.load(open(p, encoding="utf-8"))["items"] if os.path.exists(p) else []
+    # 路径穿越防护：校验 realpath 必须在 EVAL_SETS_DIR 内
+    real = os.path.realpath(p)
+    if not real.startswith(os.path.realpath(EVAL_SETS_DIR) + os.sep):
+        return []
+    return json.load(open(real, encoding="utf-8"))["items"] if os.path.exists(real) else []
 
 
 @router.get("/api/rag/admin/eval/sets")
@@ -546,9 +552,13 @@ def eval_set_create(body: dict, authorization: str | None = Header(default=None)
 def eval_set_delete(set_id: str, authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
+    if not re.match(r"^[A-Za-z0-9_-]{1,64}$", set_id):
+        return _ok(False)
     p = os.path.join(EVAL_SETS_DIR, f"{set_id}.json")
-    if os.path.exists(p):
-        os.remove(p)
+    real = os.path.realpath(p)
+    if not real.startswith(os.path.realpath(EVAL_SETS_DIR) + os.sep) or not os.path.exists(real):
+        return _ok(False)
+    os.remove(real)
     return _ok(True)
 
 
@@ -783,9 +793,10 @@ def remove_acl(doc_id: str, authorization: str | None = Header(default=None)):
 def list_alerts(status: str = "", authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
-    where = f"WHERE status='{status}'" if status else ""
+    where = "WHERE status=%s" if status else ""
+    args = (status,) if status else ()
     rows = _query(f"SELECT id, rule_code, level, title, detail, status, first_at, last_at, count, "
-                  f"ack_by, ack_at FROM alert_event {where} ORDER BY id DESC LIMIT 100")
+                  f"ack_by, ack_at FROM alert_event {where} ORDER BY id DESC LIMIT 100", args)
     return _ok([{"id": r[0], "ruleCode": r[1], "level": r[2], "title": r[3], "detail": r[4],
                  "status": r[5], "firstAt": str(r[6]), "lastAt": str(r[7]), "count": r[8],
                  "ackBy": r[9], "ackAt": str(r[10])} for r in rows])
@@ -814,9 +825,10 @@ def ack_alert(alert_id: int, authorization: str | None = Header(default=None)):
 def list_reviews(status: str = "", authorization: str | None = Header(default=None)):
     if not _auth(authorization):
         return _unauthorized()
-    where = f"WHERE status='{status}'" if status else ""
+    where = "WHERE status=%s" if status else ""
+    args = (status,) if status else ()
     rows = _query(f"SELECT id, query, answer, sources, employee_id, user, status, reviewer, "
-                  f"created_at, reviewed_at FROM answer_review {where} ORDER BY id DESC LIMIT 100")
+                  f"created_at, reviewed_at FROM answer_review {where} ORDER BY id DESC LIMIT 100", args)
     return _ok([{"id": r[0], "query": r[1], "answer": r[2], "sources": r[3] or "",
                  "employeeId": r[4], "user": r[5] or "", "status": r[6], "reviewer": r[7] or "",
                  "createdAt": str(r[8]), "reviewedAt": str(r[9])} for r in rows])

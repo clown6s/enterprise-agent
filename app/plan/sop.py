@@ -145,7 +145,20 @@ def _pending_conn():
 
 def save_pending(chat_id: str, params: dict, emp: dict, sop_code: str = "leave_action") -> bool:
     """保存待确认单（业务码区分哪条 SOP；2026-08-19 泛化——曾只存请假，
-    确认分发硬编码请假提交）；失败返回 False（调用方降级直接提交）"""
+    确认分发硬编码请假提交）；失败返回 False（调用方降级直接提交）。
+
+    保存前过 pending_state.validate_change——用户源只允许改白名单字段；
+    系统字段（sop_code/status 等）被剔除（dsh 一-5）。剔除而不是拒绝：
+    save_pending 返回 False 会触发调用方降级直提，比重启确认闸门更糟。"""
+    from . import pending_state as _ps
+    plan = _ps.validate_change({}, params, source="user")
+    if not plan.approved:
+        _audit(sop_code, "pending_rejected", params,
+               f"非法字段剔除: {plan.rejected_keys}", 0.0)
+        params = {k: v for k, v in params.items() if k not in plan.rejected_keys}
+        params = _ps.apply_plan(_ps.validate_change({}, params, source="user"))
+    else:
+        params = _ps.apply_plan(plan)
     try:
         conn = _pending_conn()
         with conn.cursor() as cur:

@@ -57,7 +57,7 @@ def _verify_sql(ext: dict) -> tuple[bool, str]:
     return True, f"{len(rows)} 行"
 
 
-def run_answer_case(case: dict, replay=None) -> dict:
+def run_answer_case(case: dict, replay=None, skip_external: bool = False) -> dict:
     """执行一条断言用例，返回 {id, query, passed, checks, seconds}。
     每用例独立会话（多轮历史/待确认单不串用例）；followup 字段支持二轮断言
     （如请假流程先回确认提示、再答"确认"后断言提交回执）。
@@ -105,6 +105,9 @@ def run_answer_case(case: dict, replay=None) -> dict:
             replay.save_case()
 
     checks: list[tuple[str, bool, str]] = []
+    # replay 模式下 fixture 警告（耗尽/未消费完）→ 整体失败，不放过（防假绿）
+    if replay_warning:
+        checks.append(("replay_fixture", False, replay_warning))
     answer = result.get("answer") or ""
     sources = result.get("sources") or []
     route = result.get("route") or ""
@@ -128,11 +131,16 @@ def run_answer_case(case: dict, replay=None) -> dict:
         check("chart", has_chart == expect["chart_present"], f"chart={has_chart}")
     if "max_seconds" in expect:
         check("max_seconds", seconds <= expect["max_seconds"], f"{seconds:.1f}s")
-    # 外部世界验证（2026-08-19 借鉴 dsh「验证外部世界，而非自我报告」：
-    # 断言实际数据库状态——关键词探测会让作弊 agent 通过，落库/真实行才是凭据）
+    # 外部世界验证（2026-08-19 借鉴 dsh「验证外部世界，而非自我报告」）：
+    # 断言实际数据库状态——关键词探测会让作弊 agent 通过，落库/真实行才是凭据。
+    # replay CI 无业务 MySQL 时显式跳过；本地 replay 默认仍执行，不能把跳过伪装成通过。
     for ext in expect.get("verify_sql", []):
-        ok, detail = _verify_sql(ext)
-        check(f"verify_sql:{str(ext.get('sql', ''))[:40]}", ok, detail)
+        if skip_external:
+            check(f"verify_sql:skipped:{str(ext.get('sql', ''))[:30]}", True,
+                  "replay CI 显式跳过外部库验证")
+        else:
+            ok, detail = _verify_sql(ext)
+            check(f"verify_sql:{str(ext.get('sql', ''))[:40]}", ok, detail)
 
     failed = [c for c in checks if not c[1]]
     return {
@@ -144,7 +152,7 @@ def run_answer_case(case: dict, replay=None) -> dict:
     }
 
 
-def run_regression(path: str | None = None, replay=None) -> dict:
+def run_regression(path: str | None = None, replay=None, skip_external: bool = False) -> dict:
     """跑全量回归，返回报告；用例文件默认 eval/regression_cases.json
 
     replay: LLMReplay 实例（可选）。非 None 时激活 mock 并在每用例切换 fixture。
@@ -157,7 +165,7 @@ def run_regression(path: str | None = None, replay=None) -> dict:
     if replay is not None:
         replay.activate()
     try:
-        results = [run_answer_case(c, replay) for c in cases]
+        results = [run_answer_case(c, replay, skip_external) for c in cases]
     finally:
         if replay is not None:
             replay.deactivate()
