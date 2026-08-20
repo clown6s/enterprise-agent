@@ -19,22 +19,51 @@ enterprise-agent 入口：FastAPI 应用装配。
     app/routers/*           HTTP 端点（与 rag-admin 前端协议兼容）
 """
 from contextlib import asynccontextmanager
+import logging
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
+from . import config
 from .channels.feishu import channel as feishu_channel
+from .request_context import reset_request_id, set_request_id
 from .routers import admin, auth, chat, feedback, health, ingestion
+
+log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # 启动配置体检：只报告缺失键，不阻断健康检查和管理端点启动。
+    # 真正的外部调用仍由各自软依赖/降级链处理。
+    missing = config.validate_config()
+    if missing:
+        log.warning("启动配置缺失：%s（相关能力首次调用可能失败）", ", ".join(missing))
+    else:
+        log.info("启动配置体检通过")
     # 飞书长连接（软依赖：未配置 app_id 或 SDK 缺失时静默跳过，主链路不受影响）
     if feishu_channel.enabled():
         feishu_channel.start()
+    else:
+        log.info("飞书通道未启用")
     yield
 
 
 app = FastAPI(title="enterprise-agent", version="0.2.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """为每个 HTTP 请求生成/继承 request_id 并注入日志上下文。
+    支持 X-Request-ID 头溯源（飞书/网关转发时保留原 ID）。"""
+    rid = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:16]
+    token = set_request_id(rid)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = rid
+        return response
+    finally:
+        reset_request_id(token)
 
 app.include_router(health.router)
 app.include_router(auth.router)

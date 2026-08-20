@@ -259,11 +259,107 @@ def test_list_applications():
             pass
 
 
+# ---------------- 幂等性契约测试（dsh 一-5 / 幂等性防护） ----------------
+
+def test_idempotent_constraints():
+    """DB UNIQUE 索引挡重复：
+    ① 同一申请表 apply_no 不可重复插入（uk_apply_no）
+    ② 同一审批 (apply_no, approval_level) 不可重复记录（uk_apply_level）"""
+    conn = _conn()
+    try:
+        apply_no = _ano(50)
+        # ① 同一 apply_no 插两次 → 第二次 IntegrityError
+        import pymysql
+        base = ("INSERT INTO oa_leave_application (apply_no, user_id, user_name, dept_id, "
+                "leave_type, start_time, end_time, days, reason, status, create_time) "
+                "VALUES (%s,1,'x',1,1,NOW(),NOW(),1,'x',1,NOW())")
+        with conn.cursor() as cur:
+            cur.execute(base, (apply_no,))
+        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(base, (apply_no,))
+            conn.commit()
+            check("apply_no UNIQUE 挡重复", False, "第二次插入未报错")
+        except pymysql.err.IntegrityError:
+            check("apply_no UNIQUE 挡重复", True)
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM oa_leave_application WHERE apply_no=%s", (apply_no,))
+            conn.commit()
+
+        # ② 同一 (apply_no, approval_level) 插两次 → 第二次 IntegrityError
+        apply_no2 = _ano(51)
+        rec = ("INSERT INTO oa_approval_record (apply_id, apply_no, approver_id, "
+               "approver_name, approval_level, action, comment, approval_time) "
+               "VALUES (1,%s,1,'t',1,1,'',NOW())")
+        with conn.cursor() as cur:
+            cur.execute(rec, (apply_no2_ := apply_no2))
+        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(rec, (apply_no2,))
+            conn.commit()
+            check("approval_record 同级别 UNIQUE 挡重复", False, "第二次插入未报错")
+        except pymysql.err.IntegrityError:
+            check("approval_record 同级别 UNIQUE 挡重复", True)
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM oa_approval_record WHERE apply_no=%s", (apply_no2,))
+            conn.commit()
+    finally:
+        _cleanup(conn)
+        conn.close()
+
+
+def test_idempotent_confirm():
+    """确认/取消幂等：同一 chat 二次 confirm 无待确认单 → 落回 None（不重复提交）"""
+    from app.plan import sop as sop_engine
+    params = {"userName": "李娜", "leaveType": 1, "startTime": "2026-08-21",
+              "endTime": "2026-08-21", "days": 1, "reason": "幂等测试"}
+    emp = {"id": 1, "realName": "李娜"}
+    chat = "idem-confirm-test"
+    ok = sop_engine.save_pending(chat, params, emp)
+    check("幂等: 首次 save_pending 成功", ok)
+    hit = sop_engine.try_confirm_or_cancel(chat, "确认")
+    check("幂等: 首次确认命中", hit is not None)
+    again = sop_engine.try_confirm_or_cancel(chat, "确认")
+    check("幂等: 二次确认落回 None（无待确认单不重复提交）", again is None)
+    sop_engine.clear_pending(chat)
+
+
+def test_idempotent_approval_action():
+    """审批动作幂等：同单同动作二次调用 → 拒绝（status 已离 1/2）"""
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, dept_id FROM employee WHERE status=1 LIMIT 1")
+            row = cur.fetchone()
+        if not row:
+            check("idempotent_approval 跳过", True)
+            return
+        emp_id, dept_id = row[0], row[1]
+        apply_no = _ano(52)
+        aid = _seed_leave(conn, emp_id, dept_id, apply_no, status=1)
+        r1 = approval.act_on_application("leave", aid, emp_id, approval.ACT_REJECT)
+        r2 = approval.act_on_application("leave", aid, emp_id, approval.ACT_REJECT)
+        check("审批动作幂等: 首次通过", r1.get("ok"))
+        check("审批动作幂等: 二次拒绝", not r2.get("ok") and "已处理" in r2.get("message", ""))
+        # 同级别只产生一条审批记录
+        check("审批动作幂等: 仅一条记录", _count_records(conn, apply_no) == 1)
+    finally:
+        _cleanup(conn)
+        conn.close()
+
+
 if __name__ == "__main__":
     test_summary_text()
     test_act_on_application()
     test_pending_by_approver()
     test_try_approval_command()
     test_list_applications()
+    test_idempotent_constraints()
+    test_idempotent_confirm()
+    test_idempotent_approval_action()
     print(f"\n{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)

@@ -19,6 +19,7 @@ from datetime import datetime
 
 from .. import embeddings, guards, llm, milvus_store, prompts, tools
 from .. import invariants as _invariants
+from ..request_context import get_request_id
 from ..domains import (attention_pattern, dimension_pairs, lifestyle_pattern,
                        synonym_groups)
 from ..learn import adopted as adopted_qa
@@ -407,7 +408,7 @@ def _record_audit(query: str, result: dict, seconds: float, user: str = "admin",
                 "history_count, sources, retrieval_ms, rerank_degraded, graph_context_chars, "
                 "answer_preview, answer_length, total_ms, status, error) "
                 "VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (_uuid.uuid4().hex[:16], user or "admin", "", endpoint,
+                (get_request_id() or _uuid.uuid4().hex[:16], user or "admin", "", endpoint,
                  result.get("route", "KNOWLEDGE_QA"),
                  query, history_count, _json.dumps(result.get("sources") or [], ensure_ascii=False),
                  0, 0, 0, (result.get("answer") or "")[:500],

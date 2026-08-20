@@ -14,6 +14,7 @@ import time
 import httpx
 
 from .. import config
+from ..request_context import reset_request_id, set_request_id
 import logging
 log = logging.getLogger(__name__)
 
@@ -222,6 +223,14 @@ class FeishuChannel:
             self._reply(message_id, "抱歉，回答生成失败，请稍后重试。")
 
     def _handle_text_inner(self, chat_id: str, message_id: str, text: str, open_id: str = "") -> None:
+        # 飞书 WS 回调运行在线程中，ContextVar 不会从 HTTP 继承，显式绑定消息 ID。
+        token = set_request_id(message_id)
+        try:
+            self._handle_text_inner_impl(chat_id, message_id, text, open_id)
+        finally:
+            reset_request_id(token)
+
+    def _handle_text_inner_impl(self, chat_id: str, message_id: str, text: str, open_id: str = "") -> None:
         # 文件上下文指令
         if text.strip() in ("清除文件", "移除文件"):
             removed = self._file_contexts.pop(chat_id, None)

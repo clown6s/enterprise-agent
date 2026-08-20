@@ -4,17 +4,43 @@
 
 用 os.getenv 直接读，缺省值写在第二个参数里（不做 ${VAR} 注入）。
 """
+import logging
 import os
 
 from dotenv import load_dotenv
 
+log = logging.getLogger(__name__)
+
 # 项目根目录的 .env（run.py 从根目录启动时 cwd 就在根目录；保险起见用绝对路径）
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(_BASE, ".env"))
+_ENV_PATH = os.path.join(_BASE, ".env")
+load_dotenv(_ENV_PATH)
+
+# 这些键为空时，相关主能力会在第一次请求才失败；启动检查统一提前报告。
+# 不把可选渠道（飞书/OCR）列进来，避免关闭可选能力时误报。
+_REQUIRED_CONFIG_KEYS = (
+    "DASHSCOPE_API_KEY",
+    "ZHIPU_API_KEY",
+    "SILICONFLOW_API_KEY",
+    "MYSQL_ROOT_PASSWORD",
+)
 
 
 def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default).strip()
+
+
+def validate_config() -> list[str]:
+    """返回当前配置缺失的必要键，不抛异常、不打印密钥。
+
+    启动阶段调用，服务仍可启动（便于只运行健康检查/管理端点）；真正依赖
+    外部服务的请求会由各自软依赖/降级链处理。每次调用重新读取环境，方便
+    测试和 reload 场景，不缓存结果。
+    """
+    missing = [key for key in _REQUIRED_CONFIG_KEYS if not _env(key)]
+    if not os.path.exists(_ENV_PATH):
+        missing.append(".env 文件")
+    return missing
 
 
 # ---------------- LLM ----------------
