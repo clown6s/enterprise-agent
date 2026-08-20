@@ -1,7 +1,4 @@
-# deepseek-harness 全量亮点清单（2026-08-19 三代理并行扫描）
-
-来源：D:\project\deepseek-harness（DeepSeek 官方 agent harness，Cordis 插件架构）。
-按「对 enterprise-agent 的可借鉴价值」排序。每条含路径，可直接打开原文。
+# 全量亮点清单（2026-08-19 三代理并行扫描）
 
 ## 一、架构与运行时（源码级，14 条）
 
