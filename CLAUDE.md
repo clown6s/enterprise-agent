@@ -73,7 +73,7 @@ eval/                   # regression_cases.json（29 用例）+ retrieval_baseli
 - 启动：`python run.py`（8080）；`scripts/watchdog.py` 单独常驻（系统里有两个 python 进程是正常的；watchdog 只管理 8080——OA 服务 7000 由用户手动控制）
 - 依赖：OA 服务（7000，数据源）、Milvus、Neo4j（bolt://10.211.55.5:7687）、MySQL（sys_user 等共享表）、飞书应用
 - 健康检查：`curl localhost:8080/healthz`
-- 回归：`python scripts/run_eval.py regression`（基线 15/15）
+- 回归：`python scripts/run_eval.py regression`（基线 29/29）
 - 检索评测：`python scripts/run_eval.py retrieval`（基线 100% / MRR 0.92）
 
 ## 制度（2026-08-19 借鉴 deepseek-harness 落地，见 docs/dsh-highlights.md）
@@ -125,7 +125,7 @@ eval/                   # regression_cases.json（29 用例）+ retrieval_baseli
   - 审批闭环自建：飞书对话审批（同意/拒绝+单号）+ 飞书通知推送 + 后台审批看板页
   - 飞书通讯录同步：启动自动拉取 upsert feishu_employee（拉得 zzp/张志鹏 2 账号，绑定走后台账号身份页）
 - 写业务动作直写本库申请表（业务库即 rag_service），审批人解析=oa_approval_flow 配置（部门负责人/角色Key）；读走 NL2SQL——问法不碰代码
-- 回归 26/26、不变量 53/53、guards 矩阵 18/18
+- 回归 29/29（replay 28/29）、不变量 61/61、guards 矩阵 18/18
 
 ## 状态（2026-08-18）
 
