@@ -113,10 +113,11 @@ MYSQL_PORT = int(_env("MYSQL_PORT", "3306"))
 MYSQL_PASSWORD = _env("MYSQL_ROOT_PASSWORD")
 MYSQL_DB = "rag_service"
 
-# ---------------- OA 业务系统（本地 mock，HTTP 直连） ----------------
-OA_BASE_URL = _env("OA_BASE_URL", "http://localhost:7000")
-OA_USERNAME = _env("OA_USERNAME", "admin")
-OA_PASSWORD = _env("OA_PASSWORD", "123456")
+# ---------------- OA 业务系统（2026-08-19 退役：OA 7000 停用，审批直连本库） ----------------
+# 保留配置项仅为向后兼容可能引用 OA_* 的历史代码；新代码不应使用。
+OA_BASE_URL = _env("OA_BASE_URL", "")
+OA_USERNAME = _env("OA_USERNAME", "")
+OA_PASSWORD = _env("OA_PASSWORD", "")
 
 # ---------------- 服务 ----------------
 PORT = 8080

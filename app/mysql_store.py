@@ -3,8 +3,7 @@
 MySQL 访问（pymysql）：后台统一身份 + 审计落库。
 
 沿用既有 rag_service.sys_user 表——密码算法是 SHA-256(salt + password)
-的十六进制，一行 hashlib 就能复现，现有 admin 账号（admin / Admin@2026）
-直接可用，管理前端无需改账号。
+的十六进制，一行 hashlib 就能复现。凭据从 .env 读取，不内联到代码。
 """
 import hashlib
 import uuid

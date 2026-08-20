@@ -39,5 +39,8 @@ jobs:
           coverage run --source=app --append scripts/test_pipeline.py
           coverage run --source=app --append scripts/test_startup.py
 
+      - name: 文档签名防漂移检查
+        run: python scripts/verify_doc_types.py
+
       - name: 覆盖率门禁（不低于 24%）
         run: coverage report --fail-under=24
