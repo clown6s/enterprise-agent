@@ -261,7 +261,9 @@ def _do_insert(d: ApprovalDef, params: dict, emp: dict) -> dict:
                                   {"apply_no": apply_no, "user_name": emp.get("realName"),
                                    **{col: values[i + 4] for i, (key, (col, _)) in
                                       enumerate(d.fields.items())}})
-    return {"apply_no": apply_no}
+    # graph-build 已迁到 observe_hooks（dsh 一-2 observe 切面），不在 _do_insert 裸线程
+    return {"apply_no": apply_no, "_chunks": list(params.keys()),
+            "_doc_id": apply_no, "_filename": d.name}
 
 
 def _finish(d: ApprovalDef, params: dict, emp: dict) -> dict:
@@ -275,7 +277,32 @@ def _finish(d: ApprovalDef, params: dict, emp: dict) -> dict:
         f"{d.receipt_detail(params)}。\n"
         "只输出这句话，不要编造其他信息（如审批人、预计通过时间）。")
     receipt = llm.chat_chain("", receipt_prompt)
-    return {"answer": receipt.strip(), "route": "SOP"}
+    result = {"answer": receipt.strip(), "route": "SOP"}
+    # 触发 observe hooks（dsh 一-2 observe 切面：异步旁路，失败不影响主结果）
+    import threading
+    threading.Thread(target=_sop._fire_observe_hooks,
+                     args=(_build_sop(d), {"apply_no": out["apply_no"],
+                                           "params": params, "emp": emp,
+                                           "filename": d.name}),
+                     daemon=True).start()
+    return result
+
+
+def _graph_build_bg(d: ApprovalDef, ctx: dict) -> None:
+    """图谱构建旁路（dsh 一-2 observe 切面）：失败只记日志，软依赖不变。
+    从 pipeline._graph_build_bg 迁来——原来裸挂在 _do_insert 里。"""
+    try:
+        from ..service import graph
+        chunks = list(ctx.get("params", {}).keys()) if isinstance(ctx.get("params"), dict) else []
+        doc_id = ctx.get("apply_no", "")
+        filename = ctx.get("filename", d.name)
+        if chunks:
+            rels = graph.build_from_chunks(chunks, doc_id)
+            _sop._audit(d.code, "graph_built", {"doc_id": doc_id},
+                        f"{rels}", 0.0)
+    except Exception as e:
+        _sop._audit(d.code, "graph_build_failed", {"doc_id": ctx.get("apply_no", "")},
+                    f"{e!r}", 0.0)
 
 
 def _build_sop(d: ApprovalDef) -> _sop.SopDefinition:
@@ -327,7 +354,8 @@ def _build_sop(d: ApprovalDef) -> _sop.SopDefinition:
             "receipt": h_receipt,
         },
         finish=lambda params, emp: _finish(d, params, emp),
-        confirm_detail=d.receipt_detail)
+        confirm_detail=d.receipt_detail,
+        observe_hooks=[lambda ctx: _graph_build_bg(d, ctx)])
 
 
 for _def in APPROVAL_DEFS:

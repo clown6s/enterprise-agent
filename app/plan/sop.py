@@ -61,6 +61,11 @@ class SopDefinition:
     handlers: dict             # 步骤名 → handler(state) → (终止?, 结果)
     finish: Callable | None = None   # 确认后的提交收尾 params,emp → result（待确认单分发用）
     confirm_detail: Callable | None = None   # params → 确认单详情文案（请假=起止日期等）
+    # dsh 一-2 五段式 hook 槽（默认空=无 hook=行为不变）。
+    # post_hooks: 结果产生后同步执行（如 fix_output 格式守卫）；每个独立 try/except。
+    # observe_hooks: 提交成功后异步执行（如 graph-build/通知）；daemon 线程，失败不影响主结果。
+    post_hooks: list = None    # list[Callable[[dict], dict]] → 改写后的 result
+    observe_hooks: list = None    # list[Callable[[dict], None]] → 旁路副作用
 
     def matches(self, query: str) -> bool:
         if _PROCESS_WORDS_SOP.search(query):
@@ -340,13 +345,49 @@ def register(definition: SopDefinition) -> None:
     SOP_REGISTRY.append(definition)
 
 
+def _apply_post_hooks(sop: SopDefinition, result: dict) -> dict:
+    """执行 post_hooks：结果改写（如 fix_output 格式守卫）。每个独立容错。
+
+    dsh 一-2 post-execute 切面：accept/replace/block，可注入附加上下文。
+    空列表=无 hook=行为不变（向后兼容）。"""
+    if not sop.post_hooks:
+        return result
+    for hook in sop.post_hooks:
+        try:
+            out = hook(result)
+            if isinstance(out, dict):
+                result = out   # replace
+        except Exception as e:
+            _audit(sop.code, "post_hook_error", {}, f"{e!r}", 0.0)
+    return result
+
+
+def _fire_observe_hooks(sop: SopDefinition, ctx: dict) -> None:
+    """执行 observe_hooks：异步旁路（如 graph-build/通知），每个独立容错。
+
+    dsh 一-2 observe 切面：逐监听器容错，旁路失败不影响主结果。
+    同步执行（调用方如需异步可包 daemon thread）；空列表=无 hook=行为不变。"""
+    if not sop.observe_hooks:
+        return
+    for hook in sop.observe_hooks:
+        try:
+            hook(ctx)
+        except Exception as e:
+            _audit(sop.code, "observe_hook_error", {}, f"{e!r}", 0.0)
+
+
 def execute(sop: SopDefinition, query: str, chat_id: str = "") -> dict:
     """通用 SOP 执行器：按步骤描述符顺序执行，步骤返回 (终止?, 结果)。
     新增 SOP = 定义 steps 顺序 + 每步确定性 handler + 注册表加一行。
-    state["sop"] 供 confirm 步骤落待确认单时区分业务码。"""
+    state["sop"] 供 confirm 步骤落待确认单时区分业务码。
+    结果产生后过 post_hooks（dsh 一-2 post 切面）。"""
     state = {"query": query, "chat_id": chat_id, "sop": sop.code}
+    result = None
     for step_name in sop.steps:
         stop, result = sop.handlers[step_name](state)
         if stop:
-            return result
-    return {"answer": "该流程未完成。", "route": "SOP"}
+            break
+    if result is None:
+        result = {"answer": "该流程未完成。", "route": "SOP"}
+    result = _apply_post_hooks(sop, result)
+    return result
