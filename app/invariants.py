@@ -77,7 +77,7 @@ def _alert(name: str, detail: str) -> None:
 
 # ---------------- 内置检查 ----------------
 
-_ROUTES = {"GUARD", "KNOWLEDGE_QA", "CHAT", "CLARIFY", "SOP", "APPROVAL",
+_ROUTES = {"GUARD", "KNOWLEDGE_QA", "DATA", "CHAT", "CLARIFY", "SOP", "APPROVAL",
            "DOC_WIZARD", "ERROR", "RETRIEVAL"}
 
 
