@@ -13,6 +13,7 @@ from datetime import datetime
 import httpx
 
 from .. import config, llm
+from ..time_context import now as business_now
 from ..channels.feishu import channel as feishu_channel
 
 # ---------------- 触发与标题 ----------------
@@ -144,7 +145,7 @@ def _generate(title: str, query: str, editor_open_id: str, chat_id: str) -> dict
         content = llm.chat_chain(
             "", _GENERATE_PROMPT.format(
                 doc_type=structure, title=title, points=points,
-                today=datetime.now().strftime("%Y-%m-%d"), context=context),
+                today=business_now().strftime("%Y-%m-%d"), context=context),
         ).strip()
     except Exception:
         return None

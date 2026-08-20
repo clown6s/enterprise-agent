@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta
 
 from .. import config
+from ..time_context import now as business_now
 
 _FILE = os.path.join(config.LOG_DIR, "usage.jsonl")
 _lock = threading.Lock()
@@ -24,7 +25,7 @@ _agg: dict = {"calls": 0, "prompt_chars": 0, "completion_chars": 0, "total_secon
 def record(model: str, prompt_chars: int, completion_chars: int, seconds: float) -> None:
     """记录一次 LLM 调用（线程安全）"""
     entry = {
-        "ts": datetime.now().isoformat(),
+        "ts": business_now().isoformat(),
         "model": model,
         "prompt_chars": prompt_chars,
         "completion_chars": completion_chars,
@@ -66,7 +67,7 @@ def history(days: int = 7) -> list[dict]:
     """按天聚合用量（JSONL 全量历史——进程重启不丢数；曾只看进程内
     快照，应用一重启首页用量归零，与实时监控预期不符）。
     返回 [{day, calls, estTokens, totalMs, byModel}] 升序，覆盖近 N 天。"""
-    cutoff = str((datetime.now() - timedelta(days=days - 1)).date())
+    cutoff = str((business_now() - timedelta(days=days - 1)).date())
     days_map: dict[str, dict] = {}
     try:
         with open(_FILE, encoding="utf-8") as f:

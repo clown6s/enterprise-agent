@@ -13,6 +13,8 @@ import os
 import re
 from datetime import datetime, timedelta
 
+from ..time_context import now as business_now
+
 from .. import config
 
 _FILE = os.path.join(config.LOG_DIR, "gaps.jsonl")
@@ -35,7 +37,7 @@ def record_gap(query: str, conversation_id: str = "") -> None:
         from ..service import history
         if history.is_test_conversation(conversation_id):
             return
-    entry = {"ts": datetime.now().isoformat(), "query": query}
+    entry = {"ts": business_now().isoformat(), "query": query}
     try:
         os.makedirs(os.path.dirname(_FILE), exist_ok=True)
         with open(_FILE, "a", encoding="utf-8") as f:
@@ -60,7 +62,7 @@ def _jaccard(a: set, b: set) -> float:
 def _load_gaps(days: int) -> list[dict]:
     """读近 N 天缺口（JSONL 全量历史；按 ts 过滤窗口——
     曾 total_gaps 是全时段计数，与看板 N 天查询口径不一致）"""
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = business_now() - timedelta(days=days)
     gaps: list[dict] = []
     try:
         with open(_FILE, encoding="utf-8") as f:

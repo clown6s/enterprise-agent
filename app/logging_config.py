@@ -15,8 +15,11 @@ import sys
 import traceback
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .request_context import get_request_id
+
+_LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 _NOISY = ("pymilvus", "grpc", "urllib3", "httpx", "httpcore", "asyncio",
@@ -106,8 +109,10 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         try:
+            local_ts = _dt.datetime.fromtimestamp(record.created, _dt.timezone.utc).astimezone(_LOCAL_TZ)
             payload = {
-                "ts": _dt.datetime.fromtimestamp(record.created, _dt.timezone.utc)
+                "ts": local_ts.isoformat(timespec="milliseconds"),
+                "ts_utc": _dt.datetime.fromtimestamp(record.created, _dt.timezone.utc)
                 .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                 "level": record.levelname,
                 "logger": record.name,

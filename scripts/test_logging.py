@@ -38,7 +38,8 @@ def test_basic():
     out = json.loads(JsonFormatter().format(record("hello")))
     check("JSON 基础可解析", out["message"] == "hello")
     check("固定字段完整", all(k in out for k in ("ts", "level", "logger", "request_id", "process", "thread", "source")))
-    check("时间 UTC Z", out["ts"].endswith("Z"))
+    check("时间上海时区", out["ts"].endswith("+08:00"))
+    check("时间 UTC 备份", out["ts_utc"].endswith("Z"))
 
     tok = set_request_id("logging-test-rid")
     try:

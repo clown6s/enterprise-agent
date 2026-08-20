@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 
+from ..time_context import now as business_now
 from .. import llm
 from . import sop as _sop
 
@@ -47,7 +48,7 @@ class ApprovalDef:
     summary_cols: tuple = None # 摘要精选 DB 列子集（None=不展示摘要列）
 
     def prompt(self, query: str, names: str) -> str:
-        now = datetime.now()
+        now = business_now()
         return _EXTRACT_TMPL.format(
             name=self.name, today=now.strftime("%Y-%m-%d"),
             week="一二三四五六日"[now.weekday()],

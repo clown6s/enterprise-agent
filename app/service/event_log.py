@@ -14,6 +14,7 @@ import threading
 from datetime import datetime
 
 from .. import config
+from ..time_context import now as business_now
 
 _LOCK = threading.Lock()
 _SEQ: dict = {}   # conversation_id → seq 计数（内存，进程级；事件日志自身是事实源）
@@ -39,7 +40,7 @@ def append(conversation_id: str, kind: str, payload: dict) -> int:
         _SEQ[conversation_id] = seq
     entry = {
         "seq": seq,
-        "ts": datetime.now().isoformat(),
+        "ts": business_now().isoformat(),
         "conversation_id": conversation_id,
         "kind": kind,
         "payload": payload,

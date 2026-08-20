@@ -11,6 +11,7 @@ import threading
 import uuid
 from datetime import datetime
 
+from ..time_context import now as business_now
 import pymysql
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
@@ -481,7 +482,7 @@ def usage_view(days: int = 7, authorization: str | None = Header(default=None)):
                  "estTokens": v["chars"] // 2, "totalMs": round(v["seconds"] * 1000)}
                 for m, v in snap["by_model"].items()]
     return _ok([{
-        "day": datetime.now().strftime("%Y-%m-%d"),
+        "day": business_now().strftime("%Y-%m-%d"),
         "calls": snap["calls"], "estTokens": (snap["prompt_chars"] + snap["completion_chars"]) // 2,
         "totalMs": round(snap["total_seconds"] * 1000), "byModel": by_model,
     }])
@@ -541,7 +542,7 @@ def eval_set_create(body: dict, authorization: str | None = Header(default=None)
             q, gt = line.split("|", 1)
             items.append({"question": q.strip(), "groundTruth": gt.strip()})
     d = {"id": set_id, "name": body.get("name") or "未命名评测集",
-         "createdAt": datetime.now().isoformat(), "items": items}
+         "createdAt": business_now().isoformat(), "items": items}
     json.dump(d, open(os.path.join(EVAL_SETS_DIR, f"{set_id}.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=2)
     return _ok({"id": set_id, "name": d["name"], "itemCount": len(items),

@@ -5,20 +5,19 @@
 - 答案校验链        app/service/verify.py（小模型核查 + 熔断 + 确定性守卫顺序）
 - 确定性守卫/术语核对/格式修复  app/guards.py
 
-决策顺序（2026-08-19 去 OA 化后）：
 1. 采纳直答 → 多跳编排 → NL2SQL 表查询（员工/报销/经营等事实型问法，注册即用）
 2. 闲聊 → 直接对话；指代不明 → 追问澄清
 3. 知识问答 → 预检索 →（无结果 → 兜底句式）→ LLM 生成 → 校验链
    → 确定性守卫（缺失术语/鉴伪断言/格式修复）
 
 原则：能确定性算出来的事绝不再交给模型；新数据源=后台注册表，不写代码
-（能力总线 2026-08-19 退役：5 条种子规则全并入 NL2SQL 数据面）。
 """
 import logging
 import re
 import time
 from datetime import datetime
 
+from ..time_context import now as business_now
 from .. import embeddings, guards, llm, milvus_store, prompts, tools
 from .. import invariants as _invariants
 from ..request_context import get_request_id
@@ -160,7 +159,8 @@ def _resolve_query(query: str, turns: list[dict]) -> str:
 
 
 def _today_line() -> str:
-    now = datetime.now()
+    # 业务时区固定 Asia/Shanghai，避免服务器 UTC/本地时区导致"今天"漂移。
+    now = business_now()
     week = "一二三四五六日"[now.weekday()]
     return f"今天是 {now.strftime('%Y-%m-%d')} 星期{week}"
 
@@ -393,17 +393,17 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
         # 异常也落审计（曾只记 SUCCESS——看板 errorCount 恒 0，故障不可见）
         if not history.is_test_conversation(conversation_id):
             _record_audit(query, {"answer": "", "route": Route.ERROR, "sources": []},
-                          _t.time() - _t0, user, 0, endpoint=endpoint,
+                          time.time() - _t0, user, 0, endpoint=endpoint,
                           status="ERROR", error=str(e)[:200])
         raise
     turns = history.recent_turns(conversation_id)
     # 评测/扫描会话不落审计（曾 eval 流量灌进看板——热门问法里"你好"65 次
     # 全是跑分噪音，监控数据失真）
     if not history.is_test_conversation(conversation_id):
-        _record_audit(query, result, _t.time() - _t0, user, len(turns), endpoint=endpoint)
+        _record_audit(query, result, time.time() - _t0, user, len(turns), endpoint=endpoint)
     log.info("answer_done route=%s answer_chars=%d duration_ms=%d",
              result.get("route", Route.ERROR), len(result.get("answer") or ""),
-             int((_t.time() - _t0) * 1000))
+             int((time.time() - _t0) * 1000))
     # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流；
     # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定；
     # 评测/扫描会话不落——防跑分污染历史表）

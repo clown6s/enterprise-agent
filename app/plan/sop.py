@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable
 
+from ..time_context import now as business_now
 from .. import config, llm
 import logging
 log = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ _AUDIT_FILE = os.path.join(config.LOG_DIR, "execution.jsonl")
 # ---------------- 执行审计 ----------------
 
 def _audit(sop: str, step: str, input_: dict, output: str, seconds: float) -> None:
-    entry = {"ts": datetime.now().isoformat(), "sop": sop, "step": step,
+    entry = {"ts": business_now().isoformat(), "sop": sop, "step": step,
              "input": input_, "output": output, "seconds": round(seconds, 2)}
     try:
         os.makedirs(os.path.dirname(_AUDIT_FILE), exist_ok=True)
@@ -198,7 +199,7 @@ def load_pending(chat_id: str) -> dict | None:
         if not row:
             return None
         # 过期清理：24 小时未确认的待确认单自动作废（曾无过期，僵尸单堆积）
-        if row[3] and (datetime.now() - row[3]).total_seconds() > 86400:
+        if row[3] and (business_now() - row[3]).total_seconds() > 86400:
             clear_pending(chat_id)
             return None
         return {"params": json.loads(row[0]), "emp": json.loads(row[1]),
@@ -264,7 +265,7 @@ def _load_employees_db() -> list[dict]:
 
 def _gen_apply_no(prefix: str) -> str:
     """申请单号：前缀+日期+8位随机hex（与历史 LEAVE20260818XXXXXXXX 同格式）"""
-    return f"{prefix}{datetime.now().strftime('%Y%m%d')}{secrets.token_hex(4).upper()}"
+    return f"{prefix}{business_now().strftime('%Y%m%d')}{secrets.token_hex(4).upper()}"
 
 
 def _resolve_approver(business_type: str, emp: dict) -> int | None:

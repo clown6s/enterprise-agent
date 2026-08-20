@@ -17,6 +17,7 @@ import json
 import re
 
 from .. import config, llm
+from ..time_context import now as business_now
 from . import acl
 import logging
 log = logging.getLogger(__name__)
@@ -304,7 +305,6 @@ def try_answer(query: str, user: str = "") -> str | None:
     if not tables:
         return None
     schema_block = _build_schema_with_joins(tables)
-    from datetime import datetime
     sql, params = "", []
     # 生成重试 3 次（曾"最近7天"窗口问法偶发生成失败/空模板漏回兜底，9/10 稳定性；
     # verify 模型 ReadTimeout 抖动是"李娜是哪年来的"类变体偶发失败根因，
@@ -313,7 +313,7 @@ def try_answer(query: str, user: str = "") -> str | None:
         try:
             raw = llm.verify_chat("", _GEN_PROMPT.format(
                 schema=schema_block, query=query,
-                today=datetime.now().strftime("%Y-%m-%d")), temperature=0.1).strip()
+                today=business_now().strftime("%Y-%m-%d")), temperature=0.1).strip()
             m = re.search(r"\{.*\}", raw, re.S)
             plan = json.loads(m.group()) if m else {}
             sql, params = plan.get("sql_template"), plan.get("params") or []

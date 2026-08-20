@@ -19,6 +19,7 @@ from datetime import datetime
 import pymysql
 
 from .. import config, embeddings, milvus_store
+from ..time_context import now as business_now
 import logging
 log = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dic
             cur.execute(
                 "INSERT INTO feedback_adopt (query_hash, query, answer, source, adopted_by, created_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
-                (qh, query, answer, source or "", user, datetime.now()),
+                (qh, query, answer, source or "", user, business_now()),
             )
         conn.commit()
         conn.close()
@@ -209,7 +210,7 @@ def record_unhelpful(query: str, answer: str, correction: str = "", user: str = 
     if correction and correction.strip():
         with open(_PENDING_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps({
-                "ts": datetime.now().isoformat(),
+                "ts": business_now().isoformat(),
                 "query": query,
                 "answer": answer,
                 "correction": correction.strip(),

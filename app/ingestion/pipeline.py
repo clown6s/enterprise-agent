@@ -19,6 +19,7 @@ from datetime import datetime
 
 from .. import config, embeddings, milvus_store
 from ..service import graph
+from ..time_context import now as business_now
 from . import parse
 
 _LOG = os.path.join(config.LOG_DIR, "ingestion.jsonl")
@@ -155,7 +156,7 @@ def _record_ingested(sha: str, doc_id: str, filename: str, title: str, chunks: i
     try:
         os.makedirs(os.path.dirname(_INGESTED_FILE), exist_ok=True)
         with open(_INGESTED_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": datetime.now().isoformat(), "sha": sha,
+            f.write(json.dumps({"ts": business_now().isoformat(), "sha": sha,
                                 "docId": doc_id, "file": filename, "title": title,
                                 "chunks": chunks}, ensure_ascii=False) + "\n")
     except OSError:
@@ -172,7 +173,7 @@ def _graph_build_bg(chunks: list[str], doc_id: str, filename: str) -> None:
 
 
 def _log(action: str, **fields) -> None:
-    entry = {"ts": datetime.now().isoformat(), "action": action, **fields}
+    entry = {"ts": business_now().isoformat(), "action": action, **fields}
     try:
         os.makedirs(os.path.dirname(_LOG), exist_ok=True)
         with open(_LOG, "a", encoding="utf-8") as f:
