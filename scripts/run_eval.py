@@ -5,19 +5,41 @@
   - retrieval   检索命中（hitRate/MRR）
   - all         两者都跑（默认）
 
+LLM replay 模式（dsh 三-2/三-3）：
+  --record   调真 LLM 录 fixture（升级模型/改提示词后手动跑一次）
+  --replay   从 fixture 读，不调真 LLM（CI push 门跑——零成本、确定性）
+  不传则调真 LLM（当前默认行为）
+
 这是"自我优化"的入口：每次改完代码先跑回归，失败用例即待修清单。
 """
 import io
+import os
 import sys
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.dirname(__import__("os").path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.learn import eval_engine  # noqa: E402
 
 
+def _make_replay():
+    """从 CLI 参数解析 replay 模式；返回 LLMReplay 或 None。"""
+    if "--replay" in sys.argv:
+        from app.llm_replay import LLMReplay
+        return LLMReplay("replay", os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "eval", "fixtures"))
+    if "--record" in sys.argv:
+        from app.llm_replay import LLMReplay
+        return LLMReplay("record", os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "eval", "fixtures"))
+    return None
+
+
 def run_regression() -> int:
-    report = eval_engine.run_regression()
+    replay = _make_replay()
+    report = eval_engine.run_regression(replay=replay)
     print(f"\n=== 问答回归: {report['passed']}/{report['total']} 通过 ===")
     for r in report["results"]:
         mark = "✓" if r["passed"] else "✗"

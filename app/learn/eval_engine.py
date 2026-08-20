@@ -57,13 +57,18 @@ def _verify_sql(ext: dict) -> tuple[bool, str]:
     return True, f"{len(rows)} 行"
 
 
-def run_answer_case(case: dict) -> dict:
+def run_answer_case(case: dict, replay=None) -> dict:
     """执行一条断言用例，返回 {id, query, passed, checks, seconds}。
     每用例独立会话（多轮历史/待确认单不串用例）；followup 字段支持二轮断言
-    （如请假流程先回确认提示、再答"确认"后断言提交回执）。"""
+    （如请假流程先回确认提示、再答"确认"后断言提交回执）。
+
+    replay: LLMReplay 实例（可选）。非 None 时，每用例 begin_case/assert_consumed/save_case，
+    mock llm.chat/chat_stream（record 录 fixture / replay 回放 fixture / off 不拦截）。
+    """
     query = case["query"]
     expect = case.get("expect", {})
-    conversation_id = f"eval-{case.get('id', 'case')}"
+    case_id = case.get("id", "case")
+    conversation_id = f"eval-{case_id}"
     # 每用例独立会话：先清空再按需预置历史。曾只在有 history 字段时清空——
     # 无历史用例的会话里残留早期版本跑分写下的轮次（旧代码不跳 eval 会话），
     # has_history 恒 True，追问路由改变后 guard-010 被残史带偏到
@@ -73,12 +78,25 @@ def run_answer_case(case: dict) -> dict:
     if case.get("history"):
         for t in case["history"]:
             _history.save_turn(conversation_id, t.get("q", ""), t.get("a", ""))
+    # LLM replay：切换用例 fixture（replay 加载 / record 清空录制队列）
+    if replay is not None:
+        replay.begin_case(case_id)
     start = time.time()
-    result = agent.answer(query, conversation_id)
-    followup = case.get("followup")
-    if followup:
-        result = agent.answer(followup, conversation_id)
-    seconds = time.time() - start
+    try:
+        result = agent.answer(query, conversation_id)
+        followup = case.get("followup")
+        if followup:
+            result = agent.answer(followup, conversation_id)
+    finally:
+        seconds = time.time() - start
+        # replay 结束：断言 fixture 全消费（防假绿）；record 结束：保存 fixture
+        if replay is not None:
+            try:
+                replay.assert_consumed()
+            except RuntimeError as e:
+                result = result or {"answer": "", "route": "ERROR", "sources": []}
+                result["_replay_error"] = str(e)
+            replay.save_case()
 
     checks: list[tuple[str, bool, str]] = []
     answer = result.get("answer") or ""
@@ -120,12 +138,23 @@ def run_answer_case(case: dict) -> dict:
     }
 
 
-def run_regression(path: str | None = None) -> dict:
-    """跑全量回归，返回报告；用例文件默认 eval/regression_cases.json"""
+def run_regression(path: str | None = None, replay=None) -> dict:
+    """跑全量回归，返回报告；用例文件默认 eval/regression_cases.json
+
+    replay: LLMReplay 实例（可选）。非 None 时激活 mock 并在每用例切换 fixture。
+    mode=record 录 fixture；replay 回放 fixture（零成本）；off 不拦截。
+    """
     path = path or os.path.join(_EVAL_DIR, "regression_cases.json")
     with open(path, encoding="utf-8") as f:
         cases = json.load(f)
-    results = [run_answer_case(c) for c in cases]
+    # 激活 LLM mock（patch llm.chat/chat_stream）；try/finally 恢复
+    if replay is not None:
+        replay.activate()
+    try:
+        results = [run_answer_case(c, replay) for c in cases]
+    finally:
+        if replay is not None:
+            replay.deactivate()
     passed = sum(1 for r in results if r["passed"])
     return {
         "total": len(results),
