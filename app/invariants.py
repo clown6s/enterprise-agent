@@ -143,16 +143,5 @@ def check_validated_sql(final_sql: str, raw_sql: str, tables: list[dict]) -> tup
     return True, ""
 
 
-def check_audit_fields() -> tuple[bool, str]:
-    """SOP 审计事件字段完整性：sop/step/ts/output 必填（成对性/可回放的前提）"""
-    entry = _load_audit_tail()
-    if entry is None:
-        return True, "（无审计文件，跳过）"
-    for field in ("sop", "step", "ts", "output"):
-        if not entry.get(field):
-            return False, f"审计事件缺字段 {field}: {entry}"
-    return True, ""
-
-
 register("answer_contract", check_answer_contract)
 register("audit_fields", check_audit_fields)
