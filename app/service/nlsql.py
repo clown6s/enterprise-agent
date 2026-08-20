@@ -171,17 +171,17 @@ def _visible_tables(user: str) -> list[dict]:
     return out
 
 
-# 表间关联关系（跨表 JOIN 用——模型需要知道怎么连，不只是能连）
-# 格式：(源表, 目标表, ON 条件, 语义描述)
-# 只用 query_schema 已注册列：employee.dept（部门文本）、biz_expense.dept_name（部门文本）、
-# biz_expense.emp_name = employee.name（人名匹配）
+# 表间关联关系（跨表 JOIN 用——模型需要知道怎么连，不只是能连）。
+# 身份关联必须使用唯一员工姓名，不能用部门名：部门是一对多，按部门 JOIN
+# 明细会把每条报销复制为部门人数倍（研发部 3 人→3 倍，曾实况 3 条变 9 条）。
+# 部门维度查询应使用 EXISTS/子查询过滤，不直接拿部门名作为明细 JOIN 键。
 _JOINS = [
     ("biz_expense", "employee",
-     "biz_expense.dept_name = employee.dept",
-     "报销→员工（按部门名匹配）：查某人所在部门的所有报销记录"),
+     "biz_expense.emp_name = employee.name",
+     "报销→员工（按员工姓名唯一关联）：跨表查员工与报销字段"),
     ("employee", "biz_expense",
-     "employee.dept = biz_expense.dept_name",
-     "员工→报销（按部门名匹配）：查某部门所有员工的报销汇总"),
+     "employee.name = biz_expense.emp_name",
+     "员工→报销（按员工姓名唯一关联）：查员工的报销明细/汇总"),
 ]
 
 # 注册表原始列（含 PII）快照——_validate 校验 JOIN ON 条件引用列时需要
@@ -370,9 +370,20 @@ def try_answer(query: str, user: str = "") -> str | None:
                     raise
             rows = cur.fetchall()
             cols = [d[0] for d in cur.description]
+            # 明细 JOIN 防线：完全相同的结果行只保留一份。
+            # 正确身份 JOIN 应从源头避免倍增；这里作为通用最后防线，不合并
+            # 含不同字段/金额的真实记录，也不影响聚合结果。
+            if len(rows) > 1:
+                unique_rows = list(dict.fromkeys(rows))
+                if len(unique_rows) != len(rows):
+                    log.warning("nlsql_duplicate_rows_collapsed", extra={
+                        "event": "nlsql_duplicate_rows_collapsed",
+                        "fields": {"before": len(rows), "after": len(unique_rows)}})
+                    rows = unique_rows
         conn.close()
     except Exception as e:
-        log.error(f"执行失败: {e!r} | {final_sql}")
+        log.error("nlsql_execute_failed", extra={"event": "nlsql_execute_failed", "fields": {
+            "error_type": type(e).__name__, "sql_len": len(final_sql)}})
         return None
     labels = {c["name"].lower(): (c.get("desc") or c["name"]) for t in tables for c in t["columns"]}
     # 聚合别名回退（模型起的 total_count/sum_amount 等别名尾缀匹配不上注册列

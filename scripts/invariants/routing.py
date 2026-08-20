@@ -57,3 +57,10 @@ def run(check) -> None:
         check("坏插件跳过不崩", domains._load() == [])
     finally:
         config._env = _orig_env
+
+    # 22. NL2SQL 明细结果完全重复行折叠契约（不重复展示同一真实行）
+    duplicate_rows = [("张伟", "交通费", 356.5), ("张伟", "交通费", 356.5),
+                      ("陈杰", "交通费", 100)]
+    unique_rows = list(dict.fromkeys(duplicate_rows))
+    check("NL2SQL 重复明细行折叠", len(unique_rows) == 2
+          and unique_rows[0] == duplicate_rows[0])
