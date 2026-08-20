@@ -1,10 +1,17 @@
-dsh 六条最佳实践落地：决策记录+复盘制度+单调守卫+运行时不变量+外部验证+冒烟测试
+幂等性契约 + Feishu 持久化去重 + 清理死文件 + 文档更新
 
-- ⑥ docs/decisions/ 决策记录制度（四段式，已记去 OA 化/无预闸/包装层三大决策）+ ⑤ docs/postmortem/ 复盘制度（0001：路由预判正则三轮补丁全废）
-- ③ guards.GUARD_REGISTRY 守卫注册表 + run_guard_chain（单调否决契约：只读否决无 allow，注册顺序无法翻盘；verify 链从注册表装配）
-- ④ app/invariants.py 运行时不变量服务（answer 出口契约/NL2SQL 校验先于执行/SOP 审计字段完整性，失败写 alert_event 告警表）
-- ① eval_engine 加 verify_sql 外部验证断言（guard-001/003b/011 挂真实库断言——答案数字必须与库一致、落库必须真实发生）
-- ② scripts/smoke_qa.py 带密钥冒烟（探活+数据面/SOP/审批/路由跨层真实链路+外部验证，1-2 分钟）
-- CLAUDE.md 制度节：改行为必附决策、重大实况必附复盘、大改后必跑冒烟+矩阵+回归+不变量
-- 修复：invariants 缺 import re（NL2SQL 执行段炸数据面全兜底）、Milvus 探活端点误用 19530/healthz（正确 9091/healthz）
-- 验证：冒烟全绿、回归 29/29（含外部验证断言）、不变量 53/53、guards 矩阵 18/18
+第 2 项·幂等性契约：
+- DB UNIQUE 约束已验证就绪（apply_no 各表 + oa_approval_record(apply_no,level)）
+- feishu.py _on_message 去重从纯内存 _seen 升级为持久化表 feishu_event_seen
+  + 内存热缓存双层；重启不丢去重状态，DB 不可用时回退内存不阻断消息
+- test_idempotency.py 6 项：审批重复操作幂等 + apply_no UNIQUE 约束 + 飞书重投去重
+
+清理：
+- 删除死文件：main.py（unused FastAPI starter）、test_main.http、
+  data/commit_msg_tmp.txt + 5 个探针工作笔记
+- .gitignore 补 .coverage/htmlcov
+- CLAUDE.md 目录树刷新：补 request_context.py、test_startup/request_context/
+  mutation/idempotency.py；config 加 validate_config 说明；logging_config 加 RequestIdFilter
+
+验证：guards 18/18 + invariants 61/61 + startup 22/22 + request_context 9/9 全绿；
+idempotency 6/6（需 MySQL）；mutation 拦截确认

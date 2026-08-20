@@ -179,11 +179,8 @@ class FeishuChannel:
             msg = data.event.message
             message_id = getattr(msg, "message_id", None) or ""
             chat_id = getattr(msg, "chat_id", None) or ""
-            if not message_id or message_id in self._seen:
+            if not message_id or not self._mark_seen(message_id):
                 return
-            self._seen.add(message_id)
-            if len(self._seen) > 2000:
-                self._seen.clear()
             mtype = getattr(msg, "message_type", None) or ""
             content = getattr(msg, "content", None) or "{}"
             # 提问者标识（open_id）——检索 ACL 过滤与审计/反馈落库用
@@ -196,6 +193,35 @@ class FeishuChannel:
                              args=(chat_id, message_id, mtype, content, open_id)).start()
         except Exception as e:
             log.warning(f"事件处理异常: {e}")
+
+    def _mark_seen(self, message_id: str) -> bool:
+        """事件去重：持久化表 feishu_event_seen 为第一层（重启不丢），
+        内存 _seen 热缓存为第二层（减少 DB 访问）。返回 True=首次，False=重复。"""
+        # 热缓存命中 → 已处理
+        if message_id in self._seen:
+            return False
+        # 持久化层：INSERT 失败（主键冲突）= 已处理
+        try:
+            from .. import config
+            import pymysql
+            conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
+                                   user="root", password=config.MYSQL_PASSWORD,
+                                   database=config.MYSQL_DB, charset="utf8mb4",
+                                   connect_timeout=2)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT IGNORE INTO feishu_event_seen (message_id) VALUES (%s)",
+                    (message_id,))
+            conn.commit()
+            conn.close()
+            if cur.rowcount == 0:
+                return False   # 主键冲突 → 已处理过
+        except Exception:
+            pass   # DB 不可用时回退到仅内存去重（不阻断消息）
+        self._seen.add(message_id)
+        if len(self._seen) > 2000:
+            self._seen.clear()
+        return True
 
     def _handle(self, chat_id: str, message_id: str, mtype: str, content: str,
                 open_id: str = "") -> None:

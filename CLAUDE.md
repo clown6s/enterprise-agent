@@ -8,8 +8,9 @@
 ```
 run.py                  # 启动入口：python run.py（--reload 热重载）→ 8080
 app/
-  config.py             # .env 加载（根目录 .env，不是 app/.env）
-  logging_config.py     # 统一日志配置 setup()（print→logging 迁移后启动接线）
+  config.py             # .env 加载（根目录 .env，不是 app/.env）；validate_config() 启动体检
+  logging_config.py     # 统一日志配置 setup() + RequestIdFilter（print→logging 迁移后启动接线）
+  request_context.py    # 请求关联 ID（ContextVar + set/get/reset，HTTP/飞书线程共享）
   llm.py                # LLM 注册表 + 降级链（chat_chain/chat_stream_chain/verify_chat）
                         # 手写 httpx OpenAI 兼容客户端；校验=智谱 GLM-4.6 独立裁判
   prompts.py            # 提示词集中管理（系统/校验/图谱收紧规则；改提示词必须跑回归）
@@ -42,6 +43,10 @@ scripts/
   test_routers.py      # 路由层 21 项（TestClient + 注入 token，跳过飞书 lifespan）
   test_parse.py        # 文档解析 27 项（离线 + 内存构造 docx）
   test_pipeline.py     # 摄入管线 27 项（切分核心 + mock 嵌入/Milvus）
+  test_startup.py      # 真实入口启动测试 22 项（FastAPI 装配+路由+healthz+配置，离线）
+  test_request_context.py # 请求关联 ID 9 项（ContextVar+filter+HTTP middleware+飞书线程）
+  test_mutation.py     # 变异测试（证明 guards 测试有拦截能力，临时目录不污染工作区）
+  test_idempotency.py  # 幂等性契约 6 项（DB UNIQUE+审批重复+飞书持久化去重，需 MySQL）
 eval/                   # regression_cases.json（29 用例）+ retrieval_baseline.json
 ```
 
