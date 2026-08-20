@@ -42,24 +42,62 @@ class LLMReplay:
         self._consumed = 0                      # replay 时消费了多少条
         self._real_chat = None                  # 原始 llm.chat（patch 时保存）
         self._real_chat_stream = None           # 原始 llm.chat_stream
+        self._real_embed = None
+        self._real_embed_batch = None
+        self._real_rerank = None
+        self._real_search = None
+        self._real_dense_search = None
 
     def activate(self):
-        """patch llm.chat + llm.chat_stream 为 mock（保存原始引用）。"""
+        """patch llm.chat + llm.chat_stream + 检索层 为 mock（保存原始引用）。
+
+        检索 mock：replay 模式下 embeddings.embed/embed_batch/rerank +
+        milvus_store.search/dense_search 从 fixture 读，不调真 Milvus/嵌入 API。
+        这样 replay 只依赖 MySQL（verify_sql 用），CI 可用 service container 或
+        跳过 verify_sql 用例。
+        """
         from . import llm
         self._real_chat = llm.chat
         self._real_chat_stream = llm.chat_stream
         llm.chat = self._mock_chat
         llm.chat_stream = self._mock_chat_stream
-        log.info("LLM replay 模式=%s，fixture_dir=%s", self.mode, self.fixture_dir)
+
+        if self.mode in ("record", "replay"):
+            from . import embeddings, milvus_store
+            self._real_embed = embeddings.embed
+            self._real_embed_batch = embeddings.embed_batch
+            self._real_rerank = embeddings.rerank
+            self._real_search = milvus_store.search
+            self._real_dense_search = milvus_store.dense_search
+            embeddings.embed = self._mock_embed
+            embeddings.embed_batch = self._mock_embed_batch
+            embeddings.rerank = self._mock_rerank
+            milvus_store.search = self._mock_search
+            milvus_store.dense_search = self._mock_dense_search
+
+        log.info("LLM replay 模式=%s，fixture_dir=%s（含检索 mock）",
+                 self.mode, self.fixture_dir)
 
     def deactivate(self):
-        """恢复原始 llm.chat + llm.chat_stream。"""
+        """恢复原始 llm.chat + llm.chat_stream + 检索层。"""
         from . import llm
         if self._real_chat is not None:
             llm.chat = self._real_chat
             llm.chat_stream = self._real_chat_stream
             self._real_chat = None
             self._real_chat_stream = None
+        if self._real_embed is not None:
+            from . import embeddings, milvus_store
+            embeddings.embed = self._real_embed
+            embeddings.embed_batch = self._real_embed_batch
+            embeddings.rerank = self._real_rerank
+            milvus_store.search = self._real_search
+            milvus_store.dense_search = self._real_dense_search
+            self._real_embed = None
+            self._real_embed_batch = None
+            self._real_rerank = None
+            self._real_search = None
+            self._real_dense_search = None
 
     def begin_case(self, case_id: str):
         """切换到新用例：record 清空录制队列；replay 加载该用例 fixture。"""
@@ -146,3 +184,80 @@ class LLMReplay:
         with open(path, encoding="utf-8") as f:
             self._replay_queue = [json.loads(l) for l in f if l.strip()]
         log.info("fixture 已加载：%s（%d 条调用）", path, len(self._replay_queue))
+
+    # ---------------- 检索 mock ----------------
+
+    def _mock_embed(self, text: str, retries: int = 2) -> list[float]:
+        """replay：从 fixture 读嵌入向量；record：调真 + 录；off：透传。"""
+        if self.mode == "off":
+            return self._real_embed(text, retries=retries)
+        if self.mode == "record":
+            vec = self._real_embed(text, retries=retries)
+            self._calls.append({"fn": "embed", "system": text, "user": "",
+                                "output": vec})
+            return vec
+        return self._next_fixture("embed", text, "")
+
+    def _mock_embed_batch(self, texts: list[str], batch_size: int = 32) -> list[list[float]]:
+        if self.mode == "off":
+            return self._real_embed_batch(texts, batch_size=batch_size)
+        if self.mode == "record":
+            vecs = self._real_embed_batch(texts, batch_size=batch_size)
+            self._calls.append({"fn": "embed_batch", "system": json.dumps(texts),
+                                "user": "", "output": vecs})
+            return vecs
+        entry = self._next_entry("embed_batch")
+        return entry["output"]
+
+    def _mock_rerank(self, query: str, documents: list[str],
+                     top_n: int | None = None) -> list[tuple[int, float]]:
+        if self.mode == "off":
+            return self._real_rerank(query, documents, top_n=top_n)
+        if self.mode == "record":
+            result = self._real_rerank(query, documents, top_n=top_n)
+            self._calls.append({"fn": "rerank", "system": query,
+                                "user": json.dumps(documents), "output": result})
+            return result
+        entry = self._next_entry("rerank")
+        return [tuple(x) for x in entry["output"]]
+
+    def _mock_search(self, vector: list[float], query_text: str,
+                     top_k: int = 12, expr: str | None = None) -> list[dict]:
+        if self.mode == "off":
+            return self._real_search(vector, query_text, top_k=top_k, expr=expr)
+        if self.mode == "record":
+            hits = self._real_search(vector, query_text, top_k=top_k, expr=expr)
+            self._calls.append({"fn": "search", "system": query_text,
+                                "user": "", "output": hits})
+            return hits
+        entry = self._next_entry("search")
+        return entry["output"]
+
+    def _mock_dense_search(self, vector: list[float], top_k: int,
+                           expr: str | None = None) -> list[dict]:
+        if self.mode == "off":
+            return self._real_dense_search(vector, top_k, expr=expr)
+        if self.mode == "record":
+            hits = self._real_dense_search(vector, top_k, expr=expr)
+            self._calls.append({"fn": "dense_search", "system": "",
+                                "user": "", "output": hits})
+            return hits
+        entry = self._next_entry("dense_search")
+        return entry["output"]
+
+    def _next_entry(self, fn_name: str) -> dict:
+        """从 replay 队列取下一条 fixture，校验 fn 匹配。"""
+        if self._consumed >= len(self._replay_queue):
+            raise RuntimeError(
+                f"fixture 耗尽：{self._case_id} 第 {self._consumed + 1} 次调用无 fixture")
+        entry = self._replay_queue[self._consumed]
+        self._consumed += 1
+        if entry["fn"] != fn_name:
+            raise RuntimeError(
+                f"fixture 不匹配：期望 {entry['fn']}，实际 {fn_name}"
+                f"（{self._case_id} #{self._consumed}）")
+        return entry
+
+    def _next_fixture(self, fn_name: str, system: str, user: str):
+        """_next_entry 的别名，返回 output 字段。"""
+        return self._next_entry(fn_name)["output"]

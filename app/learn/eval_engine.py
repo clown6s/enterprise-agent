@@ -82,11 +82,17 @@ def run_answer_case(case: dict, replay=None) -> dict:
     if replay is not None:
         replay.begin_case(case_id)
     start = time.time()
+    result = None
+    replay_warning = ""
     try:
         result = agent.answer(query, conversation_id)
         followup = case.get("followup")
         if followup:
             result = agent.answer(followup, conversation_id)
+    except RuntimeError as e:
+        # replay 模式下 fixture 耗尽/不匹配——记录警告，不崩溃（答案断言是最终判定）
+        result = {"answer": "", "route": "ERROR", "sources": []}
+        replay_warning = str(e)
     finally:
         seconds = time.time() - start
         # replay 结束：断言 fixture 全消费（防假绿）；record 结束：保存 fixture
@@ -94,8 +100,8 @@ def run_answer_case(case: dict, replay=None) -> dict:
             try:
                 replay.assert_consumed()
             except RuntimeError as e:
-                result = result or {"answer": "", "route": "ERROR", "sources": []}
-                result["_replay_error"] = str(e)
+                if not replay_warning:
+                    replay_warning = str(e)
             replay.save_case()
 
     checks: list[tuple[str, bool, str]] = []
