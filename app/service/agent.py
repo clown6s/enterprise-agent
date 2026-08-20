@@ -30,6 +30,27 @@ from ..plan import approvals as _approvals  # noqa: F401  导入即注册（报�
 from . import acl, docwizard, graph, history, multihop, nlsql, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
 
+
+class Route:
+    """对外 route 字符串的单一登记处；值保持前端/飞书协议兼容。"""
+    DATA = "DATA"
+    SOP = "SOP"
+    APPROVAL = "APPROVAL"
+    KNOWLEDGE_QA = "KNOWLEDGE_QA"
+    CHAT = "CHAT"
+    CLARIFY = "CLARIFY"
+    GUARD = "GUARD"
+    DOC_WIZARD = "DOC_WIZARD"
+    ERROR = "ERROR"
+
+
+def _result(answer: str, route: str, sources: list | None = None,
+            chart=None, **extra) -> dict:
+    """统一答案结果结构，防止新增出口漏 sources/chart/route。"""
+    return {"answer": answer, "sources": sources or [], "route": route,
+            "chart": chart, **extra}
+
+
 # ---------------- 意图与关键词模式 ----------------
 
 # 短实体名词查询（"宫崎骏"3 字）不追问：让检索兜底（无结果走 NO_ANSWER）
@@ -63,13 +84,13 @@ def route(query: str, has_history: bool = False) -> str:
     与追问统一解析口径不一致（不变量测试抓出的实况）。"""
     q = query.strip()
     if _CHAT_WORDS.search(q):
-        return "CHAT"
+        return Route.CHAT
     if _CLARIFY_GUARD.search(q) and not _DATA_DAYS.search(q):
         if has_history and (_REFERENTS.search(q) or _META_QUESTION.search(q)
                             or _CONNECTORS.match(q) or _QUESTION_ELIDE.match(q)):
-            return "KNOWLEDGE_QA"
-        return "CLARIFY"
-    return "KNOWLEDGE_QA"
+            return Route.KNOWLEDGE_QA
+        return Route.CLARIFY
+    return Route.KNOWLEDGE_QA
 
 
 def _rewrite_query(query: str) -> str:
@@ -223,7 +244,7 @@ def _try_synonym_recovery(query: str, search_query: str, turns: list[dict],
     # penalize（负向强化闭环：恢复答案被否定 → 词对失败计数）
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
             "sources": sorted({h["source"] for h in hits if h.get("source")}),
-            "route": "KNOWLEDGE_QA", "chart": None,
+            "route": Route.KNOWLEDGE_QA, "chart": None,
             "_learned_pairs": [(trigger, v) for v in variants]}
 
 
@@ -254,7 +275,7 @@ def _try_graph_fallback(query: str, turns: list[dict], fb: str,
         return None
     final = "以下内容基于知识图谱关联（无文档来源，仅供参考）：\n" + final
     _maybe_enqueue_review(conversation_id, query, final)
-    return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+    return _result(final, Route.KNOWLEDGE_QA)
 
 
 def _attention_gap(query: str, context: str) -> bool:
@@ -366,7 +387,7 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
     except Exception as e:
         # 异常也落审计（曾只记 SUCCESS——看板 errorCount 恒 0，故障不可见）
         if not history.is_test_conversation(conversation_id):
-            _record_audit(query, {"answer": "", "route": "ERROR", "sources": []},
+            _record_audit(query, {"answer": "", "route": Route.ERROR, "sources": []},
                           _t.time() - _t0, user, 0, endpoint=endpoint,
                           status="ERROR", error=str(e)[:200])
         raise
@@ -430,14 +451,14 @@ def _route_early(query: str, conversation_id: str, user: str,
     """
     # 提示注入拦截（确定性，先于一切路由——用户消息级注入防线）
     if guards.contains_injection(query):
-        return {"answer": guards.INJECTION_BLOCKED, "sources": [], "route": "GUARD", "chart": None}
+        return _result(guards.INJECTION_BLOCKED, Route.GUARD)
 
     # 采纳升级直答层
     hit = adopted_qa.lookup(query)
     if hit:
         return {"answer": hit["answer"],
                 "sources": [hit["source"]] if hit.get("source") else [],
-                "route": "KNOWLEDGE_QA", "chart": None}
+                "route": Route.KNOWLEDGE_QA, "chart": None}
 
     # 多跳编排（复合问题拆解分派后合并）
     try:
@@ -446,7 +467,7 @@ def _route_early(query: str, conversation_id: str, user: str,
         mh_ans = None
     if mh_ans:
         return {"answer": guards.fix_output(mh_ans), "sources": [],
-                "route": "DATA", "chart": None}
+                "route": Route.DATA, "chart": None}
 
     # NL2SQL 表查询层（追问改写前置：指代追问先补全再进数据面）
     nlsql_q = _resolve_query(query, turns)
@@ -456,32 +477,32 @@ def _route_early(query: str, conversation_id: str, user: str,
         sql_ans = None
     if sql_ans:
         return {"answer": guards.fix_output(sql_ans), "sources": [],
-                "route": "DATA", "chart": None}
+                "route": Route.DATA, "chart": None}
 
     # 文档多轮修改 + 文档生成
     if tools.is_enabled("doc_wizard"):
         revised = docwizard.revise(conversation_id, query)
         if revised:
             return {"answer": "已更新到云文档（在线可编辑）：\n" + revised,
-                    "sources": [], "route": "DOC_WIZARD", "chart": None}
+                    "sources": [], "route": Route.DOC_WIZARD, "chart": None}
         doc = docwizard.try_generate(query, "", conversation_id)
         if doc:
             if doc.get("needs_form"):
                 return {"answer": "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。",
-                        "sources": [], "route": "DOC_WIZARD", "chart": None}
-            return {"answer": doc["answer"], "sources": [], "route": "DOC_WIZARD", "chart": None}
+                        "sources": [], "route": Route.DOC_WIZARD, "chart": None}
+            return {"answer": doc["answer"], "sources": [], "route": Route.DOC_WIZARD, "chart": None}
 
     # 待确认单的确认/取消（人机协同闸门——先于 SOP 匹配）
     pending = sop_engine.try_confirm_or_cancel(conversation_id, query)
     if pending:
         return {"answer": guards.fix_output(pending["answer"]), "sources": [],
-                "route": "SOP", "chart": None}
+                "route": Route.SOP, "chart": None}
 
     # 审批指令（审批人回复"同意/拒绝 [单号]"）
     approval_hit = approval_flow.try_approval_command(query, user)
     if approval_hit:
         return {"answer": guards.fix_output(approval_hit["answer"]), "sources": [],
-                "route": "APPROVAL", "chart": None}
+                "route": Route.APPROVAL, "chart": None}
 
     # SOP 状态机（双重开关：skill 表 + sop 表）
     _sop_def = sop_engine.match(query)
@@ -490,7 +511,7 @@ def _route_early(query: str, conversation_id: str, user: str,
     if sop:
         result = sop_engine.execute(sop, query, conversation_id)
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
-                "route": "SOP", "chart": None}
+                "route": Route.SOP, "chart": None}
 
     return None   # 未命中早期路由，进入 route() 分支
 
@@ -526,26 +547,26 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
             raw = _llm_call(user_prompt, stream=stream)
             final = verify.verify(raw, f"{hblock}\n{fb}" if fb else hblock, query="")
             _maybe_enqueue_review(conversation_id, query, final)
-            return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+            return _result(final, Route.KNOWLEDGE_QA)
         if fb:
             user_prompt = f"【资料】\n{fb}\n\n【用户问题】\n{query}"
             raw = _llm_call(user_prompt, stream=stream)
             final = verify.verify(raw, fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
-            return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+            return _result(final, Route.KNOWLEDGE_QA)
         graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             return graph_fb
         gap_discovery.record_gap(query, conversation_id)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
-        return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+        return _result(_NO_ANSWER_GAP, Route.KNOWLEDGE_QA)
     sources = sorted({h["source"] for h in hits if h.get("source")})
     ctx_main = guards.strip_injection_sentences(
         retrieval.build_context([h for h in hits if not h.get("_expanded")]))
     if _attention_gap(query, ctx_main):
         gap_discovery.record_gap(query, conversation_id)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
-        return {"answer": _NO_ANSWER_GAP, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+        return _result(_NO_ANSWER_GAP, Route.KNOWLEDGE_QA)
     prefix = f"【资料】\n{context}"
     if fb:
         prefix += f"\n\n【文件上下文】\n{fb}"
@@ -567,9 +588,9 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
         if graph_fb:
             return graph_fb
         gap_discovery.record_gap(query, conversation_id)
-        return {"answer": final, "sources": [], "route": "KNOWLEDGE_QA", "chart": None}
+        return _result(final, Route.KNOWLEDGE_QA)
     return {"answer": _anchor_short_query(query, final, hits[0].get("source", "")),
-            "sources": sources, "route": "KNOWLEDGE_QA", "chart": None}
+            "sources": sources, "route": Route.KNOWLEDGE_QA, "chart": None}
 
 
 def _llm_call(user_prompt: str, *, stream: bool = False) -> str:
@@ -601,10 +622,10 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         # "请确认报销申请：王强…"话术——闲聊是开场语，历史无益且污染）
         return {"answer": guards.clean_cjk_spacing(
                     llm.chat_chain(prompts.render_prompt(prompts.SYSTEM_PROMPT, date=_today_line()), query)),
-                "sources": [], "route": "CHAT", "chart": None}
+                "sources": [], "route": Route.CHAT, "chart": None}
     if r == "CLARIFY":
         return {"answer": "抱歉，我没太理解你的问题。可以再具体一点吗？比如补充对象、时间或背景。",
-                "sources": [], "route": "CLARIFY", "chart": None}
+                "sources": [], "route": Route.CLARIFY, "chart": None}
 
     # 知识问答与流式路径共用核心（stream=False：完整 chat_chain）
     return _answer_knowledge_qa(query, conversation_id, user, file_block, turns, stream=False)
