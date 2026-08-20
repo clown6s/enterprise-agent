@@ -54,9 +54,23 @@ def _ensure_table() -> None:
 
 
 def save_turn(conversation_id: str, query: str, answer: str) -> None:
-    """落一轮问答（软依赖；空会话/空答案跳过）"""
+    """落一轮问答（软依赖；空会话/空答案跳过）。
+
+    双写：MySQL chat_history 表（主读）+ append-only 事件日志（dsh 一-4，
+    审计完整性事实源）。事件日志写失败不阻断（软依赖）。
+    """
     if not conversation_id or not query.strip() or not answer.strip():
         return
+    # 旁路双写：append-only 事件日志（不切主读，等稳定后再切投影读取）
+    try:
+        from . import event_log
+        event_log.append(conversation_id, "turn_user",
+                          {"query": query.strip()[:500]})
+        event_log.append(conversation_id, "turn_assistant",
+                          {"answer": answer.strip()[:2000],
+                           "route": "", "sources": []})
+    except Exception:
+        pass   # 事件日志是软依赖旁路，不阻断主链路
     try:
         _ensure_table()
         conn = _conn()
