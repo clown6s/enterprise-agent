@@ -446,16 +446,20 @@ class FeishuChannel:
                 else:
                     m["c%d" % c] = cell
             row_maps.append(m)
-        vchart = {
-            "type": chart.get("chartType", "line"),
-            "data": {"values": chart.get("values", [])},
-            "xField": chart.get("xField", "date"),
-            "yField": chart.get("yField", "value"),
-            "seriesField": chart.get("seriesField", "series"),
-            "title": {"text": chart.get("title", "数据")},
-        }
         elements = [{"tag": "markdown", "content": answer[:2000]}]
-        elements.append({"tag": "chart", "chart_spec": vchart})   # snake_case（camelCase 会被拒 400）
+        # 纯表格结果不渲染空 VChart：空 chart 会在飞书卡片中预留大片空白。
+        # 只有 payload 明确带 values 且 chartType 不是 table 时才绘图。
+        has_chart = bool(chart.get("values")) and chart.get("chartType") != "table"
+        if has_chart:
+            vchart = {
+                "type": chart.get("chartType", "line"),
+                "data": {"values": chart.get("values", [])},
+                "xField": chart.get("xField", "date"),
+                "yField": chart.get("yField", "value"),
+                "seriesField": chart.get("seriesField", "series"),
+                "title": {"text": chart.get("title", "数据")},
+            }
+            elements.append({"tag": "chart", "chart_spec": vchart})
         if rows:
             elements.append({"tag": "table", "page_size": 10,
                              "columns": columns, "rows": row_maps})
@@ -463,7 +467,8 @@ class FeishuChannel:
                 elements.append({"tag": "markdown", "content": "**" + chart["summary"] + "**"})
         elements.append({"tag": "hr"})
         elements.append({"tag": "markdown",
-                         "content": "数据来源：数据查询 · 图表由 VChart 渲染"})
+                         "content": "数据来源：数据查询" +
+                                    (" · 图表由 VChart 渲染" if has_chart else "")})
         return {
             "schema": "2.0",
             "config": {"update_multi": True},
