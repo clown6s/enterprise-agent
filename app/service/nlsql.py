@@ -444,7 +444,9 @@ def try_answer_result(query: str, user: str = "") -> dict | None:
     # 多行列表类结果不包装（曾包装层压缩明细列表时丢掉部门/姓名等标识列——
     # 列表本身可读性好，包装只用于单值/两行比较类）
     if len(rows) > 1:
-        return {"answer": text, "table": table}
+        # 多行结构化展示：正文只留摘要，详情交给 table 渲染，避免飞书/Web
+        # 同时展示完整文本列表+表格导致重复（用户实况：14 条正文后又重复表格）。
+        return {"answer": f"查询结果（{len(rows)} 条），详情见下方表格。", "table": table}
     return {"answer": _answer_with_llm(query, text, rows), "table": None}
 
 

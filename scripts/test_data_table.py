@@ -51,6 +51,10 @@ def test_table_payload_shape():
     check("table JSON 可序列化", isinstance(json.dumps(payload, ensure_ascii=False), str))
     check(">1 行触发表格", payload["row_count"] > 1 and payload.get("table"))
 
+    # 多行正文只保留摘要，详情由表格承载，不能双重展示
+    answer = "查询结果（2 条），详情见下方表格。"
+    check("多行正文不重复明细", "张伟" not in answer and "详情见下方表格" in answer)
+
 
 if __name__ == "__main__":
     test_fmt_table()
