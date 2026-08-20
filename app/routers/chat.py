@@ -42,11 +42,14 @@ def chat(body: dict, authorization: str | None = Header(default=None)):
     user = _auth(authorization)
     if not user:
         return _unauthorized()
-    result = agent.answer(body.get("query") or "", body.get("conversationId") or "",
+    q = (body.get("query") or "")[:40]
+    conv = body.get("conversationId") or ""
+    log.info("POST /api/rag/agent/chat query=%s conversationId=%s", q, conv)
+    result = agent.answer(body.get("query") or "", conv,
                           user=(user or {}).get("username", ""))
     return {"success": True, "message": None,
             "data": {"answer": result["answer"], "sources": result["sources"],
-                     "route": result["route"], "conversationId": body.get("conversationId") or ""}}
+                     "route": result["route"], "conversationId": conv}}
 
 
 def _sse(events: Iterator[tuple[str, object]]) -> Iterator[str]:
@@ -71,6 +74,8 @@ def chat_stream(body: dict, authorization: str | None = Header(default=None)):
         return _unauthorized()
     query = body.get("query") or ""
     conversation_id = body.get("conversationId") or ""
+    log.info("POST /api/rag/agent/chat/stream stream=1 query=%s conversationId=%s",
+             query[:40], conversation_id)
 
     def _events_with_history():
         """流式事件包装：收齐 token 后落多轮历史（与 answer() 中央落库对齐；

@@ -15,7 +15,8 @@ _FORMAT = "%(asctime)s [%(levelname)s] %(name)s [rid=%(request_id)s]: %(message)
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 # 第三方库噪声压到 WARNING（pymilvus/grpc 的连接恢复会打大量 DEBUG/INFO）
-_NOISY = ("pymilvus", "grpc", "urllib3", "httpx", "httpcore", "asyncio")
+_NOISY = ("pymilvus", "grpc", "urllib3", "httpx", "httpcore", "asyncio",
+          "neo4j", "pypdf", "pdfplumber", "lark_oapi", "pymysql")
 
 
 class RequestIdFilter(logging.Filter):

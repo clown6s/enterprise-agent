@@ -14,7 +14,9 @@
 原则：能确定性算出来的事绝不再交给模型；新数据源=后台注册表，不写代码
 （能力总线 2026-08-19 退役：5 条种子规则全并入 NL2SQL 数据面）。
 """
+import logging
 import re
+import time
 from datetime import datetime
 
 from .. import embeddings, guards, llm, milvus_store, prompts, tools
@@ -29,6 +31,8 @@ from ..plan import approval as approval_flow
 from ..plan import approvals as _approvals  # noqa: F401  导入即注册（报销/出差/采购/合同 SOP 挂进注册表）
 from . import acl, docwizard, graph, history, multihop, nlsql, retrieval, verify
 from .verify import verify_breaker_state   # 再导出：管理后台熔断状态查询仍从 agent 导入
+
+log = logging.getLogger(__name__)
 
 
 class Route:
@@ -380,8 +384,9 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
     file_block：会话文件上下文（图片 OCR 文本等），问答时作为首要依据注入。
     user：提问者标识（飞书 open_id/后台用户名）——检索 ACL 过滤与审计落库用。
     endpoint：渠道标识（feishu/chat 等）——看板按渠道监控用。"""
-    import time as _t
-    _t0 = _t.time()
+    _t0 = time.time()
+    log.info("answer_start query=%s endpoint=%s conversation_id=%s",
+             query[:40], endpoint, conversation_id or "-")
     try:
         result = _answer_inner(query, conversation_id, file_block, user)
     except Exception as e:
@@ -396,6 +401,9 @@ def answer(query: str, conversation_id: str = "", file_block: str = "",
     # 全是跑分噪音，监控数据失真）
     if not history.is_test_conversation(conversation_id):
         _record_audit(query, result, _t.time() - _t0, user, len(turns), endpoint=endpoint)
+    log.info("answer_done route=%s answer_chars=%d duration_ms=%d",
+             result.get("route", Route.ERROR), len(result.get("answer") or ""),
+             int((_t.time() - _t0) * 1000))
     # 多轮历史：本轮问答落库（兜底句式/GUARD 拦截不落——无信息量/注入文本不可回流；
     # 锚定句为展示层，剥掉再存——否则历史注入后模型再引用锚定句 → 双重锚定；
     # 评测/扫描会话不落——防跑分污染历史表）
@@ -436,8 +444,8 @@ def _record_audit(query: str, result: dict, seconds: float, user: str = "admin",
                  len(result.get("answer") or ""), round(seconds * 1000), status, error))
         conn.commit()
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("审计落库失败: %s（trace_id=%s）", e, get_request_id("-"))
 
 
 def _route_early(query: str, conversation_id: str, user: str,
@@ -538,6 +546,8 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
             if hits:
                 search_query = rewritten
     context = guards.strip_injection_sentences(retrieval.build_context(hits)) if hits else ""
+    log.info("knowledge_retrieval query=%s search_query=%s hits=%d context_chars=%d",
+             query[:30], search_query[:30], len(hits), len(context))
     hblock = history.history_block(turns)
     fb = guards.strip_injection_sentences(file_block) if file_block else ""
     if not context.strip():
@@ -554,6 +564,7 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
             final = verify.verify(raw, fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
             return _result(final, Route.KNOWLEDGE_QA)
+        log.info("knowledge_empty_context query=%s", query[:40])
         graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             return graph_fb
@@ -584,6 +595,7 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
         recovered = _try_synonym_recovery(query, search_query, turns, user, fb, conversation_id)
         if recovered:
             return recovered
+        log.info("knowledge_empty_context query=%s", query[:40])
         graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
             return graph_fb

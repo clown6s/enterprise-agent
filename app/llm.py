@@ -157,7 +157,10 @@ def chat_image(system: str, user: str, image: bytes) -> str:
     resp.raise_for_status()
     data = resp.json()
     out = data["choices"][0]["message"]["content"] or ""
-    usage.record(m["model"], len(system) + len(user), len(out), time.time() - _t0)
+    elapsed = time.time() - _t0
+    usage.record(m["model"], len(system) + len(user), len(out), elapsed)
+    log.info("chat_image 成功 model=%s prompt_chars=%d completion_chars=%d duration_ms=%d",
+             m["model"], len(system) + len(user), len(out), int(elapsed * 1000))
     return out
 
 
@@ -189,7 +192,10 @@ def chat(system: str, user: str, *,
     resp.raise_for_status()
     data = resp.json()
     content = data["choices"][0]["message"]["content"] or ""
-    usage.record(model, len(system) + len(user), len(content), time.time() - _t0)
+    elapsed = time.time() - _t0
+    usage.record(model, len(system) + len(user), len(content), elapsed)
+    log.info("chat 成功 model=%s prompt_chars=%d completion_chars=%d duration_ms=%d",
+             model, len(system) + len(user), len(content), int(elapsed * 1000))
     return content
 
 
@@ -232,4 +238,7 @@ def chat_stream(system: str, user: str, *,
             except (json.JSONDecodeError, KeyError, IndexError):
                 # 心跳/首帧（role 字段）等非内容帧直接跳过
                 continue
-    usage.record(model, len(system) + len(user), total, time.time() - _t0)
+    elapsed = time.time() - _t0
+    usage.record(model, len(system) + len(user), total, elapsed)
+    log.info("chat_stream 成功 model=%s prompt_chars=%d completion_chars=%d duration_ms=%d",
+             model, len(system) + len(user), total, int(elapsed * 1000))
