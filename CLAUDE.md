@@ -13,7 +13,8 @@ app/
   request_context.py    # 请求关联 ID（ContextVar + set/get/reset，HTTP/飞书线程共享）
   llm.py                # LLM 注册表 + 降级链（chat_chain/chat_stream_chain/verify_chat）
                         # 手写 httpx OpenAI 兼容客户端；校验=智谱 GLM-4.6 独立裁判
-  prompts.py            # 提示词集中管理（系统/校验/图谱收紧规则；改提示词必须跑回归）
+  llm_replay.py         # LLM 调用录制/回放（dsh 三-2/三-3）：record 录 fixture，replay 零成本回放
+  prompts.py            # 提示词集中管理（系统/校验/图谱收紧规则；render_prompt 严格插值 fail-loud）
   embeddings.py         # BGE-M3 嵌入 + SiliconFlow bge-reranker-v2-m3 重排
   milvus_store.py       # 混合检索（dense + sparse_bm25，RRF）
   guards.py             # 确定性守卫：NO_ANSWER 兜底 / 格式修复 / 术语核对 / 缺失术语删除 +
@@ -23,14 +24,22 @@ app/
   service/agent.py      # 编排核心：answer() + answer_stream() 双路径（只做路由，不做校验）
   service/verify.py     # 答案校验链：小模型核查 + 熔断 + 确定性守卫顺序（勿调换）
   service/retrieval.py  # 预检索 + 上下文构建
+  service/event_log.py  # Append-only 事件日志 + surface 投影（dsh 一-4，审计事实源）
   service/graph.py      # Neo4j 图谱-only 兜底（无向两跳遍历）
   service/docwizard.py  # 文档生成：触发词→标题→LLM→飞书云文档直出 + 多轮修改回写
   service/nlsql.py      # NL2SQL 数据面（query_schema 注册表 + 五关校验 + 中文标签）
-  plan/sop.py           # SOP 状态机引擎（组件化：SopDefinition steps+handlers；零业务逻辑）
+  service/history.py    # 多轮对话历史（save_turn + recent_turns + 双写事件日志）
+  service/multihop.py   # 复合问题拆解分派（NL2SQL 子查询合并）
+  service/acl.py        # 检索 ACL 过滤（doc_acl → Milvus expr，飞书/Web 身份贯通）
+  invariants.py         # 运行时不变量服务（answer_contract + audit_fields + check_validated_sql）
+  plan/sop.py           # SOP 状态机引擎（组件化：SopDefinition steps+handlers+post/observe hooks；零业务逻辑）
   plan/leave.py         # 请假 ApprovalDef（业务定义从 sop.py 外移）
-  plan/approvals.py     # 审批类 SOP 定义（报销/出差/采购/合同用印，ApprovalDef 组件）
+  plan/approvals.py     # 审批类 SOP 定义（报销/出差/采购/合同用印，ApprovalDef 组件 + observe_hooks）
   plan/registry.py      # SOP 中央注册表（单一数据源：ALL_DEFS + 派生 TABLE_MAP/COL_LABELS…）
   plan/approval.py      # 审批动作层（通过/拒绝 → 审批记录 + 多级状态机推进 + 对话审批入口）
+  plan/pending_state.py # SOP 待确认单 state replace 强校验（dsh 一-5，字段白名单 + 先计划后提交）
+  plan/status_events.py # 审批状态事件日志（dsh 一-12，append-only 事件 + 折叠投影）
+  domains/              # 领域插件（.env DOMAIN_PLUGINS 开关，行业知识与主流程解耦）
   learn/                # 自我优化：反馈回流 / 缺口聚类 / 用量追踪 / 校验熔断
   channels/feishu.py    # 飞书：lark-oapi WS + 卡片 + 图片 OCR + 通讯录同步 + 主动推送
   routers/              # auth / chat(SSE) / health / feedback / admin / ingestion
@@ -47,7 +56,11 @@ scripts/
   test_request_context.py # 请求关联 ID 9 项（ContextVar+filter+HTTP middleware+飞书线程）
   test_mutation.py     # 变异测试（证明 guards 测试有拦截能力，临时目录不污染工作区）
   test_idempotency.py  # 幂等性契约 6 项（DB UNIQUE+审批重复+飞书持久化去重，需 MySQL）
-eval/                   # regression_cases.json（29 用例）+ retrieval_baseline.json
+  test_event_log.py    # 事件日志 11 项（seq 连续+投影截断+replay 完整+空会话）
+  test_pending_state.py # State replace 校验 12 项（白名单+系统字段拒绝+系统源+空变更）
+  test_status_events.py # 状态事件 15 项（合法/非法转移+replay+current 折叠+空）
+  verify_doc_types.py  # 文档 type-equiv 防漂移（dsh 二-7，inspect 源码签名比对登记）
+eval/                   # regression_cases.json（29 用例）+ retrieval_baseline.json + fixtures/
 ```
 
 ## 新增/修改归属表（"我要加 X → 改哪里"）
