@@ -419,23 +419,27 @@ def _record_audit(query: str, result: dict, seconds: float, user: str = "admin",
         pass
 
 
-def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
-                  user: str = "") -> dict:
+def _route_early(query: str, conversation_id: str, user: str,
+                file_block: str, turns: list[dict]) -> dict | None:
+    """共享路由决策（步骤 1-9）：injection→adopted→multihop→nlsql→docwizard→
+    pending→approval→sop。命中早期路由返回 dict，未命中返回 None 进入 route() 分支。
+
+    流式/非流式共用此函数——早期路由步骤都用 llm.chat_chain（非流式 LLM 调用），
+    两路径完全一致，只有返回格式不同（dict vs yield）。提取此函数消除 90% 重复代码
+    （曾双路径漏接出过三次事——CLAUDE.md 设计原则 3）。
+    """
     # 提示注入拦截（确定性，先于一切路由——用户消息级注入防线）
     if guards.contains_injection(query):
         return {"answer": guards.INJECTION_BLOCKED, "sources": [], "route": "GUARD", "chart": None}
 
-    # 采纳升级直答层：👍 验证过的问答直接返回（秒回零 LLM；👎 满 2 次
-    # 自动停用回慢路径——与词汇对齐同款负向闭环）
+    # 采纳升级直答层
     hit = adopted_qa.lookup(query)
     if hit:
         return {"answer": hit["answer"],
                 "sources": [hit["source"]] if hit.get("source") else [],
                 "route": "KNOWLEDGE_QA", "chart": None}
 
-    # 多跳编排（在能力总线之前）：复合问题拆解分派后合并——曾能力总线
-    # 的单规则正则命中复合问句的一部分（"职位"截胡"李娜职位+报销"），
-    # 复合问题必须整体拆解。非复合问句走这里只多一次正则检查（零成本）
+    # 多跳编排（复合问题拆解分派后合并）
     try:
         mh_ans = multihop.try_answer(query, user=user)
     except Exception:
@@ -444,18 +448,7 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": guards.fix_output(mh_ans), "sources": [],
                 "route": "DATA", "chart": None}
 
-    # 对话历史提前加载：NL2SQL 追问改写 + 后续 route 判定共用。
-    # 2026-08-19 飞书实况："他的手机号多少"（上一轮问了王强）直接进 NL2SQL
-    # 查不出——"他"无历史上下文；曾历史只在知识问答段加载，数据面吃不到补全
-    turns = history.recent_turns(conversation_id)
-
-    # NL2SQL 表查询层（2026-08-19 去 OA 化后员工/报销/经营问答唯一数据面）：
-    # 已注册表的事实型问法自动生成 SQL（合规五关校验后才执行，权限按
-    # query_schema.grants 过滤）；不可答返回 None 漏回知识问答。
-    # 预闸限定事实型问法——避免每条知识问答都多一次模型调用
-    # （能力总线已退役：员工3条+OA报销/经营2条全并入本层，query_schema 注册即用）
-    # 无预闸：无条件尝试（模型自判能否生成 SQL；空模板=漏回后续层）
-    # 追问改写前置：指代追问先补全再进数据面（非追问 _resolve_query 零成本）
+    # NL2SQL 表查询层（追问改写前置：指代追问先补全再进数据面）
     nlsql_q = _resolve_query(query, turns)
     try:
         sql_ans = nlsql.try_answer(nlsql_q, user=user)
@@ -465,13 +458,12 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         return {"answer": guards.fix_output(sql_ans), "sources": [],
                 "route": "DATA", "chart": None}
 
-    # 文档多轮修改（会话有进行中文档 + 修改指令 → 回写同一份云文档）
+    # 文档多轮修改 + 文档生成
     if tools.is_enabled("doc_wizard"):
         revised = docwizard.revise(conversation_id, query)
         if revised:
             return {"answer": "已更新到云文档（在线可编辑）：\n" + revised,
                     "sources": [], "route": "DOC_WIZARD", "chart": None}
-        # 文档生成（一句话直达云文档；无标题时 Web 端给提示，飞书渠道弹表单卡片）
         doc = docwizard.try_generate(query, "", conversation_id)
         if doc:
             if doc.get("needs_form"):
@@ -479,21 +471,19 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
                         "sources": [], "route": "DOC_WIZARD", "chart": None}
             return {"answer": doc["answer"], "sources": [], "route": "DOC_WIZARD", "chart": None}
 
-    # 待确认单的确认/取消（人机协同闸门——先于 SOP 匹配，"确认"不会误入其他路由）
+    # 待确认单的确认/取消（人机协同闸门——先于 SOP 匹配）
     pending = sop_engine.try_confirm_or_cancel(conversation_id, query)
     if pending:
         return {"answer": guards.fix_output(pending["answer"]), "sources": [],
                 "route": "SOP", "chart": None}
 
-    # 审批指令（审批人回复"同意/拒绝 [单号]"——去 OA 化后自建审批闭环）
+    # 审批指令（审批人回复"同意/拒绝 [单号]"）
     approval_hit = approval_flow.try_approval_command(query, user)
     if approval_hit:
         return {"answer": guards.fix_output(approval_hit["answer"]), "sources": [],
                 "route": "APPROVAL", "chart": None}
 
-    # SOP 状态机（执行准确层：审批类流程走确定性步骤 + 提交前确认）
-    # 双重开关：skill 表（工具级） + sop 表（管理后台 SOP 页开关）——按命中的
-    # SOP 自身 code 查（2026-08-19 多 SOP 化：曾写死 leave_action，新 SOP 开关失灵）
+    # SOP 状态机（双重开关：skill 表 + sop 表）
     _sop_def = sop_engine.match(query)
     sop = (_sop_def if _sop_def and tools.is_enabled(_sop_def.code)
            and sop_engine.is_enabled(_sop_def.code) else None)
@@ -501,6 +491,18 @@ def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
         result = sop_engine.execute(sop, query, conversation_id)
         return {"answer": guards.fix_output(result["answer"]), "sources": [],
                 "route": "SOP", "chart": None}
+
+    return None   # 未命中早期路由，进入 route() 分支
+
+
+def _answer_inner(query: str, conversation_id: str = "", file_block: str = "",
+                  user: str = "") -> dict:
+    # 提示注入拦截 + 早期路由（injection→adopted→multihop→nlsql→docwizard→
+    # pending→approval→sop）——与流式路径共用 _route_early（消除 90% 重复代码）
+    turns = history.recent_turns(conversation_id)
+    early = _route_early(query, conversation_id, user, file_block, turns)
+    if early is not None:
+        return early
 
     r = route(query, has_history=bool(turns))
     if r == "CHAT":
@@ -645,93 +647,19 @@ def answer_stream(query: str, conversation_id: str = "", user: str = "", file_bl
 def _answer_stream_impl(query: str, conversation_id: str = "", user: str = "", file_block: str = ""):
     """
     流式回答实现（answer_stream 的包装层做审计，这里只管生成）。
+
+    早期路由（injection→adopted→multihop→nlsql→docwizard→pending→approval→sop）
+    与非流式共用 _route_early——消除 90% 重复代码（曾双路径漏接出过三次事）。
     """
-    # 提示注入拦截（与非流式路径同款——双路径必须同步）
-    if guards.contains_injection(query):
-        yield "route", "GUARD"
-        yield "token", guards.INJECTION_BLOCKED
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
-
-    # 采纳升级直答层（与非流式同口径）
-    hit = adopted_qa.lookup(query)
-    if hit:
-        yield "route", "KNOWLEDGE_QA"
-        yield "token", hit["answer"]
-        yield "sources", [hit["source"]] if hit.get("source") else []
-        yield "done", "[DONE]"
-        return
-
-    # 多跳编排（与非流式同口径：能力总线之前，防单规则截胡复合问句）
-    try:
-        mh_ans = multihop.try_answer(query, user=user)
-    except Exception:
-        mh_ans = None
-    if mh_ans:
-        yield "route", "DATA"
-        yield "token", guards.fix_output(mh_ans)
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
-
     # 对话历史提前加载（与非流式同口径——追问改写进数据面）
     turns = history.recent_turns(conversation_id)
 
-    # NL2SQL 表查询层（与非流式同口径——双路径同步；无预闸无条件尝试）
-    nlsql_q = _resolve_query(query, turns)
-    try:
-        sql_ans = nlsql.try_answer(nlsql_q, user=user)
-    except Exception:
-        sql_ans = None
-    if sql_ans:
-        yield "route", "DATA"
-        yield "token", guards.fix_output(sql_ans)
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
-
-    if tools.is_enabled("doc_wizard"):
-        revised = docwizard.revise(conversation_id, query)
-        if revised:
-            yield "route", "DOC_WIZARD"
-            yield "token", "已更新到云文档（在线可编辑）：\n" + revised
-            yield "sources", []
-            yield "done", "[DONE]"
-            return
-        doc = docwizard.try_generate(query, "", conversation_id)
-        if doc:
-            yield "route", "DOC_WIZARD"
-            yield "token", (doc["answer"] if not doc.get("needs_form")
-                            else "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。")
-            yield "sources", []
-            yield "done", "[DONE]"
-            return
-
-    pending = sop_engine.try_confirm_or_cancel(conversation_id, query)
-    if pending:
-        yield "route", "SOP"
-        yield "token", guards.fix_output(pending["answer"])
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
-
-    approval_hit = approval_flow.try_approval_command(query, user)
-    if approval_hit:
-        yield "route", "APPROVAL"
-        yield "token", guards.fix_output(approval_hit["answer"])
-        yield "sources", []
-        yield "done", "[DONE]"
-        return
-
-    _sop_def = sop_engine.match(query)
-    sop = (_sop_def if _sop_def and tools.is_enabled(_sop_def.code)
-           and sop_engine.is_enabled(_sop_def.code) else None)
-    if sop:
-        yield "route", "SOP"
-        result = sop_engine.execute(sop, query, conversation_id)
-        yield "token", guards.fix_output(result["answer"])
-        yield "sources", []
+    # 共享路由决策（步骤 1-9）：命中早期路由 → yield dict 内容为流式事件
+    early = _route_early(query, conversation_id, user, file_block, turns)
+    if early is not None:
+        yield "route", early.get("route", "KNOWLEDGE_QA")
+        yield "token", early.get("answer", "")
+        yield "sources", early.get("sources", [])
         yield "done", "[DONE]"
         return
 
