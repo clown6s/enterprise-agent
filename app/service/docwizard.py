@@ -12,9 +12,26 @@ from datetime import datetime
 
 import httpx
 
+from .. import guards
+from ..service import verify
+
 from .. import config, llm
 from ..time_context import now as business_now
 from ..channels.feishu import channel as feishu_channel
+
+_ABSOLUTE_SOURCE_CLAIMS = re.compile(
+    r"^\s*(?:>\s*)?(?:本计划书|本方案|本报告)?(?:完全依据|完全基于).{0,80}(?:资料|文档|知识库).*$"
+    r"|^\s*(?:>\s*)?(?:未引入|没有引入).{0,80}(?:外部知识|外部信息).*$"
+    r"|^\s*(?:>\s*)?(?:资料明确要求|资料规定|根据第\s*\d+\s*页).*$",
+    re.I | re.M,
+)
+
+
+def _clean_source_claims(text: str) -> str:
+    """删除模型无法证明的绝对来源声明，避免正文冒充系统证据。"""
+    lines = [line for line in text.splitlines()
+             if not _ABSOLUTE_SOURCE_CLAIMS.match(line)]
+    return "\n".join(lines).strip()
 
 # ---------------- 触发与标题 ----------------
 
@@ -28,16 +45,19 @@ _TRIGGER = re.compile(
 
 _GENERATE_PROMPT = """你是企业文档撰写助手。请按【{doc_type}】的标准结构撰写《{title}》。
 写作要求：
-1. 只输出正文本身（不要"好的""以下是"等前缀或任何解释）
-2. 每个章节用「## 」开头的标题行，章节下条目用「1. 2. 3.」编号
-3. 严禁编造事实：不得杜撰统计数字、百分比、日期年份、法规名称与条文、
-   机构名称、人名、价格、时间表——用户未提供的一律不写；
-   时效信息（门票/开放时间/班次等）无法确定时写「以官方发布为准」
-4. 通用文档按说明文体撰写，不写成"须/不得/应"式规章制度条文
-5. 使用规范中文术语，不要中英混写
-6. 今天是 {today}，涉及年份与星期必须与实际日历一致
-7. 【知识库资料】是公司内部资料：涉及日期、数字、政策表述必须与资料
-   逐字一致并直接引用；资料没有且用户没给的信息一律不写
+1. 只输出正文，不要“好的”“以下是”等前缀、解释或来源声明
+2. 每个章节用「## 」开头的标题行，章节下条目统一用「- 」列表，不用数字编号
+3. 严禁编造事实：数字、百分比、日期、法规、人名、机构、价格、时间表只能来自
+   【知识库资料】或用户要点；时效信息无法确定时写「以官方发布为准」
+4. 内容分三类并明确边界：
+   - 资料事实：必须能在知识库资料中定位，原文不改含义
+   - 资料整理：可以重排/归纳资料，但不要增加资料没有的事实
+   - 建议实践：可以提出，但必须在小节标题或条目中明确标注“建议”，不能写成资料要求
+5. 禁止绝对来源声明：不要写“完全依据资料”“未引入外部知识”“资料明确要求”等
+   无法由系统证明的表述；来源由系统卡片/元数据展示
+6. 通用文档按说明文体撰写，不写成“须/不得/应”式规章制度条文
+7. 使用规范中文术语，不要中英混写
+8. 今天是 {today}，涉及年份与星期必须与实际日历一致
 
 【知识库资料】
 {context}
@@ -151,19 +171,30 @@ def _generate(title: str, query: str, editor_open_id: str, chat_id: str) -> dict
         return None
     if not content:
         return None
-    # 接地复核：正文里出现的术语/数字既不在资料也不在用户要点中 →
-    # 带缺失清单重写一次（生成侧编造的日期/数字是文档最致命的错误）
+    # 生成侧确定性接地复核：资料中没有的术语/数字先要求模型删除或改写。
+    # 最终还会经过 verify + guards，三层防线不因文档生成另走路径而缺失。
+    evidence = (context + "\n" + points).strip()
     if hits:
-        missing = guards.find_missing_terms(content, context + "\n" + points)
+        missing = guards.find_missing_terms(content, evidence)
         if missing:
             warn = "、".join(missing[:8])
             try:
                 content = llm.chat_chain(
-                    "", "上一条撰写要求不变。但以下术语/数字在你的正文里出现了，"
-                        "却不在【知识库资料】和用户要点中：" + warn +
+                    "", "上一条撰写要求不变。但以下术语/数字在正文里出现，"
+                        "却不在知识库资料和用户要点中：" + warn +
                         "。请删除或改写这些内容，重新输出完整正文。").strip()
             except Exception:
                 pass
+    # 统一事实校验 + 格式重建：文档生成不能绕过问答校验/守卫链。
+    # 依据同时包含资料和用户要点；资料为空时，用户要点仍是合法依据。
+    checked = verify.verify(content, evidence, query=title)
+    if checked and checked != guards.NO_ANSWER:
+        content = checked
+    # 确定性收口：删不可证明的绝对来源声明，再按语义阶段重建格式。
+    content = _clean_source_claims(content)
+    content = guards.fix_output(content)
+    if not content:
+        return None
     url = publish_cloud_doc(title, content, editor_open_id)
     doc_id = url.rsplit("/", 1)[-1] if url else ""
     if chat_id:
