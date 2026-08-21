@@ -39,6 +39,9 @@ jobs:
           coverage run --source=app --append scripts/test_pipeline.py
           coverage run --source=app --append scripts/test_startup.py
           coverage run --source=app --append scripts/test_logging.py
+          coverage run --source=app --append scripts/test_docwizard.py
+          coverage run --source=app --append scripts/test_data_table.py
+          coverage run --source=app --append scripts/test_feishu_approval.py
 
       - name: 文档签名防漂移检查
         run: python scripts/verify_doc_types.py

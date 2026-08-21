@@ -10,7 +10,6 @@ Neo4j 知识图谱访问（图谱-only 兜底：文档检索空手时，用图�
 import json
 import re
 
-from dotenv import dotenv_values
 from neo4j import GraphDatabase
 
 from .. import config
@@ -21,12 +20,9 @@ _driver = None
 def _db():
     global _driver
     if _driver is None:
-        # .env 在项目根目录（config.py 在 app/ 下，往上两级）
-        env_path = str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent / ".env")
-        pwd = dotenv_values(env_path).get("NEO4J_PASSWORD", "")
         _driver = GraphDatabase.driver(
             f"bolt://{config._env('NEO4J_HOST', '10.211.55.5')}:7687",
-            auth=("neo4j", pwd))
+            auth=("neo4j", config.NEO4J_PASSWORD))
     return _driver
 
 

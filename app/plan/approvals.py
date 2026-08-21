@@ -255,6 +255,19 @@ def _do_insert(d: ApprovalDef, params: dict, emp: dict) -> dict:
         _sop._audit(d.code, "insert", params, f"DB 失败: {e!r}", time.time() - t0)
         return {"answer": f"{d.name}提交失败：服务未受理，请稍后再试。", "route": "SOP"}
     _sop._audit(d.code, "insert", params, apply_no, time.time() - t0)
+    # 飞书原生审批默认关闭；启用且配置模板后，先登记外部实例，再保留
+    # 本地通知作为降级入口。外部失败不回滚已成功的本地申请。
+    native = None
+    try:
+        from ..integrations.feishu_approval import provider as _native_provider
+        native = _native_provider.create_instance(
+            d.business_type, apply_no, emp.get("feishuOpenId", "") or emp.get("open_id", ""),
+            _native_provider.form_for(d.business_type,
+                                      {"apply_no": apply_no, "user_name": emp.get("realName"),
+                                       **{col: values[i + 4] for i, (key, (col, _)) in
+                                          enumerate(d.fields.items())}}))
+    except Exception as e:
+        _sop._audit(d.code, "native_approval", params, f"适配器异常: {e!r}", 0.0)
     # 飞书通知审批人（软依赖：无绑定静默跳过，审批人可主动查待审批单）
     if approver:
         from . import approval as _approval
@@ -263,8 +276,14 @@ def _do_insert(d: ApprovalDef, params: dict, emp: dict) -> dict:
                                    **{col: values[i + 4] for i, (key, (col, _)) in
                                       enumerate(d.fields.items())}})
     # graph-build 已迁到 observe_hooks（dsh 一-2 observe 切面），不在 _do_insert 裸线程
-    return {"apply_no": apply_no, "_chunks": list(params.keys()),
-            "_doc_id": apply_no, "_filename": d.name}
+    out = {"apply_no": apply_no, "_chunks": list(params.keys()),
+           "_doc_id": apply_no, "_filename": d.name}
+    if native and native.ok:
+        out["native_instance_code"] = native.instance_code
+        out["native_instance_link"] = native.instance_link
+    elif native and not native.ok:
+        out["native_approval_error"] = native.error
+    return out
 
 
 def _finish(d: ApprovalDef, params: dict, emp: dict) -> dict:

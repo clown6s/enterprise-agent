@@ -280,16 +280,32 @@ def _validate(sql: str, params: list, tables: list[dict]) -> str | None:
     return tpl
 
 
+def _table_summary(row_count: int, heads: list[str]) -> str:
+    """多行结果摘要：保留列名但不把明细在正文重复展开。"""
+    summary_labels = "、".join(h for h in heads[:6] if h) or "数据"
+    return f"查询结果（{row_count} 条），包含{summary_labels}，详情见下方表格。"
+
+
+def _display_cell(value):
+    """统一缺失值口径：数据库 NULL 和常见占位符都显示「未录入」。"""
+    if value is None:
+        return "未录入"
+    if isinstance(value, str) and value.strip().casefold() in {
+            "", "-", "--", "—", "－", "null", "none", "未录入"}:
+        return "未录入"
+    return value
+
+
 def _fmt_rows(rows: list[tuple], cols: list[str], labels: dict[str, str],
               label_fn=None) -> str:
     """结果行 → 确定性文本（列值全来自真实数据行；列名转注册的中文描述）。
-    NULL 值显示「未录入」——曾直接输出 None（电话字段没录时"电话：None。"）"""
+    NULL/占位值显示「未录入」——电话字段可能以 NULL 或 -- 存储。"""
     heads = [(label_fn(c) if label_fn else labels.get(c.lower(), c)) for c in cols]
     if not rows:
         return "查询结果为空。"
 
     def _cell(v):
-        return "未录入" if v is None else v
+        return _display_cell(v)
 
     if len(rows) == 1 and len(cols) <= 2:
         return "，".join(f"{heads[i]}：{_cell(rows[0][i])}" for i in range(len(cols))) + "。"
@@ -416,8 +432,9 @@ def try_answer_result(query: str, user: str = "") -> dict | None:
     table = None
     if len(rows) > 1:
         def _table_cell(value):
-            if value is None:
-                return "未录入"
+            value = _display_cell(value)
+            if value == "未录入":
+                return value
             if hasattr(value, "isoformat") and not isinstance(value, (str, bytes)):
                 return value.isoformat()
             if hasattr(value, "as_tuple") and hasattr(value, "quantize"):
@@ -446,7 +463,9 @@ def try_answer_result(query: str, user: str = "") -> dict | None:
     if len(rows) > 1:
         # 多行结构化展示：正文只留摘要，详情交给 table 渲染，避免飞书/Web
         # 同时展示完整文本列表+表格导致重复（用户实况：14 条正文后又重复表格）。
-        return {"answer": f"查询结果（{len(rows)} 条），详情见下方表格。", "table": table}
+        # 摘要保留列名：纯“共 N 条”对经营数据等问题信息量不足，回归 guard-004
+        # 也要求正文仍能说明回答的是哪类指标；明细不在正文重复展开。
+        return {"answer": _table_summary(len(rows), heads), "table": table}
     return {"answer": _answer_with_llm(query, text, rows), "table": None}
 
 

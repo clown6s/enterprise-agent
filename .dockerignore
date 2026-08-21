@@ -1,0 +1,17 @@
+.env
+.env.*
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.coverage
+htmlcov
+logs
+data/backup
+data/uploads
+.idea
+.vscode
+.claude

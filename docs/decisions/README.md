@@ -42,3 +42,7 @@
 | 2026-08-19 | [NL2SQL 结果包装层：数据≠答案](implemented/2026-08-19-nlsql-answer-wrapper.md) | implemented |
 | 2026-08-19 | [去 OA 化：审批业务直连本库](implemented/2026-08-19-de-oa-approval-direct-db.md) | implemented |
 | 2026-08-20 | [SOP 五段式全形式化重构（暂缓）](rejected/2026-08-20-sop-five-aspect-full-refactor.md) | rejected |
+| 2026-08-21 | [文档生成采用资料边界与统一事实校验链](implemented/2026-08-21-docwizard-grounding-boundary.md) | implemented |
+| 2026-08-21 | [多行数据结果正文保留摘要，明细统一承载于表格](implemented/2026-08-21-nlsql-table-summary.md) | implemented |
+| 2026-08-21 | [文档请求采用统一意图解析与标题归一化](implemented/2026-08-21-docwizard-intent-title-parser.md) | implemented |
+| 2026-08-21 | [以本地审批为事实源接入飞书原生审批适配层](implemented/2026-08-21-feishu-native-approval-adapter.md) | implemented |

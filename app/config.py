@@ -30,6 +30,23 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default).strip()
 
 
+# ---------------- 飞书原生审批（默认关闭） ----------------
+FEISHU_APPROVAL_ENABLED = _env("FEISHU_APPROVAL_ENABLED", "false").lower() in ("1", "true", "yes")
+FEISHU_APP_ID = _env("FEISHU_APP_ID")
+FEISHU_APP_SECRET = _env("FEISHU_APP_SECRET")
+FEISHU_APPROVAL_CODES = {
+    "leave": _env("FEISHU_APPROVAL_CODE_LEAVE"),
+    "expense": _env("FEISHU_APPROVAL_CODE_EXPENSE"),
+    "travel": _env("FEISHU_APPROVAL_CODE_TRAVEL"),
+    "purchase": _env("FEISHU_APPROVAL_CODE_PURCHASE"),
+    "contract": _env("FEISHU_APPROVAL_CODE_CONTRACT"),
+}
+FEISHU_APPROVAL_TABLE = "approval_external_instance"
+FEISHU_APPROVAL_EVENT_TABLE = "approval_external_event"
+FEISHU_VERIFICATION_TOKEN = _env("FEISHU_VERIFICATION_TOKEN")
+FEISHU_ENCRYPT_KEY = _env("FEISHU_ENCRYPT_KEY")
+
+
 def validate_config() -> list[str]:
     """返回当前配置缺失的必要键，不抛异常、不打印密钥。
 
@@ -112,6 +129,7 @@ MYSQL_HOST = _env("MYSQL_HOST", "10.211.55.5")
 MYSQL_PORT = int(_env("MYSQL_PORT", "3306"))
 MYSQL_PASSWORD = _env("MYSQL_ROOT_PASSWORD")
 MYSQL_DB = "rag_service"
+NEO4J_PASSWORD = _env("NEO4J_PASSWORD")
 
 # ---------------- OA 业务系统（2026-08-19 退役：OA 7000 停用，审批直连本库） ----------------
 # 保留配置项仅为向后兼容可能引用 OA_* 的历史代码；新代码不应使用。

@@ -43,6 +43,7 @@ class FeishuChannel:
         self._file_contexts: dict[str, str] = {}
         # 按群的最近一次问答（卡片 👍👎 回调用，值只带 action 不带全文）
         self._last_answers: dict[str, dict] = {}
+        self._pending_doc_forms: dict[str, dict] = {}
         self._seen: set[str] = set()
         # WS 消息线程 + 卡片回调线程并发读写 _last_answers/_seen——需锁
         # （曾反馈错位到错误问答的潜在竞态；postmortem 扫描发现）
@@ -51,15 +52,20 @@ class FeishuChannel:
     # ---------------- 生命周期 ----------------
 
     def enabled(self) -> bool:
-        return SDK_AVAILABLE and bool(self.app_id) and bool(self.app_secret)
+        return (SDK_AVAILABLE and bool(config._env("FEISHU_ENABLED", "true").lower() in
+                                      ("1", "true", "yes"))
+                and bool(self.app_id) and bool(self.app_secret))
 
     def start(self) -> None:
         if not self.enabled():
             return
-        dispatcher = (EventDispatcherHandler.builder(self.app_id, self.app_secret)
-                      .register_p2_im_message_receive_v1(self._on_message)
-                      .register_p2_card_action_trigger(self._on_card_action)
-                      .build())
+        dispatcher_builder = (EventDispatcherHandler.builder(self.app_id, self.app_secret)
+                              .register_p2_im_message_receive_v1(self._on_message)
+                              .register_p2_card_action_trigger(self._on_card_action))
+        if config.FEISHU_APPROVAL_ENABLED:
+            from ..integrations.feishu_approval import handle_status_event
+            dispatcher_builder.register_p2_approval_instance_status_changed_v4(handle_status_event)
+        dispatcher = dispatcher_builder.build()
         self._ws = WsClient(self.app_id, self.app_secret,
                             log_level=lark_oapi.LogLevel.ERROR,
                             event_handler=dispatcher)
@@ -93,14 +99,22 @@ class FeishuChannel:
                 json={"app_id": self.app_id, "app_secret": self.app_secret},
                 timeout=10,
             )
+            resp.raise_for_status()
             data = resp.json()
-            if data.get("code") == 0:
-                self._app_token = data["app_access_token"]
-                self._token_expire = time.time() + data.get("expire", 7200)
-                return self._app_token
-        except httpx.HTTPError:
-            pass
-        return None
+            if not isinstance(data, dict) or data.get("code") != 0:
+                log.warning("飞书 app token 业务失败 code=%s", data.get("code") if isinstance(data, dict) else "non-object")
+                return None
+            token = data.get("app_access_token")
+            expire = data.get("expire", 7200)
+            if not isinstance(token, str) or not token or not isinstance(expire, (int, float)):
+                log.warning("飞书 app token 响应字段缺失")
+                return None
+            self._app_token = token
+            self._token_expire = time.time() + expire
+            return token
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError) as e:
+            log.warning("飞书 app token 请求失败 type=%s", type(e).__name__)
+            return None
 
     # ---------------- 通讯录同步 ----------------
 
@@ -249,7 +263,10 @@ class FeishuChannel:
             self._handle_text_inner(chat_id, message_id, text, open_id)
         except Exception as e:
             # 生成链路意外异常（LLM 挂/嵌入挂等）→ 兜底回复，不让飞书用户石沉大海
-            log.warning(f"文本处理异常: {e!r}")
+            log.exception("feishu_text_failed", extra={
+                "event": "feishu_text_failed",
+                "fields": {"stage": "handle_text", "message_id": message_id,
+                            "chat_id": chat_id, "error_type": type(e).__name__}})
             self._reply(message_id, "抱歉，回答生成失败，请稍后重试。")
 
     def _handle_text_inner(self, chat_id: str, message_id: str, text: str, open_id: str = "") -> None:
@@ -273,17 +290,22 @@ class FeishuChannel:
                 return
             self._ingest_ocr_text(ocr_text, message_id)
             return
-        # 文档生成：触发词命中但标题不可推断 → 弹表单卡片兜底
-        from ..service import docwizard
-        if docwizard.matches(text) and not docwizard.guess_title(text):
-            if not self._reply_card(message_id, self.build_doc_form_card()):
-                self._reply(message_id, "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。")
-            return
-        # 常规问答（带文件上下文）→ 卡片回复（带 👍👎 反馈按钮）
+        # 文档生成统一走 agent._route_early，避免飞书与 Web 各自判定触发词。
+        # 需要标题时由共享结果标记 needs_form，再弹现有表单卡片。
         file_block = self._file_contexts.get(chat_id)
         from ..service import agent
         result = agent.answer(text, chat_id, file_block=file_block, user=open_id,
                               endpoint="feishu/chat")
+        if result.get("needs_form"):
+            card_msg_id = self._reply_card(message_id, self.build_doc_form_card())
+            if card_msg_id:
+                with self._state_lock:
+                    self._pending_doc_forms[card_msg_id] = {
+                        "chat_id": chat_id, "open_id": open_id,
+                        "created_at": time.time(), "status": "pending"}
+            else:
+                self._reply(message_id, "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。")
+            return
         last = {"query": text, "answer": result["answer"],
                 "source": (result["sources"] or [None])[0] or "",
                 "pairs": result.get("_learned_pairs") or []}
@@ -574,17 +596,23 @@ class FeishuChannel:
             chat_id = (getattr(ctx, "open_chat_id", None)
                        or getattr(ctx, "chat_id", None) or "")
             open_id = getattr(trigger.event.operator, "open_id", "") or ""
-            # 优先按卡片 message_id 精确定位（曾按 chat_id 单槽——连续问答时
-            # 点旧卡的👍会采纳最新一条答案，反馈错位污染知识库）
+            # 表单提交是独立状态，不依赖普通问答 _last_answers；首次表单没有 last
+            # 也必须能提交。领取后立即删除，避免重复回调生成两次文档。
             card_msg_id = getattr(ctx, "open_message_id", None) or ""
-            with self._state_lock:
-                last = (self._last_answers.get(card_msg_id)
-                        or self._last_answers.get(chat_id))
-            if not last:
-                toast.content = "未找到对应问答记录（可能已过期）"
-                resp.toast = toast
-                return resp
             if action == "doc_form_submit":
+                with self._state_lock:
+                    pending = self._pending_doc_forms.pop(card_msg_id, None)
+                    if pending is None and chat_id:
+                        candidates = [(k, v) for k, v in self._pending_doc_forms.items()
+                                      if v.get("chat_id") == chat_id]
+                        if candidates:
+                            key, pending = sorted(candidates, key=lambda x: x[1].get("created_at", 0),
+                                                  reverse=True)[0]
+                            self._pending_doc_forms.pop(key, None)
+                if not pending:
+                    toast.content = "文档表单已过期或找不到对应表单"
+                    resp.toast = toast
+                    return resp
                 from ..service import docwizard
                 form = (trigger.event.action.form_value or {})
                 title = (form.get("title") or "").strip()
@@ -599,7 +627,15 @@ class FeishuChannel:
                     toast.content = "已生成，请查看消息回复"
                 else:
                     toast.content = "生成失败，请重试"
-            elif action == "suggest":
+            else:
+                with self._state_lock:
+                    last = (self._last_answers.get(card_msg_id)
+                            or self._last_answers.get(chat_id))
+                if not last:
+                    toast.content = "未找到对应问答记录（可能已过期）"
+                    resp.toast = toast
+                    return resp
+            if action == "suggest":
                 q = ((trigger.event.action.value or {}).get("q") or "").strip()
                 if q:
                     # 卡片回调有 3s 超时，问答链路必须异步（toast 先回"正在查询"）

@@ -498,12 +498,16 @@ def _route_early(query: str, conversation_id: str, user: str,
         if revised:
             return {"answer": "已更新到云文档（在线可编辑）：\n" + revised,
                     "sources": [], "route": Route.DOC_WIZARD, "chart": None}
-        doc = docwizard.try_generate(query, "", conversation_id)
+        doc = docwizard.try_generate(query, user, conversation_id, user=user)
         if doc:
             if doc.get("needs_form"):
-                return {"answer": "请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。",
-                        "sources": [], "route": Route.DOC_WIZARD, "chart": None}
-            return {"answer": doc["answer"], "sources": [], "route": Route.DOC_WIZARD, "chart": None}
+                return _result("请告诉我文档标题，例如：「帮我生成关于五一的放假通知」。",
+                               Route.DOC_WIZARD, needs_form=True,
+                               status="form_required")
+            return _result(doc.get("answer", "文档生成暂时不可用，请稍后重试。"),
+                           Route.DOC_WIZARD, sources=doc.get("sources", []),
+                           **{k: v for k, v in doc.items()
+                              if k not in {"answer", "sources", "route", "chart"}})
 
     # 待确认单的确认/取消（人机协同闸门——先于 SOP 匹配）
     pending = sop_engine.try_confirm_or_cancel(conversation_id, query)

@@ -32,6 +32,8 @@ def test_fmt_table():
     check("空结果文本", nlsql._fmt_rows([], ["name"], labels) == "查询结果为空。")
     one = nlsql._fmt_rows([("张伟",)], ["name"], labels)
     check("单行文本", "张伟" in one and "查询结果（" not in one)
+    missing = nlsql._fmt_rows([(None,), ("--",), ("未录入",)], ["name"], labels)
+    check("缺失占位统一未录入", missing.count("未录入") == 3, missing)
 
 
 def test_table_payload_shape():
@@ -52,13 +54,14 @@ def test_table_payload_shape():
     check(">1 行触发表格", payload["row_count"] > 1 and payload.get("table"))
 
     from app.channels.feishu import FeishuChannel
-    card = FeishuChannel.build_data_card("查询结果（2 条），详情见下方表格。", payload)
+    card = FeishuChannel.build_data_card("查询结果（2 条），包含姓名、金额，详情见下方表格。", payload)
     tags = [e.get("tag") for e in card["body"]["elements"]]
     check("纯表格不渲染空图表", "chart" not in tags and "table" in tags)
     check("纯表格来源不写 VChart", "VChart" not in card["body"]["elements"][-1]["content"])
 
     # 多行正文只保留摘要，详情由表格承载，不能双重展示
-    answer = "查询结果（2 条），详情见下方表格。"
+    answer = nlsql._table_summary(2, headers)
+    check("多行正文保留列名", "姓名" in answer and "金额" in answer)
     check("多行正文不重复明细", "张伟" not in answer and "详情见下方表格" in answer)
 
 
