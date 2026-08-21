@@ -15,3 +15,4 @@ data/synonyms.json
 data/uploads/
 data/backup/
 certs/
+nginx.conf

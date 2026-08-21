@@ -17,6 +17,7 @@ data/uploads
 .claude
 certs/
 Caddyfile
+nginx.conf
 docker-compose.yml
 Dockerfile
 .dockerignore
