@@ -159,14 +159,18 @@ def _parse_docx(data: bytes) -> str:
         return ""
 
 
-def _pdf_images(data: bytes) -> list[bytes]:
-    """pypdf 提取 PDF 内嵌图字节（按页序、按内容去重——同 logo 每页重复只算一次）"""
-    seen: set[str] = set()
-    out: list[bytes] = []
+def _pdf_page_images(data: bytes) -> dict[int, list[bytes]]:
+    """按页提取 PDF 内嵌图片；同页重复图片去重但保留页码关联。
+
+    只返回符合尺寸门控的图片。跨页不去重：同一 logo 出现在不同的扫描页时，
+    不能因为前一页已出现就让后一页失去 OCR 输入。
+    """
+    out: dict[int, list[bytes]] = {}
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
-        for page in reader.pages:
+        for page_no, page in enumerate(reader.pages, 1):
+            seen: set[str] = set()
             try:
                 images = page.images
             except Exception:
@@ -175,13 +179,38 @@ def _pdf_images(data: bytes) -> list[bytes]:
                 raw = getattr(img, "data", None)
                 if not raw or _MIN_IMAGE_BYTES > len(raw) or len(raw) > _MAX_IMAGE_BYTES:
                     continue
-                h = hashlib.md5(raw).hexdigest()
-                if h not in seen:
-                    seen.add(h)
-                    out.append(raw)
+                digest = hashlib.md5(raw).hexdigest()
+                if digest in seen:
+                    continue
+                seen.add(digest)
+                out.setdefault(page_no, []).append(raw)
     except Exception:
         pass
     return out
+
+
+def _assemble_pdf_pages(page_texts: list[tuple[int, str]],
+                        page_images: dict[int, list[bytes]]) -> str:
+    """按页质量闸门组装 PDF 文本；正常文字页不调用 OCR。"""
+    parts: list[str] = []
+    ocr_used = 0
+    for page_no, text in page_texts:
+        text = (text or "").strip()
+        needs_ocr = not text or _is_garbled(text)
+        page_parts: list[str] = []
+        if text and not _is_garbled(text):
+            page_parts.append(text)
+        elif needs_ocr:
+            for idx, image in enumerate(page_images.get(page_no, []), 1):
+                if ocr_used >= _MAX_IMAGE_OCR:
+                    break
+                ocr_used += 1
+                ocr = _ocr_image(image)
+                if ocr:
+                    page_parts.append(f"【图片{idx}】{ocr}")
+        if page_parts:
+            parts.append(f"[[page:{page_no}]]\n" + "\n".join(page_parts))
+    return "\n".join(parts)
 
 
 def _ocr_image(image: bytes) -> str:
@@ -215,16 +244,10 @@ def _with_title_marks(line_sizes: list[tuple[str, float]]) -> list[str]:
 
 
 def _parse_pdf(data: bytes) -> str:
-    """
-    PDF 解析：pdfplumber 版式感知抽取（表格/双栏比 pypdf 稳——流式拍平
-    导致列混排的历史失分点），逐页注入 [[page:N]] 标记（切分时落 page 字段，
-    溯源到页码）。版面识别：按行字号判定标题打「## 」标记（标题感知切分——
-    曾只有 docx 有标题感知，PDF 标题块边界靠猜）。内嵌图片走 OCR 独立成段
-    （「## 图片内容」节，上限门控）。pdfplumber 失败回退 pypdf（不丢文档）。
-    """
+    """逐页解析 PDF；正常文字页跳过 OCR，空页/乱码页才识别内嵌图片。"""
+    page_texts: list[tuple[int, str]] = []
     try:
         import pdfplumber
-        parts = []
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             for i, page in enumerate(pdf.pages, 1):
                 try:
@@ -236,39 +259,23 @@ def _parse_pdf(data: bytes) -> str:
                         chars = ln.get("chars") or []
                         mean = statistics.mean(c["size"] for c in chars) if chars else 0.0
                         line_sizes.append((t, mean))
-                    out_lines = _with_title_marks(line_sizes)
-                    if out_lines:
-                        parts.append(f"[[page:{i}]]\n" + "\n".join(out_lines))
+                    page_texts.append((i, "\n".join(_with_title_marks(line_sizes))))
                 except Exception:
-                    # 单页异常隔离：一页坏不拖垮整份文档（曾整本 PDF 一起失败）
-                    continue
-        full = "\n".join(parts)
-        if full and _is_garbled(full):
-            log.warning("PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
-            return ""
-        # 内嵌图片 OCR：无论有无文本层都跑（扫描件 PDF 无文本层，
-        # 内容全靠图片 OCR——曾 parts 为空时直接回退，图片段没机会执行）
-        images = _pdf_images(data)
-        if images:
-            ocr_parts = []
-            for idx, img in enumerate(images[:_MAX_IMAGE_OCR]):
-                ocr = _ocr_image(img)
-                if ocr:
-                    ocr_parts.append(f"【图片{idx + 1}】{ocr}")
-            if ocr_parts:
-                full = (full + "\n" if full else "") + "## 图片内容\n" + "\n".join(ocr_parts)
-        if full:
-            return full
-    except Exception:
-        pass
+                    page_texts.append((i, ""))
+        result = _assemble_pdf_pages(page_texts, _pdf_page_images(data))
+        if result:
+            return result
+    except Exception as e:
+        log.warning("pdfplumber 解析失败，回退 pypdf: %s", type(e).__name__)
+
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(data))
-        pages = [(page.extract_text() or "") for page in reader.pages]
-        full = "\n".join(pages)
-        if _is_garbled(full):
-            log.warning("PDF 文本层乱码（CID 字体），拒绝入库——请提供可检索版 PDF")
-            return ""
-        return full
-    except Exception:
-        return ""
+        page_texts = [(i, page.extract_text() or "")
+                      for i, page in enumerate(reader.pages, 1)]
+        result = _assemble_pdf_pages(page_texts, _pdf_page_images(data))
+        if result:
+            return result
+    except Exception as e:
+        log.warning("pypdf 解析失败: %s", type(e).__name__)
+    return ""

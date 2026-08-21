@@ -253,8 +253,10 @@ class FeishuChannel:
             self._handle_text(chat_id, message_id, text, open_id)
         elif mtype == "image":
             self._handle_image(chat_id, message_id, content)
+        elif mtype == "file":
+            self._handle_file(chat_id, message_id, content, open_id)
         else:
-            pass   # 其他消息类型忽略（文件/卡片等后续迭代）
+            pass   # 其他消息类型忽略
 
     # ---------------- 文本 ----------------
 
@@ -413,6 +415,83 @@ class FeishuChannel:
                 image_bytes).strip()
         except Exception:
             return ""
+
+    # ---------------- 文件入库 ----------------
+
+    def _handle_file(self, chat_id: str, message_id: str, content: str,
+                     open_id: str = "") -> None:
+        """飞书发文件 → 下载 → 解析 → 摄入知识库。复用 ingestion pipeline。"""
+        token = set_request_id(message_id)
+        try:
+            self._handle_file_impl(chat_id, message_id, content)
+        except Exception as e:
+            log.exception("feishu_file_failed", extra={
+                "event": "feishu_file_failed",
+                "fields": {"stage": "handle_file", "message_id": message_id,
+                            "error_type": type(e).__name__}})
+            self._reply(message_id, "文件入库失败，请稍后重试。")
+        finally:
+            reset_request_id(token)
+
+    def _handle_file_impl(self, chat_id: str, message_id: str, content: str) -> None:
+        print(f"[飞书文件] 收到文件消息 message_id={message_id}")
+        try:
+            file_info = json.loads(content)
+            file_key = file_info.get("file_key") or ""
+            file_name = file_info.get("file_name") or "未命名文件"
+            print(f"[飞书文件] 文件名={file_name}, file_key={file_key}")
+        except (json.JSONDecodeError, AttributeError):
+            print(f"[飞书文件] 解析文件信息失败 content={content[:200]}")
+            self._reply(message_id, "未识别到文件。")
+            return
+        if not file_key:
+            print(f"[飞书文件] file_key 为空")
+            self._reply(message_id, "未识别到文件。")
+            return
+        token = self._app_access_token()
+        if not token:
+            print(f"[飞书文件] 获取飞书 token 失败")
+            self._reply(message_id, "飞书鉴权失败，请稍后再试。")
+            return
+        print(f"[飞书文件] 开始下载文件...")
+        try:
+            resp = httpx.get(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}"
+                f"?type=file",
+                headers={"Authorization": f"Bearer {token}"}, timeout=60,
+            )
+            resp.raise_for_status()
+            file_bytes = resp.content
+            print(f"[飞书文件] 下载成功，文件大小={len(file_bytes)} bytes")
+        except httpx.HTTPError as e:
+            print(f"[飞书文件] 下载失败: {e}")
+            self._reply(message_id, "文件下载失败，请重试。")
+            return
+        if not file_bytes:
+            print(f"[飞书文件] 文件内容为空")
+            self._reply(message_id, "文件内容为空。")
+            return
+        print(f"[飞书文件] 开始解析入库...")
+        from ..ingestion import pipeline
+        try:
+            result = pipeline.ingest(file_name, file_bytes)
+            print(f"[飞书文件] 解析结果: {result}")
+        except Exception as e:
+            print(f"[飞书文件] 解析异常: {e}")
+            import traceback
+            traceback.print_exc()
+            self._reply(message_id, f"入库异常：{str(e)[:200]}")
+            return
+        if "error" in result:
+            self._reply(message_id, f"入库失败：{result['error']}")
+            return
+        chunks = result.get("chunks", 0)
+        duplicate = result.get("duplicate", False)
+        if duplicate:
+            self._reply(message_id, f"《{file_name}》已在知识库中，无需重复入库。")
+        else:
+            self._reply(message_id,
+                        f"已入库《{file_name}》（{chunks} 段），现在可以提问相关内容了。")
 
     # ---------------- 入库 ----------------
 

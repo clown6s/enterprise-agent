@@ -136,8 +136,36 @@ def test_parse_docx_invalid():
     check("非法 docx 返空", parse._parse_docx(b"not a docx") == "")
 
 
+def test_pdf_page_ocr_gate():
+    """正常页跳过 OCR，空/乱码页才 OCR，且结果保留页码。"""
+    original = parse._ocr_image
+    calls = []
+    try:
+        parse._ocr_image = lambda image: calls.append(image) or "扫描页文字"
+        out = parse._assemble_pdf_pages(
+            [(1, "正常电子文本"), (2, ""), (3, "一")],
+            {1: [b"healthy"], 2: [b"blank"], 3: [b"garbled"]},
+        )
+    finally:
+        parse._ocr_image = original
+    check("正常文字页跳过 OCR", calls == [b"blank", b"garbled"], calls)
+    check("OCR 结果保留页码", "[[page:2]]" in out and "[[page:3]]" in out, out)
+    check("健康页保留文本", "[[page:1]]\n正常电子文本" in out, out)
+
+
+def test_pdf_page_ocr_failure():
+    """单页 OCR 失败不影响其他正常页。"""
+    original = parse._ocr_image
+    try:
+        parse._ocr_image = lambda image: ""
+        out = parse._assemble_pdf_pages(
+            [(1, "正常电子文本"), (2, "")], {2: [b"failed"]})
+    finally:
+        parse._ocr_image = original
+    check("OCR 失败保留健康页", "正常电子文本" in out and "[[page:2]]" not in out, out)
+
+
 if __name__ == "__main__":
-    test_decode()
     test_is_garbled()
     test_parse_bytes_dispatch()
     test_explain_parse_failure()
@@ -145,5 +173,7 @@ if __name__ == "__main__":
     test_with_title_marks()
     test_parse_docx()
     test_parse_docx_invalid()
+    test_pdf_page_ocr_gate()
+    test_pdf_page_ocr_failure()
     print(f"\n{PASS} 通过 / {FAIL} 失败")
     sys.exit(1 if FAIL else 0)

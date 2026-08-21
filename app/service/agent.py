@@ -587,13 +587,24 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
         gap_discovery.record_gap(query, conversation_id)
         _maybe_enqueue_review(conversation_id, query, guards.NO_ANSWER)
         return _result(_NO_ANSWER_GAP, Route.KNOWLEDGE_QA)
+    # Graph RAG：Milvus 有命中时也查图谱，把实体关系和文档片段合并给模型——
+    # 图谱不是兜底，是增强：结构化关系让回答更完整（"高血压属于...""特征表现包括..."）
+    graph_ctx = ""
+    try:
+        graph_ctx = guards.strip_injection_sentences(graph.expand(search_query))
+    except Exception:
+        graph_ctx = ""
     prefix = f"【资料】\n{context}"
+    if graph_ctx:
+        prefix += f"\n\n## 知识图谱关联（背景参考：请转述为自然语言融入回答，不要逐条复述）\n{graph_ctx}"
     if fb:
         prefix += f"\n\n【文件上下文】\n{fb}"
     gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                   else f"{prefix}\n\n【用户问题】\n{query}")
     raw = _llm_call(gen_prompt, stream=stream)
     vctx = context
+    if graph_ctx:
+        vctx = f"{vctx}\n{graph_ctx}"
     if fb:
         vctx = f"{vctx}\n{fb}"
     if hblock:

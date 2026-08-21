@@ -178,6 +178,11 @@ def chat_image(system: str, user: str, image: bytes) -> str:
         json=payload,
         timeout=60,
     )
+    if resp.is_error:
+        # OCR 模型参数/接口不兼容时，保留服务端错误码和消息；仅记录状态码会无法区分
+        # 模型名、内容块格式、图片大小等问题，曾导致上传看似一直卡住。
+        log.warning("chat_image HTTP 失败 model=%s status=%d body=%s",
+                    m["model"], resp.status_code, resp.text[:1000])
     resp.raise_for_status()
     data = resp.json()
     out = data["choices"][0]["message"]["content"] or ""

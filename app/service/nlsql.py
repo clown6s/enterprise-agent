@@ -54,6 +54,9 @@ _GEN_PROMPT = """你是数据库查询生成器。根据下面的表结构描述
    - 观察问句涉及哪几张表 → 在【关联关系】中找对应的表对 → 直接用其 ON 条件拼 JOIN
    - 不要臆测 JOIN 条件；关联关系里没有的不要硬连
 7. 表别名用单字母（如 a、b、c），JOIN 后 WHERE/LIMIT 仍需保留
+8. 泛指问法（"详情/详细信息/具体信息/全部信息/资料/情况"等未指定具体列
+   但已指明查询对象）= 查该对象相关表的全部注册列，这不是"无法确定查什么"，
+   不要输出空模板。例："给我王强的详情" → SELECT 全部列 FROM employee WHERE name=%s
 
 【表结构】
 {schema}
@@ -223,7 +226,8 @@ def _build_schema_with_joins(tables: list[dict]) -> str:
         cols_text = "，".join(
             f"{c['name']}({c.get('desc', '')}，如：{c.get('sample', '')})"
             for c in t["columns"])
-        parts.append(f"表 {t['table']}：{t['description']}\n{cols_text}")
+        all_cols = "，".join(c["name"] for c in t["columns"])
+        parts.append(f"表 {t['table']}：{t['description']}\n{cols_text}\n（泛指问法如详情/详细信息/全部信息查这些列：{all_cols}）")
     # 关联关系块（只注入两端表都已注册的 JOIN）
     join_lines = []
     for src, dst, on, desc in _JOINS:
@@ -463,7 +467,7 @@ def try_answer_result(query: str, user: str = "") -> dict | None:
     if len(rows) > 1:
         # 多行结构化展示：正文只留摘要，详情交给 table 渲染，避免飞书/Web
         # 同时展示完整文本列表+表格导致重复（用户实况：14 条正文后又重复表格）。
-        # 摘要保留列名：纯“共 N 条”对经营数据等问题信息量不足，回归 guard-004
+        # 摘要保留列名：纯"共 N 条"对经营数据等问题信息量不足，回归 guard-004
         # 也要求正文仍能说明回答的是哪类指标；明细不在正文重复展开。
         return {"answer": _table_summary(len(rows), heads), "table": table}
     return {"answer": _answer_with_llm(query, text, rows), "table": None}
