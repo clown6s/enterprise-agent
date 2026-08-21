@@ -1,7 +1,6 @@
-name: enterprise-agent
-
 services:
   app:
+    container_name: app
     build:
       context: .
       dockerfile: Dockerfile
@@ -32,6 +31,7 @@ services:
     networks: [enterprise_backend]
 
   nginx:
+    container_name: nginx
     image: nginx:alpine
     restart: unless-stopped
     ports:
