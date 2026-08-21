@@ -19,7 +19,7 @@ load_dotenv(_ENV_PATH)
 # 这些键为空时，相关主能力会在第一次请求才失败；启动检查统一提前报告。
 # 不把可选渠道（飞书/OCR）列进来，避免关闭可选能力时误报。
 _REQUIRED_CONFIG_KEYS = (
-    "DASHSCOPE_API_KEY",
+    "DEEPSEEK_API_KEY",
     "ZHIPU_API_KEY",
     "SILICONFLOW_API_KEY",
     "MYSQL_ROOT_PASSWORD",
@@ -61,13 +61,12 @@ def validate_config() -> list[str]:
 
 
 # ---------------- LLM ----------------
-# 主力模型 qwen3-max（百炼旗舰，OpenAI 兼容接口）：对话 + 流式
-# （2026-08-17 用户指定：主力生成换更强千问，替代 deepseek-chat）
-DASHSCOPE_KEY = _env("DASHSCOPE_API_KEY")
-DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-MAIN_KEY = _env("MODEL_MAIN_KEY") or DASHSCOPE_KEY
-MAIN_BASE = _env("MODEL_MAIN_BASE", DASHSCOPE_BASE)
-MAIN_MODEL = _env("MODEL_MAIN", "qwen3-max")
+# 主力模型 deepseek-chat（DeepSeek，OpenAI 兼容接口）：对话 + 流式
+DEEPSEEK_KEY = _env("DEEPSEEK_API_KEY")
+DEEPSEEK_BASE = _env("DEEPSEEK_BASE", "https://api.deepseek.com/v1")
+MAIN_KEY = _env("MODEL_MAIN_KEY") or DEEPSEEK_KEY
+MAIN_BASE = _env("MODEL_MAIN_BASE", DEEPSEEK_BASE)
+MAIN_MODEL = _env("MODEL_MAIN", "deepseek-chat")
 # 智谱 GLM（校验独立裁判 + 生成降级第二棒——与主力不同厂商，厂商级故障隔离）
 ZHIPU_KEY = _env("ZHIPU_API_KEY")
 ZHIPU_BASE = _env("ZHIPU_BASE", "https://open.bigmodel.cn/api/paas/v4")
@@ -94,15 +93,15 @@ MODEL_REGISTRY = {
                "key": _env("MODEL_VERIFY_KEY") or ZHIPU_KEY,
                "extra": {"thinking": {"type": "disabled"}},
                "timeout": 30},
-    # 校验链第二棒：智谱挂了回退旧裁判（qwen3-max）
-    "verify_fallback": {"model": "qwen3-max", "base": DASHSCOPE_BASE,
-                        "key": DASHSCOPE_KEY,
-                        "extra": {"enable_thinking": False},
+    # 校验链第二棒：智谱挂了回退主力同厂商（DeepSeek）
+    "verify_fallback": {"model": _env("MODEL_VERIFY_FALLBACK", MAIN_MODEL),
+                        "base": _env("MODEL_VERIFY_FALLBACK_BASE", MAIN_BASE),
+                        "key": _env("MODEL_VERIFY_FALLBACK_KEY") or MAIN_KEY,
                         "timeout": 30},
-    # 图片→文字（PDF/docx 内嵌图 chunk 用，qwen-vl 多模态）
-    "ocr": {"model": _env("MODEL_OCR", "qwen-vl-plus"),
-            "base": _env("MODEL_OCR_BASE", DASHSCOPE_BASE),
-            "key": _env("MODEL_OCR_KEY") or DASHSCOPE_KEY},
+    # 图片→文字（PDF/docx 内嵌图 chunk 用，智谱多模态模型）
+    "ocr": {"model": _env("MODEL_OCR", "glm-4v-plus"),
+            "base": _env("MODEL_OCR_BASE", ZHIPU_BASE),
+            "key": _env("MODEL_OCR_KEY") or ZHIPU_KEY},
 }
 
 # ---------------- 向量检索 ----------------

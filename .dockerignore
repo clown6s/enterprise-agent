@@ -15,3 +15,12 @@ data/uploads
 .idea
 .vscode
 .claude
+certs/
+Caddyfile
+docker-compose.yml
+Dockerfile
+.dockerignore
+deploy/
+docs/
+eval/
+scripts/

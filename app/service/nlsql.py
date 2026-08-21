@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-NL2SQL 查询层（2026-08-18）：问句 → 已注册表 → 生成 SQL → 五关校验 → 执行 → 回答。
+NL2SQL 查询层：问句 → 已注册表 → 生成 SQL → 五关校验 → 执行 → 回答。
 
 权限：query_schema 注册表带 grants（与 doc_acl 同口径：空=全员可见，
 非空=employee:ID 名单）——用户身份经 acl.resolve_employee 解析后只可见
