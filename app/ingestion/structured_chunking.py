@@ -226,19 +226,54 @@ def chunk_outline(text, max_chars=600):
 
 
 def chunk_medical_mixed(text, max_chars=600):
-    units = []; cur = []; page = 1; section = []
+    units = []; cur = []; page = 1; start_page = 1; section = []; entry_number = None
+    item_re = re.compile(r'^\s*(\d+)[、.．]\s*(?:\*\s*)?(.*)$')
     def flush():
+        nonlocal entry_number, start_page
         if cur:
             body = ' '.join(x.strip() for x in cur if x.strip())
-            if body: units.append({'text': body, 'page': page, 'section_path': list(section)})
-            cur.clear()
+            if body:
+                units.append({'text': body, 'page': start_page, 'page_end': page,
+                              'section_path': list(section), 'kind': 'medical_mixed',
+                              'entry_number': entry_number})
+            cur.clear(); entry_number = None
+        start_page = page
     for raw in (text or '').splitlines():
         s = raw.strip()
         if not s: continue
         marker = re.fullmatch(r'\[\[page:(\d+)\]\]', s)
-        if marker: flush(); page = int(marker.group(1)); continue
-        if s.startswith('## '): flush(); section = [s[3:].strip()]; continue
-        if re.match(r'^[⑴⑵⑶⑷⑸⑹⑺⑻⑼①②③④⑤]|^（\d+）', s) or ('|' in s and s.count('|') >= 2): flush()
+        if marker:
+            page = int(marker.group(1)); continue
+        if s.startswith('## '):
+            flush(); section = [s[3:].strip()]; continue
+        item = item_re.match(s)
+        all_items = list(re.finditer(r'\d+[、.．]\s*', s))
+        if item and len(all_items) == 1:
+            flush(); entry_number = int(item.group(1)); cur.append(s); continue
+        if item and len(all_items) > 1:
+            first_end = all_items[1].start()
+            flush(); entry_number = int(item.group(1)); cur.append(s[:first_end].rstrip()); flush()
+            suffix = s[first_end:].lstrip(); next_item = item_re.match(suffix)
+            if next_item:
+                entry_number = int(next_item.group(1)); cur.append(suffix); continue
+        # PDF 表格常把下一条编号粘在同一行；只有当前条目且编号前有空白/标点时拆分。
+        inline = next((m for m in re.finditer(r'(?P<num>\d+)[、.．]\s*', s) if m.start() > 0), None)
+        if entry_number is not None and inline:
+            # 仅处理当前条目正文中的后续编号；正文里的年份/剂量没有“、/．”后缀。
+            prefix_raw = s[:inline.start()]
+            prefix = prefix_raw.rstrip()
+            suffix = s[inline.start():].lstrip()
+            if prefix and suffix and (prefix_raw[-1].isspace() or prefix[-1] in '。；：:，,　 ' or re.search(r'[一-龥)]$', prefix) or (entry_number >= 30 and prefix and suffix)):
+                cur.append(prefix); flush()
+                m = item_re.match(suffix)
+                if m:
+                    entry_number = int(m.group(1)); cur.append(suffix); continue
+        # 表格行只在没有活动条目时开启新块；活动条目中的表格行属于该条目。
+        # 仅医疗 profile 使用此边界，避免影响法律/技术书等其他类别。
+        if ('|' in s and s.count('|') >= 2) and entry_number is None and cur:
+            flush()
+        elif re.match(r'^[⑴⑵⑶⑷⑸⑹⑺⑻⑼①②③④⑤]|^（\d+）', s) and entry_number is None:
+            flush()
         cur.append(s)
     flush(); return _split_units(units, max_chars)
 
