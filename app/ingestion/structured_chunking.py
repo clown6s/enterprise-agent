@@ -81,7 +81,7 @@ def chunk_qa(text,max_chars=600):
     def flush():
         if cur:
             b=' '.join(x.strip() for x in cur if x.strip())
-            if b: units.append({'text':b,'page':page,'section_path':[sec] if sec else []})
+            if b: units.append({'text':b,'page':page,'section_path':[sec] if sec else [],'kind':'qa','question_number':None,'qa_status':'unknown'})
             cur.clear()
     for raw in (text or '').splitlines():
         line=raw.strip()

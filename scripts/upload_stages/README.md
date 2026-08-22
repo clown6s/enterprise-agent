@@ -81,7 +81,24 @@ PYTHONUTF8=1 python scripts/upload_stages/test_upload_structure.py --file D:/dat
 
 该阶段只分类，不切分、不向量化、不写入 Milvus/Neo4j。
 
-### 4. 切分阶段
+### QA 专属 chunk 字段
+
+当 `profile` 为 `qa` 时，切分 JSON 中会出现以下字段：
+
+- `kind`：内容类型，`qa` 表示问答单元。
+- `question_number`：当前章节内的问题编号；不同章节可以重复从 1 开始，必须结合 `section_path` 解读。
+- `qa_status`：问题与答案的结构配对状态：
+  - `paired`：检测到问题，并且后续有 `答：`、`答案：`、`解析：` 或可归属的答案内容；
+  - `orphan_question`：检测到问题，但到下一个问题、章节或文档结束都没有答案内容；
+  - `orphan_answer`：出现答案标记，但前面没有可归属的问题；
+  - `orphan_text`：文本既无法归属章节，也无法归属问题/答案；
+  - `partial`：有答案标记但内容为空或结构明显不完整；
+  - `unknown`：无法可靠判断配对状态。
+- `section_path`：问题所属章节路径。
+- `page`：原始内容所在页；DOCX 没有页码时可能统一为 1。
+
+`qa_status` 是解析器根据文档结构确定的状态，不是模型判断结果，也不是向量检索分数。非 QA profile 不应输出 `question_number` 或 `qa_status`。
+
 
 ```bash
 PYTHONUTF8=1 python scripts/upload_stages/test_upload_chunk.py --file D:/datum/中华人工共和国民法典.pdf

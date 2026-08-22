@@ -10,6 +10,22 @@ if __name__ == '__main__':
     path, data, text, diagnostics = parsed()
     c = classify_document(text, path)
     chunks = chunk_document(text, path, 600)
+    normalized = []
+    for unit in chunks:
+        row = {"text": unit.get("text", ""), "page": unit.get("page", 1)}
+        if unit.get("section_path"):
+            row["section_path"] = unit["section_path"]
+        kind = unit.get("kind") or ("qa" if c.kind == "qa" else c.kind)
+        if kind:
+            row["kind"] = kind
+        if c.kind == "qa":
+            import re
+            m = re.match(r"\s*(\d+)", row["text"])
+            row["question_number"] = int(m.group(1)) if m else None
+            row["qa_status"] = "paired" if re.search(r"答\s*[:：]", row["text"]) else "unknown"
+        elif c.kind == "legal" and "article" in unit:
+            row["article"] = unit["article"]
+        normalized.append(row)
     result = {
         'stage': 'chunk',
         'file': path,
@@ -18,7 +34,7 @@ if __name__ == '__main__':
         'evidence': list(c.evidence),
         'count': len(chunks),
         'max_chars': max((len(x['text']) for x in chunks), default=0),
-        'chunks': chunks,
+        'chunks': normalized,
     }
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     name = os.path.splitext(os.path.basename(path))[0] + '.chunk.json'
