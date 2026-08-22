@@ -63,13 +63,13 @@ PYTHONUTF8=1 python scripts/upload_stages/test_upload_structure.py --file D:/dat
 PYTHONUTF8=1 python scripts/upload_stages/test_upload_chunk.py --file D:/datum/中华人工共和国民法典.pdf
 ```
 
-查看每个切分单元的：
+切分结果写入项目根目录：
 
-- 文本
-- 页码
-- 章节路径
-- 条号/结构类型
-- 字符数
+```text
+outputs/upload_stages/<文件名>.chunk.json
+```
+
+该目录已加入 `.gitignore`，不会提交到 Git。JSON 包含每个切分单元的文本、页码、章节路径、条号/结构类型和字符数。
 
 ### 5. 向量阶段（只使用 mock）
 

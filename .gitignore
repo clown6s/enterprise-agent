@@ -14,5 +14,6 @@ htmlcov/
 data/synonyms.json
 data/uploads/
 data/backup/
-certs/
 nginx.conf
+# 测试/预览本地输出
+outputs/
