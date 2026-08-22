@@ -139,8 +139,17 @@ def _parse_docx(data: bytes) -> str:
         from docx.text.paragraph import Paragraph
         doc = docx.Document(io.BytesIO(data))
         parts = []
+        page = 1
 
         def add_para(para) -> None:
+            nonlocal page
+            # python-docx 将分页符保留在 run XML 中，但 para.text 不含分页边界；
+            # 先按 run 顺序检查显式分页符，避免 DOCX 进入结构化切分后全部落到 page=1。
+            for run in para.runs:
+                xml = run._r.xml
+                if re.search(r'<w:br[^>]*w:type="page"|<w:lastRenderedPageBreak\\b', xml):
+                    page += 1
+                    parts.append(f"[[page:{page}]]")
             text = (para.text or "").strip()
             if not text:
                 return

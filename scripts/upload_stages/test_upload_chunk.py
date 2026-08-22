@@ -25,7 +25,7 @@ if __name__ == '__main__':
             row["qa_status"] = "paired" if re.search(r"答\s*[:：]", row["text"]) else "unknown"
         elif c.kind == "legal" and "article" in unit:
             row["article"] = unit["article"]
-        for key in ("title", "category", "term", "definition", "definition_part"):
+        for key in ("title", "category", "term", "definition", "definition_part", "continuation", "continuation_of", "continuation_index", "quality_flag"):
             if key in unit:
                 row[key] = unit[key]
         normalized.append(row)
