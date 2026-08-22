@@ -303,6 +303,9 @@ class DocumentProfileRegistry:
                         key=lambda x: x.confidence, reverse=True)
         if not scores or scores[0].confidence < .65:
             return Classification('generic', 0, ('fallback',))
+        strong = next((x for x in scores if x.kind in {'qa', 'legal'} and x.confidence >= .9), None)
+        if strong:
+            return strong
         if len(scores) > 1 and scores[0].confidence - scores[1].confidence < .10:
             return Classification('generic', scores[0].confidence, ('ambiguous',))
         return scores[0]
