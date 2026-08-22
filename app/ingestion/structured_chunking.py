@@ -4,8 +4,9 @@ from dataclasses import dataclass
 import re
 
 _TOC = re.compile(r"^\s*(.+?)(?:\.{2,}|…{2,}|\s{3,})(\d+)\s*$")
-_ARTICLE = re.compile(r"^\s*(第\s*[0-9零一二三四五六七八九十百千万]+\s*条)(?![一-龥A-Za-z0-9])")
-_ARTICLE_ANY = re.compile(r"第\s*[0-9零一二三四五六七八九十百千万]+\s*条(?![一-龥A-Za-z0-9])")
+_ARTICLE_SUFFIX = r"(?:之\s*[0-9零一二三四五六七八九十百千万]+)?"
+_ARTICLE = re.compile(r"^\s*(第\s*[0-9零一二三四五六七八九十百千万]+\s*条\s*" + _ARTICLE_SUFFIX + r")(?![一-龥A-Za-z0-9])")
+_ARTICLE_ANY = re.compile(r"第\s*[0-9零一二三四五六七八九十百千万]+\s*条\s*" + _ARTICLE_SUFFIX + r"(?![一-龥A-Za-z0-9])")
 _LEVEL = re.compile(r"^\s*(第\s*[0-9零一二三四五六七八九十百千万]+\s*(?:编|篇|章|节))(?![一-龥A-Za-z0-9])")
 _Q = re.compile(r"^\s*(\d+)[、.．]\s*(.+)$")
 _A = re.compile(r"^\s*(?:答|答案|解析)\s*[:：]\s*(.*)$")
@@ -61,7 +62,15 @@ def _split_inline_articles(line):
             continue
         # 条文标题常被 DOCX 抽取为“第一百零一条　询问…”或“第一百零一条询问…”，
         # 不能要求条号后必须有空格/标点；前置引用词过滤才是避免误切的关键。
+        # 条文标题常被 DOCX 抽取为“第一百零一条　询问…”或“第一百零一条询问…”，
+        # 不能要求条号后必须有空格/标点；前置引用词过滤才是避免误切的关键。
         if re.search(r'(?:本法|前款|前项|依照|根据|按照|上述|下列)\s*$', before):
+            continue
+        # 条号后接顿号/逗号通常是正文中的引用列表（如“第二百零八条、第二百零九条”），
+        # 不是新条文标题；PDF 换行时也不能因此切断当前条文。
+        if after and after[0] in '、，,':
+            continue
+        if after and not after[0].isspace() and after[0] not in '　：:。！？；':
             continue
         starts.append(match.start())
     return [line[a:b].strip() for a, b in zip(starts, starts[1:] + [len(line)])] if starts else []
@@ -101,31 +110,44 @@ def chunk_legal(text, max_chars=600):
         nonlocal current, in_body
         flush(); match = _ARTICLE.match(segment)
         if match:
-            current = {'text': segment.strip(), 'page': page, 'article': re.sub(r'\s+', '', match.group(1)), 'section_path': [x[1] for x in stack], 'kind': 'legal'}
+            current = {'text': segment.strip(), 'page': page, 'article': re.sub(r'\s+', '', match.group(1)), 'section_path': [x[1] for x in stack], 'kind': 'legal', '_page_parts': [[page, segment.strip()]]}
             in_body = True
     for raw in (text or '').splitlines():
         line = raw.strip()
         if not line: continue
+        heading = re.sub(r'^##\s*', '', line).strip()
         marker = re.fullmatch(r'\[\[page:(\d+)\]\]', line)
         if marker:
             # 条文跨页时不能 flush：否则下一页正文会脱离原条文并被丢弃。
             page = int(marker.group(1)); continue
-        if line in {'目录', '目 录'}: flush(); in_body = False; continue
-        level = _LEVEL.match(line)
+        if heading in {'目录', '目 录'}: flush(); in_body = False; stack = []; continue
+        level = _LEVEL.match(heading)
         if level:
             flush(); label = level.group(1).strip(); rank = ranks.get(label[-1], 2)
-            stack = [x for x in stack if x[0] < rank] + [(rank, label)]; continue
+            stack = [x for x in stack if x[0] < rank] + [(rank, label)]
+            remainder = heading[level.end():].strip()
+            if remainder:
+                parts = _split_inline_articles(remainder)
+                if parts:
+                    for part in parts: start(part)
+            continue
         parts = _split_inline_articles(line)
         if parts:
             for part in parts: start(part)
             continue
         if in_body and current:
             current['text'] += ' ' + line
+            current.setdefault('_page_parts', []).append([page, line])
         elif not in_body:
             # 不能静默吞掉条文前导、附录或异常抽取文本；目录/页眉等结构行已在前面处理，
             # 其余内容保留为可追踪兜底块，调用方可按 kind 复核而非误当正文条文。
             units.append({'text': line, 'page': page, 'section_path': [x[1] for x in stack], 'kind': 'legal_unclassified', 'quality_flag': 'unclassified_legal_text'})
     flush()
+    for unit in units:
+        parts = unit.pop('_page_parts', None)
+        if parts:
+            pages = {p for p, _ in parts}
+            unit['page_end'] = max(pages)
     return _split_units(units, max_chars)
 
 
