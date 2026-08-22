@@ -193,7 +193,21 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         _archive_original(sha, filename, data)
         return {"documentId": dup.get("docId", ""), "fileName": filename,
                 "chunks": dup.get("chunks", 0), "duplicate": True}
-    text = parse.parse_bytes(filename, data)
+    ext = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
+    diagnostics = None
+    if ext == "pdf":
+        text, diagnostics = parse.parse_pdf_with_diagnostics(data)
+        _log("pdf_quality_gate", file=filename, quality_action=diagnostics.get("action"),
+             reasons=";".join(diagnostics.get("reasons") or [])[:200],
+             usable_chars=diagnostics.get("usable_chars", 0),
+             terminal_fragments=diagnostics.get("terminal_fragment_count", 0))
+        if diagnostics.get("action") == "reject":
+            reason = "；".join(diagnostics.get("reasons") or []) or "PDF 质量检查未通过"
+            _log("pdf_quality_gate", file=filename, action="reject",
+                 reasons=reason[:200], usable_chars=diagnostics.get("usable_chars", 0))
+            return {"error": f"《{filename}》未通过 PDF 质量检查：{reason}"}
+    else:
+        text = parse.parse_bytes(filename, data)
     if not text or not text.strip():
         reason = parse.explain_parse_failure(filename, data)
         _log("parse_failed", file=filename, size=len(data), reason=reason)
@@ -227,7 +241,12 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         return {"error": f"《{filename}》向量库写入失败。"}
     _record_ingested(sha, doc_id, filename, doc_title, len(chunks))
     _archive_original(sha, filename, data)
-    return {"documentId": doc_id, "fileName": filename, "chunks": len(chunks)}
+    result = {"documentId": doc_id, "fileName": filename, "chunks": len(chunks)}
+    if diagnostics is not None:
+        result["diagnostics"] = diagnostics
+        if diagnostics.get("reasons"):
+            result["warnings"] = diagnostics["reasons"]
+    return result
 
 
 def _archive_original(sha: str, filename: str, data: bytes) -> None:

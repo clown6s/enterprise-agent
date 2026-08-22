@@ -114,7 +114,9 @@ RERANK_MIN_SCORE = 0.3                 # rerank 分数下限（低于此分视�
 TOP_K = 12                             # 向量召回数（曾 8——法律类长文档多条款，
                                         # RRF 把目标条款挤出前 8 的实况；rerank 层
                                         # 控精度，召回放宽无副作用）
-RERANK_TOP_N = 4                       # 重排后保留数
+RERANK_TOP_N = 4                       # 最终证据条数
+RERANK_CANDIDATE_N = 12                # 进入重排的候选窗口
+EVIDENCE_PER_DOCUMENT = 2              # 单文档证据上限（先过分数阈值）
 
 # ---------------- Milvus ----------------
 MILVUS_HOST = _env("MILVUS_HOST", "10.211.55.5")

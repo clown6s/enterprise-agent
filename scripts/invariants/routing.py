@@ -22,7 +22,15 @@ def run(check) -> None:
     check("领域单位聚合", "mmHg" in domains.num_unit_extra())
     check("领域同义词组聚合", bool(domains.synonym_groups()))
 
-    # 18. doc_acl.grants 解析兼容两形态（JSON 数组/裸逗号串——曾 JSON 形态的
+    check("泛问注意事项不误杀相关资料",
+          not agent._attention_gap("高血压应该注意什么", "高血压诊断标准和控制目标"))
+    check("明确饮食维度缺资料拒绝",
+          agent._attention_gap("高血压饮食应该注意什么", "高血压诊断标准") )
+    check("明确饮食维度有资料放行",
+          not agent._attention_gap("高血压饮食应该注意什么", "高血压饮食应低盐"))
+    check("多维任一缺失拒绝",
+          agent._attention_gap("高血压饮食和用药应该注意什么", "高血压饮食应低盐"))
+
     # 引号把前缀匹配全带崩，受限文档从未生效过）
     check("grants JSON 数组解析", acl._parse_grants('["employee:3","5"]') == {3, 5})
     check("grants 裸逗号串解析", acl._parse_grants("employee:3,employee:4") == {3, 4})

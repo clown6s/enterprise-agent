@@ -39,6 +39,7 @@ _SCORE_PROMPT = """你是答案相关性评审员。判断【答案】是否**�
 4 = 正面回应了问题想问的点（部分细节未覆盖可接受）
 3 = 只答了相邻内容，没有正面回应问题 → 不合格
 1 = 答非所问或对用户无用
+注意：如果问题只是泛问“应该注意什么/注意事项”，资料只覆盖其中一个或多个相关方面时，基于已覆盖资料回答仍算正面回应；不要因为没有覆盖所有可能维度而判低分。只有主体确实跑题才判不合格。
 只输出一个 1-5 的整数。
 
 【问题】
@@ -55,7 +56,8 @@ _SCORE_PROMPT = """你是答案相关性评审员。判断【答案】是否**�
 _REVERSE_SCORE_PROMPT = """你是答案相关性评审员（反向检查）。只判断一件事：【答案】的主体内容是否跑题——
 即答案大部分内容没有回应【问题】想问的点（例如问"饮食注意"却主要在讲
 诊断分类或元信息）。注意事项类答案的多小节列表（饮食/运动/用药各一节）
-都算回应，不算跑题；个别补充段落也不算跑题。
+都算回应，不算跑题；泛问“应该注意什么”时，资料只覆盖一个相关方面也算回应，
+不能因未覆盖所有可能维度而判为跑题；个别补充段落也不算跑题。
 跑题输出 1，不跑题输出 5。只输出一个数字。
 
 【问题】
@@ -71,6 +73,14 @@ _RELEVANCE_ROUNDS = 2
 _QUESTION_INTENT = re.compile(
     r"什么|怎么|如何|为什么|为何|注意|建议|推荐|哪些|几个|多少|哪年|哪一|吗|呢"
     r"|区别|流程|方法|方式|能否|可以|会不会|能不能|是不是|原因|时候|时间|多久")
+
+
+def _is_broad_attention_query(query: str) -> bool:
+    """泛问注意事项：未点名饮食/用药等具体维度。"""
+    from ..domains import dimension_pairs, attention_pattern
+    if not attention_pattern().search(query or ""):
+        return False
+    return not any(q_pat.search(query or "") for q_pat, _ in dimension_pairs())
 
 
 def _relevance_score(query: str, answer: str, prompt: str) -> int | None:
@@ -99,9 +109,17 @@ def _relevance_gate(query: str, answer: str) -> str:
                    pool.submit(copy_context().run, _relevance_score, query, answer, _REVERSE_SCORE_PROMPT)]
         scores = [f.result() for f in futures]
     valid = [s for s in scores if s is not None]
+    from . import rag_probe
+    rag_probe.emit("relevance_scores", scores=scores, valid=valid,
+                   threshold=_RELEVANCE_MIN,
+                   broad_attention=_is_broad_attention_query(query))
     if not valid:
         return answer
     if min(valid) < _RELEVANCE_MIN:
+        # 泛问注意事项允许资料覆盖部分相关维度；只有评审一致判为
+        # 明显跑题时才拒绝，避免“诊断/控制目标”被误当成无关内容。
+        if _is_broad_attention_query(query) and max(valid) >= _RELEVANCE_MIN - 1:
+            return answer
         log.info(f"相关性闸门拒绝（分数 {valid}）：{query[:40]}")
         return guards.NO_ANSWER
     return answer
@@ -162,6 +180,10 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
         if not over_deleted:
             over_deleted = _grounded_number_retention(answer, checked, context) < 0.6
         if checked and not over_deleted:
+            from . import rag_probe
+            rag_probe.emit("checked_answer", raw=rag_probe.text_meta(answer),
+                           checked=rag_probe.text_meta(checked), replaced=True,
+                           over_deleted=False)
             answer = checked
     except Exception:
         # 校验模型失败 → 原文下发（软依赖），确定性守卫仍会执行；连续失败触发熔断
@@ -181,6 +203,9 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
     # missing 用校验前的答案算：校验器已删掉的术语不误伤，漏删的在此兜底。
     answer = guards.run_guard_chain(answer, missing=missing, context=context,
                                     graph_only=graph_only)
+    from . import rag_probe
+    rag_probe.emit("guarded_answer", answer=rag_probe.text_meta(answer),
+                   graph_only=graph_only)
     if graph_only and answer == guards.NO_ANSWER and context.strip():
         # 数字硬删清空答案时回退确定性关系回显（数字编造拦住了，图谱关系
         # 本身仍可答——曾清空直接兜底，连合法关系内容也没了的 guard-014 实况）
@@ -198,4 +223,6 @@ def verify(answer: str, context: str, graph_only: bool = False, query: str = "")
         q = re.sub(r"\s+", "", query)
         if len(q) > 2 and _QUESTION_INTENT.search(q):
             answer = _relevance_gate(query, answer)
+    rag_probe.emit("final_answer", answer=rag_probe.text_meta(answer),
+                   no_answer=answer == guards.NO_ANSWER)
     return answer

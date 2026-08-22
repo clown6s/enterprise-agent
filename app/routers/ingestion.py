@@ -31,8 +31,11 @@ def upload(file: UploadFile = File(...), title: str = "", tags: str = ""):
     log.info("upload 成功 %s docId=%s chunks=%s duplicate=%s",
              file.filename or "未命名", result["documentId"],
              result.get("chunks"), result.get("duplicate", False))
-    return {"success": True, "message": None,
-            "data": {"documentId": result["documentId"],
-                     "fileName": result["fileName"],
-                     "fileSize": len(data),
-                     "duplicate": result.get("duplicate", False)}}
+    data_out = {"documentId": result["documentId"],
+                "fileName": result["fileName"],
+                "fileSize": len(data),
+                "duplicate": result.get("duplicate", False)}
+    for key in ("diagnostics", "warnings"):
+        if key in result:
+            data_out[key] = result[key]
+    return {"success": True, "message": None, "data": data_out}

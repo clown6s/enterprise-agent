@@ -41,7 +41,17 @@ def run(check) -> None:
               "**饮食**：\n- 控盐。\n根据现有资料，暂无法回答其他问题。")
           == "**饮食**：\n- 控盐。")
 
-    # 7. 空标题清理：不删 "**标题**：\n1. 内容" 正常结构
+    check("混入矛盾否定删除",
+          guards.strip_contradictory_denial(
+              "资料中提及孟尝君田文、春申君黄歇、信陵君魏无忌、平原君赵胜。资料中未涉及相关内容。")
+          == "资料中提及孟尝君田文、春申君黄歇、信陵君魏无忌、平原君赵胜。")
+    check("纯矛盾否定回兜底",
+          guards.strip_contradictory_denial("资料中未涉及相关内容。") == guards.NO_ANSWER)
+    check("正常资料范围讨论保留",
+          guards.strip_contradictory_denial("本节讨论资料中未涉及的内容范围。")
+          == guards.NO_ANSWER)
+
+
     check("空标题不误删编号行",
           guards.collapse_empty_headings("**标题**：\n1. 内容") == "**标题**：\n1. 内容")
 

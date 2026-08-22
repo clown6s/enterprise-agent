@@ -136,6 +136,40 @@ def test_parse_docx_invalid():
     check("非法 docx 返空", parse._parse_docx(b"not a docx") == "")
 
 
+def test_pdf_terminal_fragment_repair():
+    out = parse._repair_terminal_fragments(
+        [(1, "正文内容进行"), (2, "合理调整。\n下一段")])
+    check("同行后缀残片合并", "正文内容进行合理调整。" in out[0][1]
+          and "合理调整" not in out[1][1])
+    out = parse._repair_terminal_fragments([(1, "**标题**\n进行。"), (2, "列表开始")])
+    check("模糊短行保留", "进行" in out[0][1])
+    out = parse._repair_terminal_fragments([(1, "正文\n标题"), (2, "**下一节**")])
+    check("下一页标题不合并", out[0][1].endswith("标题"))
+def test_pdf_page_diagnostics():
+    m = parse._pdf_page_diagnostics(
+        "正文", [{"x0": 0, "x1": 50, "y0": 0, "y1": 100}], 100, 100)
+    check("图片覆盖率", abs(m["image_coverage"] - 0.5) < 1e-6, m)
+    check("少量文字高覆盖触发 OCR", m["needs_ocr"], m)
+    m2 = parse._pdf_page_diagnostics("正常正文" * 30,
+                                     [{"x0": 0, "x1": 100, "y0": 0, "y1": 100}], 100, 100)
+    check("正常文字大图跳过 OCR", not m2["needs_ocr"], m2)
+    m3 = parse._pdf_page_diagnostics("", [], 100, 100)
+    check("无图空页跳过 OCR", not m3["needs_ocr"], m3)
+
+
+def test_pdf_footer_lines():
+    check("数字页脚移除", parse._strip_terminal_footer_lines("正文\n4 页") == "正文")
+    check("Page页脚移除", parse._strip_terminal_footer_lines("正文\nPage 4") == "正文")
+    check("罗马页脚移除", parse._strip_terminal_footer_lines("正文\niv") == "正文")
+    check("正文数字不误删", parse._strip_terminal_footer_lines("正文 4") == "正文 4")
+def test_pdf_terminal_fragment_drop():
+    out = parse._drop_incomplete_terminal_lines(
+        "完整原则。\n如出现不一致，可根据严重程度进行").strip()
+    check("页内末尾残句删除", out == "完整原则。", repr(out))
+    check("完整短句保留", parse._drop_incomplete_terminal_lines("完整原则。\n注意事项。") == "完整原则。\n注意事项。")
+    check("短标题保留", parse._drop_incomplete_terminal_lines("正文。\n用药原则") == "正文。\n用药原则")
+
+
 def test_pdf_page_ocr_gate():
     """正常页跳过 OCR，空/乱码页才 OCR，且结果保留页码。"""
     original = parse._ocr_image
@@ -173,6 +207,10 @@ if __name__ == "__main__":
     test_with_title_marks()
     test_parse_docx()
     test_parse_docx_invalid()
+    test_pdf_page_diagnostics()
+    test_pdf_terminal_fragment_repair()
+    test_pdf_terminal_fragment_drop()
+    test_pdf_footer_lines()
     test_pdf_page_ocr_gate()
     test_pdf_page_ocr_failure()
     print(f"\n{PASS} 通过 / {FAIL} 失败")

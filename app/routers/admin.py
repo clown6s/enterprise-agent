@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 from .. import config, milvus_store, mysql_store
 from ..learn import feedback, gap_discovery, usage
-from ..service import agent
+from ..service import agent, graph
 import logging
 log = logging.getLogger(__name__)
 
@@ -939,7 +939,9 @@ def delete_document(doc_id: str, authorization: str | None = Header(default=None
     if not _auth(authorization):
         return _unauthorized()
     removed = milvus_store.delete_by_document_id(doc_id)
-    return _ok({"docId": doc_id, "chunksRemoved": removed})
+    graph_result = graph.delete_by_document_id(doc_id)
+    return _ok({"docId": doc_id, "chunksRemoved": removed,
+                 "graph": graph_result})
 
 
 @router.post("/api/rag/admin/documents/{doc_id}/rename")

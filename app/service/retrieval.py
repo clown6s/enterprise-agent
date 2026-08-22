@@ -49,6 +49,40 @@ def current_params() -> dict:
     }
 
 
+def _evidence_key(hit: dict) -> str:
+    """文档分组优先用稳定 document_id，同名来源也必须保持隔离。"""
+    return str(hit.get("document_id") or hit.get("source") or hit.get("title") or "")
+
+
+def _budget_evidence(hits: list[dict], *, limit: int,
+                     per_document: int = config.EVIDENCE_PER_DOCUMENT) -> list[dict]:
+    """在相关性过滤后做证据预算：先覆盖新文档，再按分数补齐。"""
+    if limit <= 0:
+        return []
+    selected: list[dict] = []
+    counts: dict[str, int] = {}
+    for hit in hits:
+        key = _evidence_key(hit)
+        if counts.get(key, 0) >= per_document:
+            continue
+        if not selected or key not in counts:
+            selected.append(hit)
+            counts[key] = counts.get(key, 0) + 1
+            if len(selected) >= limit:
+                return selected
+    for hit in hits:
+        if len(selected) >= limit:
+            break
+        key = _evidence_key(hit)
+        if counts.get(key, 0) >= per_document:
+            continue
+        # 第一轮已选过的对象不能重复补入；同文档只补充尚未选择的其他 chunk。
+        if any(existing is hit for existing in selected):
+            continue
+        selected.append(hit)
+        counts[key] = counts.get(key, 0) + 1
+    return selected
+
 def retrieve(query: str, *, top_k: int | None = None,
              min_score: float | None = None,
              rerank_top_n: int | None = None,
@@ -93,14 +127,17 @@ def retrieve(query: str, *, top_k: int | None = None,
         if len(hits) >= 20:
             break   # rerank 候选上限，防扩展灌爆
     hits = hits[:20]
-    # rerank 精排（软依赖：rerank 挂了回退原始顺序+分数过滤）。
+    from . import rag_probe
+    rag_probe.emit("retrieval_raw_hits", count=len(hits),
+                   items=[rag_probe.hit_meta(h) for h in hits])
     # 重排词 = 主查询 + 扩展短语（词汇对齐层：曾用干净主查询重排并集候选，
     # 饮食表格 chunk 全灭——"饮食"与"食物/膳食"不对齐在重排层同样存在）
     rerank_q = query
     if extra_queries:
         rerank_q = f"{query} {' '.join(e for e in extra_queries if e.strip())}"
     reranked = embeddings.rerank(rerank_q, [h["text"] for h in hits],
-                                 top_n=rerank_top_n or config.RERANK_TOP_N)
+                                 top_n=max(rerank_top_n or config.RERANK_TOP_N,
+                                           config.RERANK_CANDIDATE_N))
     if reranked:
         kept = []
         for idx, score in sorted(reranked, key=lambda x: -x[1]):
@@ -109,15 +146,27 @@ def retrieve(query: str, *, top_k: int | None = None,
             h = hits[idx]
             kept.append({**h, "score": score})
         if kept:
-            return kept
+            selected = _budget_evidence(kept, limit=rerank_top_n or config.RERANK_TOP_N)
+            rag_probe.emit("retrieval_budgeted_hits", count=len(selected),
+                           items=[rag_probe.hit_meta(h) for h in selected],
+                           candidates=len(kept), min_score=min_score)
+            return selected
         # 名词查找豁免：重排全灭但问句无意图词（裸名词查询——rerank 列表内
         # 归一打分在候选杂时分数塌陷，裸名词全灭的实况）→ 按混合检索序取
         if not _QUESTION_INTENT.search(query):
-            return hits[: config.RERANK_TOP_N]
+            selected = _budget_evidence(hits, limit=config.RERANK_TOP_N)
+            rag_probe.emit("retrieval_budgeted_hits", count=len(selected),
+                           items=[rag_probe.hit_meta(h) for h in selected], candidates=len(hits),
+                           min_score="not_applied")
+            return selected
         return []
     # 无 rerank：不按 min_score 粗筛（RRF 融合分是 0~0.03 量级，与阈值不可比），
     # 直接取前 RERANK_TOP_N 条
-    return hits[: config.RERANK_TOP_N]
+    selected = _budget_evidence(hits, limit=config.RERANK_TOP_N)
+    rag_probe.emit("retrieval_budgeted_hits", count=len(selected),
+                   items=[rag_probe.hit_meta(h) for h in selected], candidates=len(hits),
+                   min_score="not_applied")
+    return selected
 
 
 def build_context(hits: list[dict], max_chars: int = 6000) -> str:
@@ -134,4 +183,10 @@ def build_context(hits: list[dict], max_chars: int = 6000) -> str:
             break
         parts.append(entry)
         total += len(entry)
-    return "".join(parts)
+    result = "".join(parts)
+    from . import rag_probe
+    rag_probe.emit("context_built", hits=len(parts), chars=len(result),
+                   max_chars=max_chars, truncated=bool(parts and total < sum(
+                       len(f"[来源: {h['source'] or '未知'} 第{h.get('page', '')}页]\n{h['text']}\n\n")
+                       for h in hits)))
+    return result

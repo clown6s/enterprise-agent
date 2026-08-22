@@ -291,11 +291,15 @@ def _attention_gap(query: str, context: str) -> bool:
     q, ctx = query or "", context or ""
     if not q or not ctx:
         return False
-    for q_pat, c_pat in dimension_pairs():
-        if q_pat.search(q):
-            return c_pat.search(ctx) is None
+    matched = [c_pat for q_pat, c_pat in dimension_pairs() if q_pat.search(q)]
+    if matched:
+        # 多维问题按“全覆盖”判定：任一明确维度缺资料就 fail-closed，
+        # 不能因第一个维度命中而放行其余未覆盖维度。
+        return any(c_pat.search(ctx) is None for c_pat in matched)
+    # 泛问“应该注意什么/注意事项”不再强制要求生活方式词；
+    # 相关性和事实校验层会阻止把相邻资料硬凑成答案。
     if attention_pattern().search(q):
-        return lifestyle_pattern().search(ctx) is None
+        return False
     return False
 
 
@@ -314,6 +318,9 @@ def _anchor_short_query(query: str, answer: str, source: str) -> str:
     if not src:
         return answer
     answer = guards.strip_leading_anchor(answer)
+    # 模型可能已在答案末尾输出“（来源：文件名）”；再补统一锚定前先移除，
+    # 避免 Web/飞书同时显示模型来源和系统来源而重复。
+    answer = re.sub(r"\s*[（(]来源：?[^）)]*[）)]\s*$", "", answer).rstrip()
     return f"根据《{src}》一文：\n{answer}"
 
 
@@ -559,6 +566,10 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
              query[:30], search_query[:30], len(hits), len(context))
     hblock = history.history_block(turns)
     fb = guards.strip_injection_sentences(file_block) if file_block else ""
+    file_source = ""
+    if fb:
+        m = re.search(r"(?:文件名|来源)[:：]\s*([^\n]+)", fb)
+        file_source = m.group(1).strip() if m else ""
     if not context.strip():
         if hblock and _META_QUESTION.search(query):
             user_prompt = (f"【资料】\n{hblock}\n\n【文件上下文】\n{fb}\n\n【用户问题】\n{query}"
@@ -566,13 +577,15 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
             raw = _llm_call(user_prompt, stream=stream)
             final = verify.verify(raw, f"{hblock}\n{fb}" if fb else hblock, query="")
             _maybe_enqueue_review(conversation_id, query, final)
-            return _result(final, Route.KNOWLEDGE_QA)
+            return _result(final, Route.KNOWLEDGE_QA,
+                           sources=[file_source] if file_source else [])
         if fb:
             user_prompt = f"【资料】\n{fb}\n\n【用户问题】\n{query}"
             raw = _llm_call(user_prompt, stream=stream)
             final = verify.verify(raw, fb, query=query)
             _maybe_enqueue_review(conversation_id, query, final)
-            return _result(final, Route.KNOWLEDGE_QA)
+            return _result(final, Route.KNOWLEDGE_QA,
+                           sources=[file_source] if file_source else [])
         log.info("knowledge_empty_context query=%s", query[:40])
         graph_fb = _try_graph_fallback(search_query, turns, fb, conversation_id)
         if graph_fb:
@@ -602,6 +615,9 @@ def _answer_knowledge_qa(query: str, conversation_id: str, user: str,
     gen_prompt = (f"{prefix}\n\n{hblock}\n【用户问题】\n{query}" if hblock
                   else f"{prefix}\n\n【用户问题】\n{query}")
     raw = _llm_call(gen_prompt, stream=stream)
+    from . import rag_probe
+    rag_probe.emit("raw_generation", answer=rag_probe.text_meta(raw), stream=stream,
+                   hits=len(hits), sources=len(sources))
     vctx = context
     if graph_ctx:
         vctx = f"{vctx}\n{graph_ctx}"

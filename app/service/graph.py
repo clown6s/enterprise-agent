@@ -9,10 +9,13 @@ Neo4j 知识图谱访问（图谱-only 兜底：文档检索空手时，用图�
 """
 import json
 import re
+import logging
 
 from neo4j import GraphDatabase
 
 from .. import config
+
+log = logging.getLogger(__name__)
 
 _driver = None
 
@@ -112,11 +115,12 @@ def build_from_chunks(chunks: list[str], doc_id: str = "") -> int:
             src = t["source"].strip()[:40]
             tgt = t["target"].strip()[:40]
             rel = _RELATION_SYNONYMS.get(t["relation"].strip(), t["relation"].strip())[:24]
-            key = (src, rel, tgt)
+            key = (src, rel, tgt, doc_id)
             if key in seen:
                 continue
             seen.add(key)
-            triples.append({"source": src, "relation": rel, "target": tgt})
+            triples.append({"source": src, "relation": rel, "target": tgt,
+                            "doc_id": doc_id})
 
     if not triples:
         return 0
@@ -126,15 +130,38 @@ def build_from_chunks(chunks: list[str], doc_id: str = "") -> int:
                 "UNWIND $triples AS t "
                 "MERGE (a:Entity {name: t.source}) "
                 "MERGE (b:Entity {name: t.target}) "
-                "MERGE (a)-[:RELATES {type: t.relation}]->(b)",
+                "MERGE (a)-[:RELATES {type: t.relation, doc_id: t.doc_id}]->(b)",
                 triples=triples,
             )
         return len(triples)
     except Exception:
         return 0
+def delete_by_document_id(doc_id: str) -> dict[str, int | bool]:
+    """删除指定文档的图谱关系，并清理不再关联任何关系的实体。"""
+    if not re.fullmatch(r"[0-9A-Za-z_-]{1,128}", doc_id or ""):
+        return {"ok": False, "relations_deleted": 0, "entities_deleted": 0}
+    try:
+        with _db().session() as s:
+            rel_result = s.run(
+                "MATCH ()-[r:RELATES {doc_id: $doc_id}]-() DELETE r "
+                "RETURN count(r) AS deleted",
+                doc_id=doc_id,
+            )
+            rel_row = rel_result.single() or {}
+            entity_result = s.run(
+                "MATCH (n:Entity) WHERE NOT (n)--() DELETE n "
+                "RETURN count(n) AS deleted"
+            )
+            entity_row = entity_result.single() or {}
+            return {"ok": True,
+                    "relations_deleted": int(rel_row.get("deleted", 0)),
+                    "entities_deleted": int(entity_row.get("deleted", 0))}
+    except Exception as e:
+        log.warning("graph_delete_failed doc_id=%s error=%s", doc_id, type(e).__name__)
+        return {"ok": False, "relations_deleted": 0, "entities_deleted": 0}
 
 
-def expand(query: str, limit: int = 20) -> str:
+
     """图谱遍历 → 自然语言上下文；无可关联实体/图不可用返回空串（软依赖）"""
     candidates = _candidates(query)
     if not candidates:

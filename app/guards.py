@@ -505,7 +505,48 @@ def strip_no_answer_hedge(text: str) -> str:
     return result
 
 
-# 提示词回显拦截：模型偶发把【对话历史】注入块整段抄进答案正文——
+def strip_source_tail(text: str) -> str:
+    """删除模型重复输出的来源尾注；结构化 sources 由展示层统一呈现。"""
+    if not text:
+        return text
+    text = re.sub(r"\s*[（(](?:来源|出处)：[^）)]*[）)]\s*$", "", text).rstrip()
+    return text
+
+
+
+_DENIAL_PHRASES = (
+    "暂无法回答", "资料中未涉及", "资料未涉及", "资料中未包含",
+    "资料未包含", "现有资料没有说明", "现有资料未说明", "无法回答",
+)
+
+
+def strip_contradictory_denial(text: str) -> str:
+    """已有实质答案时，删除模型追加的资料不足/无法回答否定句。
+
+    纯否定仍回标准兜底；只处理明确的 unsupported 句式，避免删除正文中
+    对“资料未涉及范围”的正常讨论。
+    """
+    if not text or not any(p in text for p in _DENIAL_PHRASES):
+        return text
+    if _norm(text) == _norm(NO_ANSWER):
+        return text
+    kept = []
+    removed = 0
+    for sentence in re.split(r"(?<=[。！？；\n])", text):
+        if any(p in sentence for p in _DENIAL_PHRASES):
+            removed += 1
+        else:
+            kept.append(sentence)
+    if not removed:
+        return text
+    result = "".join(kept).strip()
+    if not result or all(not l.strip() or re.fullmatch(r"[（(].*[）)]", l.strip())
+                         for l in result.split("\n")):
+        return NO_ANSWER
+    return result
+
+
+
 # "心衰如何诊断"图谱兜底实况：答案原样回显"【对话历史…】问：…答：…"，
 # 且 vctx 含历史使校验层无从拦截（历史是合法依据）。确定性硬删：
 # 含"【对话历史"的行与"问：/答："开头的行全部移除（回答规范不用该格式），
@@ -595,6 +636,8 @@ def clean_cjk_spacing(text: str) -> str:
 
 GUARD_REGISTRY: list[dict] = [
     {"name": "strip_no_answer_hedge", "fn": strip_no_answer_hedge},
+    {"name": "strip_source_tail", "fn": strip_source_tail},
+    {"name": "strip_contradictory_denial", "fn": strip_contradictory_denial},
     {"name": "strip_history_echo", "fn": strip_history_echo},
     {"name": "strip_missing_terms", "fn": strip_missing_terms, "needs_missing": True},
     {"name": "strip_graph_only_numbers", "fn": strip_graph_only_numbers,
@@ -607,9 +650,8 @@ GUARD_REGISTRY: list[dict] = [
 
 def run_guard_chain(answer: str, missing=(), context: str = "",
                     graph_only: bool = False) -> str:
-    """按注册顺序执行守卫链（单调否决：每步输出不宽松于上一步）。
-    守卫异常不炸链——单条失败跳过继续（dsh observe 逐监听器容错同款），
-    其余守卫仍收尾；返回值保证非空（fix_output 兜底 NO_ANSWER）。"""
+    """按注册顺序执行守卫链，并在诊断开启时记录每步长度/hash。"""
+    from .service import rag_probe
     for g in GUARD_REGISTRY:
         if g.get("when_graph_only") and not graph_only:
             continue
@@ -619,7 +661,11 @@ def run_guard_chain(answer: str, missing=(), context: str = "",
                 kwargs["missing"] = missing
             if g.get("needs_context"):
                 kwargs["context"] = context
+            before = answer
             answer = g["fn"](answer, **kwargs)
+            rag_probe.emit("guard_transition", guard=g["name"],
+                           before=rag_probe.text_meta(before),
+                           after=rag_probe.text_meta(answer))
         except Exception:
             continue
     return answer
