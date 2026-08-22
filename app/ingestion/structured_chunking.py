@@ -96,6 +96,47 @@ def chunk_qa(text,max_chars=600):
 
 
 def chunk_glossary(text,max_chars=600):
+    title=''; category=''; records=[]; current=None; page=1
+    for raw in (text or '').splitlines():
+        s=raw.strip()
+        if not s or set(s)<=set('-—_ '): continue
+        if re.fullmatch(r'\[\[page:\d+\]\]',s):
+            if current:
+                records.append(current)
+                current=None
+            page=int(re.search(r'\d+',s).group())
+            continue
+        cm=re.match(r'^(?:[一二三四五六七八九十]+[、.．]|\d+[、.．])\s*(.+类)\s*$',s)
+        if cm:
+            if current:
+                records.append(current)
+                current = None
+            category=cm.group(1); continue
+        tm=re.match(r'^([^：:]{1,80})\s*[：:](.*)$',s)
+        if tm:
+            if current: records.append(current)
+            term=tm.group(1).strip(); definition=tm.group(2).strip()
+            if not title and not category:
+                title=s if not tm else ''
+            if not title and not category:
+                title=term
+            current={'term':term,'definition':definition,'page':page,'category':category,'title':title}
+        elif current:
+            current['definition'] += '\n'+s
+        elif not title:
+            title=s
+    if current: records.append(current)
+    out=[]
+    for r in records:
+        body=f"{r['term']}：{r['definition']}"
+        base={"page":r['page'],"section_path":[x for x in (r['title'],r['category']) if x],"kind":"definition","title":r['title'],"category":r['category'],"term":r['term'],"definition":r['definition']}
+        if len(body)<=max_chars: out.append({**base,'text':body}); continue
+        rest=body; part=1
+        while rest:
+            cut=rest.rfind('。',0,max_chars) if len(rest)>max_chars else len(rest)
+            if cut<=0: cut=min(max_chars,len(rest))
+            out.append({**base,'text':rest[:cut].strip(),'definition_part':part}); rest=rest[cut:].strip(); part+=1
+    return out
     units=[]; cur=[]; page=1
     def flush():
         if cur:

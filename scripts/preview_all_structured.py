@@ -49,9 +49,9 @@ def preview_file(path, max_chars):
                    "chars": len(unit.get("text", "")),
                    "page": unit.get("page", 1),
                    "section_path": unit.get("section_path", [])}
-            for key in ("kind", "article", "block_id", "part", "parts"):
-                if key in unit:
-                    row[key] = unit[key]
+            for key, value in unit.items():
+                if key not in {"text", "page", "section_path"}:
+                    row[key] = value
             if row["chars"] > max_chars:
                 item["quality_flags"].append("chunk_over_limit")
             item["units"].append(row)
