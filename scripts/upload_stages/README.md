@@ -51,11 +51,27 @@ PYTHONUTF8=1 python scripts/upload_stages/test_upload_quality.py --file D:/datum
 PYTHONUTF8=1 python scripts/upload_stages/test_upload_structure.py --file D:/datum/导游面试问答.docx
 ```
 
-查看：
+输出示例：
 
-- profile 类型
-- 置信度
-- 分类依据
+```json
+{
+  "stage": "structure",
+  "file": "D:\\datum\\古代诗歌常用意象.txt",
+  "profile": "glossary",
+  "confidence": 0.95,
+  "evidence": ["definition_density"]
+}
+```
+
+字段说明：
+
+- `stage`：当前测试阶段；`structure` 表示文档结构分类。
+- `file`：本次被测试的源文件路径。
+- `profile`：分类结果。常见值：`legal` 法规、`qa` 问答、`glossary` 术语定义、`outline` 层级大纲、`medical_mixed` 医学混合、`technical_book` 技术书、`generic` 通用回退。
+- `confidence`：分类置信度，范围 `0.0～1.0`；越高表示结构信号越明确。低置信度会回退 `generic`。
+- `evidence`：分类依据。例如 `definition_density` 表示“术语：解释”结构密度高；`question_answer_pairs` 表示问题/答案配对明显；`article_structure` 表示法规条文结构明显。
+
+该阶段只分类，不切分、不向量化、不写入 Milvus/Neo4j。
 
 ### 4. 切分阶段
 

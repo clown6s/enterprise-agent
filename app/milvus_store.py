@@ -223,6 +223,56 @@ def _search_with_retry(fn):
             time.sleep(0.5)
 
 
+def search_diagnostics(vector: list[float], query_text: str,
+                       top_k: int = config.TOP_K,
+                       expr: str | None = None) -> dict:
+    """只读分路诊断：dense/BM25 原生分数 + hybrid RRF 分数。"""
+    fields = ["text", "document_id", "title", "source", "page"]
+    result = {"alignment_key": "id", "top_k": top_k,
+              "branches": {"dense": [], "bm25": [], "hybrid_rrf": []},
+              "errors": {"dense": None, "bm25": None, "hybrid_rrf": None}}
+
+    def view(hits):
+        return [{"id": getattr(h, "id", None), "rank": i + 1,
+                 "score": float(getattr(h, "distance", 0.0)),
+                 "text": h.entity.get("text", ""),
+                 "document_id": h.entity.get("document_id", ""),
+                 "title": h.entity.get("title", ""),
+                 "source": h.entity.get("source", ""),
+                 "page": int(h.entity.get("page", 0) or 0)}
+                for i, h in enumerate(hits or [])]
+
+    client = _get_client()
+    try:
+        hits = _search_with_retry(lambda: client.search(
+            config.MILVUS_COLLECTION, data=[vector], anns_field="dense",
+            search_params={"metric_type": "COSINE", "params": {"nprobe": 16}},
+            limit=top_k, filter=expr, output_fields=fields))
+        result["branches"]["dense"] = view(hits[0] if hits else [])
+    except Exception as e:
+        result["errors"]["dense"] = type(e).__name__
+    try:
+        hits = _search_with_retry(lambda: client.search(
+            config.MILVUS_COLLECTION, data=[query_text], anns_field="sparse_bm25",
+            search_params={"metric_type": "BM25"}, limit=top_k,
+            filter=expr, output_fields=fields))
+        result["branches"]["bm25"] = view(hits[0] if hits else [])
+    except Exception as e:
+        result["errors"]["bm25"] = type(e).__name__
+    try:
+        dense_req = AnnSearchRequest(data=[vector], anns_field="dense",
+            param={"metric_type": "COSINE", "params": {"nprobe": 16}}, limit=top_k, expr=expr)
+        sparse_req = AnnSearchRequest(data=[query_text], anns_field="sparse_bm25",
+            param={"metric_type": "BM25"}, limit=top_k, expr=expr)
+        hits = _search_with_retry(lambda: client.hybrid_search(
+            config.MILVUS_COLLECTION, reqs=[dense_req, sparse_req],
+            ranker=RRFRanker(), limit=top_k, output_fields=fields))
+        result["branches"]["hybrid_rrf"] = view(hits[0] if hits else [])
+    except Exception as e:
+        result["errors"]["hybrid_rrf"] = type(e).__name__
+    result["score_semantics"] = {"dense": "COSINE similarity",
+        "bm25": "BM25 native score", "hybrid_rrf": "RRFRanker fused rank score"}
+    return result
 def insert_document(text: str, vector: list[float], document_id: str,
                     title: str, source: str) -> bool:
     """
