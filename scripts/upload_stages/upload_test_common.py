@@ -9,7 +9,7 @@ sys.path.insert(0, ROOT)
 from app.ingestion import parse
 from app.ingestion.structured_chunking import classify_document, chunk_document
 
-FILE_PATH = r"D:\datum\中华人民共和国治安管理处罚法_20250627.docx"
+FILE_PATH = r"D:\datum\家庭教育促进法.pdf"
 
 
 def get_file():

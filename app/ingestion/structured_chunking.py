@@ -107,16 +107,15 @@ def chunk_legal(text, max_chars=600):
         line = raw.strip()
         if not line: continue
         marker = re.fullmatch(r'\[\[page:(\d+)\]\]', line)
-        if marker: flush(); page = int(marker.group(1)); continue
+        if marker:
+            # 条文跨页时不能 flush：否则下一页正文会脱离原条文并被丢弃。
+            page = int(marker.group(1)); continue
         if line in {'目录', '目 录'}: flush(); in_body = False; continue
         level = _LEVEL.match(line)
         if level:
             flush(); label = level.group(1).strip(); rank = ranks.get(label[-1], 2)
             stack = [x for x in stack if x[0] < rank] + [(rank, label)]; continue
         parts = _split_inline_articles(line)
-        if parts:
-            for part in parts: start(part)
-            continue
         if parts:
             for part in parts: start(part)
             continue
@@ -143,7 +142,9 @@ def chunk_qa(text, max_chars=600):
         line = raw.strip()
         if not line: continue
         marker = re.fullmatch(r'\[\[page:(\d+)\]\]', line)
-        if marker: flush(); page = int(marker.group(1)); continue
+        if marker:
+            # 条文跨页时不能 flush：否则下一页正文会脱离原条文并被丢弃。
+            page = int(marker.group(1)); continue
         if _SECTION.match(line) and not _Q.match(line): flush(); section = line; continue
         if _Q.match(line): flush(); cur.append(line); continue
         if cur: cur.append(line)

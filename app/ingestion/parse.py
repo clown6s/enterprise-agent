@@ -283,8 +283,12 @@ _TERMINAL_FRAGMENT_RE = re.compile(
 _FOOTER_PAGE_RE = re.compile(r"^(?:page\s*\d+|第\s*\d+\s*页|\d+\s*页|\d+|[ivxlcdm]+)$", re.I)
 
 
-def _strip_terminal_footer_lines(text: str) -> str:
-    """移除页末通用页码行；只处理明确的页面家具形态。"""
+def _strip_terminal_footer_lines(text: str, page_no: int | None = None) -> str:
+    """移除页末页码行及版式抽取粘连的页码。
+
+    pdfplumber 的 layout 模式偶尔会把页脚数字拼到正文最后一行（例如“； 1”），
+    因此仅匹配独立行不够；只有数字等于当前页码时才从行尾移除，避免误删正文数字。
+    """
     lines = text.splitlines()
     while lines and not lines[-1].strip():
         lines.pop()
@@ -292,21 +296,27 @@ def _strip_terminal_footer_lines(text: str) -> str:
     while lines and _FOOTER_PAGE_RE.fullmatch(lines[-1].strip()):
         lines.pop()
         removed += 1
+    if lines and page_no is not None:
+        suffix = re.search(r"(?:\s|　)+(" + re.escape(str(page_no)) + r")$", lines[-1])
+        if suffix:
+            lines[-1] = lines[-1][:suffix.start()].rstrip()
+            removed += 1
     if removed:
-        log.debug("pdf_footer_lines_removed count=%d", removed)
+        log.debug("pdf_footer_lines_removed count=%d page=%s", removed, page_no)
     return "\n".join(lines)
-def _drop_incomplete_terminal_lines(text: str) -> str:
+def _drop_incomplete_terminal_lines(text: str, page_no: int | None = None) -> str:
     """丢弃页内末尾独立残句，保留同页前面的完整内容。"""
-    lines = _strip_terminal_footer_lines(text).splitlines()
+    cleaned = _strip_terminal_footer_lines(text, page_no)
+    lines = cleaned.splitlines()
     while lines and not lines[-1].strip():
         lines.pop()
     if len(lines) < 2:
-        return text
+        return cleaned
     last = lines[-1].strip()
     if (not last or len(last) > 80 or last.endswith(tuple(_CLOSING_CHARS))
             or last.startswith(("#", "-", "*", "•"))
             or last.isdigit() or not _TERMINAL_FRAGMENT_RE.search(last)):
-        return text
+        return cleaned
     lines.pop()
     log.debug("pdf_terminal_fragment_dropped chars=%d", len(last))
     return "\n".join(lines)
@@ -316,7 +326,7 @@ def _repair_terminal_fragments(page_texts: list[tuple[int, str]]) -> list[tuple[
     merged = 0
     for idx in range(len(repaired)):
         page_no, text = repaired[idx]
-        text = _drop_incomplete_terminal_lines(text)
+        text = _drop_incomplete_terminal_lines(text, page_no)
         repaired[idx] = (page_no, text)
         if idx + 1 >= len(repaired):
             continue
