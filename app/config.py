@@ -30,9 +30,9 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default).strip()
 
 
-TECHNICAL_BOOK_OCR_ENABLED = _env("TECHNICAL_BOOK_OCR_ENABLED", "false").lower() in ("1", "true", "yes")
-TECHNICAL_BOOK_OCR_MAX_PAGES = int(_env("TECHNICAL_BOOK_OCR_MAX_PAGES", "3") or 3)
-TECHNICAL_BOOK_OCR_MAX_IMAGES = int(_env("TECHNICAL_BOOK_OCR_MAX_IMAGES", "6") or 6)
+# ---------------- 百度云 PaddleOCR-VL ----------------
+PADDLEOCR_VL_ENABLED = _env("PADDLEOCR_VL_ENABLED", "true").lower() in ("1", "true", "yes")
+BAIDU_OCR_ACCESS_TOKEN = _env("BAIDU_OCR_ACCESS_TOKEN")
 
 FEISHU_APPROVAL_ENABLED = _env("FEISHU_APPROVAL_ENABLED", "false").lower() in ("1", "true", "yes")
 FEISHU_APP_ID = _env("FEISHU_APP_ID")
@@ -101,10 +101,6 @@ MODEL_REGISTRY = {
                         "base": _env("MODEL_VERIFY_FALLBACK_BASE", MAIN_BASE),
                         "key": _env("MODEL_VERIFY_FALLBACK_KEY") or MAIN_KEY,
                         "timeout": 30},
-    # 图片→文字（PDF/docx 内嵌图 chunk 用，智谱多模态模型）
-    "ocr": {"model": _env("MODEL_OCR", "glm-4v-plus"),
-            "base": _env("MODEL_OCR_BASE", ZHIPU_BASE),
-            "key": _env("MODEL_OCR_KEY") or ZHIPU_KEY},
 }
 
 # ---------------- 向量检索 ----------------

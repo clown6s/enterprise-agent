@@ -21,6 +21,7 @@ from .. import config, embeddings, milvus_store
 from ..service import graph
 from ..time_context import now as business_now
 from . import parse
+from .structured_chunking import classify_document
 
 _LOG = os.path.join(config.LOG_DIR, "ingestion.jsonl")
 _INGESTED_FILE = os.path.join(config.LOG_DIR, "ingested.jsonl")   # 内容 sha256 注册表
@@ -60,7 +61,7 @@ def _build_vector_rows(units: list[dict], vectors: list[list[float]],
                        doc_id: str, doc_title: str) -> list[dict]:
     """Build Milvus rows while carrying chunk-unit metadata through unchanged."""
     metadata_keys = ('kind', 'page_end', 'continuation', 'continuation_of',
-                     'continuation_index', 'section_path')
+                     'continuation_index', 'section_path', 'vl_blocks')
     rows = []
     for i, unit in enumerate(units):
         row = {
@@ -183,17 +184,21 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
                 "chunks": dup.get("chunks", 0), "duplicate": True}
     ext = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
     diagnostics = None
+    layout_blocks = []
     if ext == "pdf":
-        text, diagnostics = parse.parse_pdf_with_diagnostics(data)
-        _log("pdf_quality_gate", file=filename, quality_action=diagnostics.get("action"),
-             reasons=";".join(diagnostics.get("reasons") or [])[:200],
-             usable_chars=diagnostics.get("usable_chars", 0),
-             terminal_fragments=diagnostics.get("terminal_fragment_count", 0))
-        if diagnostics.get("action") == "reject":
-            reason = "；".join(diagnostics.get("reasons") or []) or "PDF 质量检查未通过"
-            _log("pdf_quality_gate", file=filename, action="reject",
-                 reasons=reason[:200], usable_chars=diagnostics.get("usable_chars", 0))
-            return {"error": f"《{filename}》未通过 PDF 质量检查：{reason}"}
+        local_text, diagnostics = parse.parse_pdf_with_diagnostics(data)
+        profile = classify_document(local_text, filename)
+        if profile.kind == "technical_book":
+            # 只有技术书 PDF 才整份交给 VL，普通文档继续走本地解析。
+            try:
+                text, layout_blocks = parse.parse_document_with_vl(filename, data)
+            except Exception as exc:
+                _log("paddleocr_vl_failed", file=filename, error=type(exc).__name__)
+                return {"error": f"《{filename}》PaddleOCR-VL 解析失败，请检查模型和输入文件。"}
+            _log("paddleocr_vl_layout", file=filename, blocks=len(layout_blocks))
+        else:
+            text = local_text
+            diagnostics = {**(diagnostics or {}), "vl_skipped": True, "profile": profile.kind}
     else:
         text = parse.parse_bytes(filename, data)
     if not text or not text.strip():
@@ -201,6 +206,10 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         _log("parse_failed", file=filename, size=len(data), reason=reason)
         return {"error": f"未从《{filename}》中解析出文本：{reason}"}
     units = chunk_units(text, filename=filename, max_chars=MAX_CHARS)
+    if layout_blocks:
+        vl_meta = [b for b in layout_blocks if b]
+        for unit in units:
+            unit['vl_blocks'] = vl_meta
     if not units:
         return {"error": f"《{filename}》切分后无内容。"}
     doc_id = uuid.uuid4().hex

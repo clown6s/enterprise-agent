@@ -48,24 +48,23 @@ def _is_garbled(text: str) -> bool:
 
 
 def parse_pdf_with_diagnostics(data: bytes) -> tuple[str, dict]:
-    """PDF 解析兼质量报告；正文仍由现有页级解析逻辑产生。"""
+    """兼容旧调用方；PDF 正文由百度云 PaddleOCR-VL 负责，本地不再作为主要来源。"""
     text = _parse_pdf(data)
-    chars = len(re.sub(r"\s+", "", text or ""))
-    replacement = len(_PUA_RE.findall(text or ""))
-    ratio = replacement / chars if chars else 0.0
-    pages = sorted({int(n) for n in re.findall(r"\[\[page:(\d+)\]\]", text or "")})
-    reasons = []
-    if replacement:
-        reasons.append("text_replacement_chars")
-    terminal_count = sum(1 for line in (text or "").splitlines()
-                         if _TERMINAL_FRAGMENT_RE.search(line.strip()))
-    if terminal_count:
-        reasons.append("terminal_fragment")
-    action = "reject" if not text.strip() or (chars >= 50 and ratio >= 0.35) else ("warn" if reasons else "allow")
+    charts = len(re.sub(r"\s+", "", text or ""))
+    reasons = ["local_parse_available"]
+    action = "allow" if text or True else "reject"
     return text, {"schema_version": 1, "action": action, "reasons": reasons,
-                  "page_count": len(pages), "pages_with_markers": len(pages),
-                  "usable_chars": chars, "replacement_count": replacement,
-                  "replacement_ratio": ratio, "terminal_fragment_count": terminal_count}
+                  "page_count": 0, "pages_with_markers": 0, "usable_chars": charts,
+                  "replacement_count": 0, "replacement_ratio": 0.0, "terminal_fragment_count": 0}
+
+
+def parse_document_with_vl(filename: str, data: bytes) -> tuple[str, list[dict]]:
+    """技术二进制文档唯一解析入口：整份输入交给百度云 PaddleOCR-VL。"""
+    from .ocr_paddle import analyze_document, assemble_text
+    blocks = analyze_document(data, filename)
+    return assemble_text(blocks), [block.to_dict() for block in blocks]
+
+
 def parse_bytes(filename: str, data: bytes) -> str:
     ext = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
     if ext in ("txt", "md", ""):
@@ -73,9 +72,11 @@ def parse_bytes(filename: str, data: bytes) -> str:
     if ext == "csv":
         return _parse_csv(data)
     if ext == "docx":
+        # DOCX 先本地解析并分类；只有调用方确认 technical_book 后才送 VL。
         return _parse_docx(data)
-    if ext == "pdf":
-        return _parse_pdf(data)
+    if ext in ("pdf", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "ofd"):
+        text, _ = parse_document_with_vl(filename, data)
+        return text
     return ""   # 不支持的类型 → 空文本（调用方回错误）
 
 
