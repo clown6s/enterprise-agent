@@ -9,7 +9,7 @@ sys.path.insert(0, ROOT)
 from app.ingestion import parse
 from app.ingestion.structured_chunking import classify_document, chunk_document
 
-FILE_PATH = r"D:\datum\内科学.pdf"
+FILE_PATH = r"D:\datum\AI-Agents-in-Depth-zh-CN.pdf"
 
 
 def get_file():
@@ -25,6 +25,10 @@ def parsed():
     name = os.path.basename(path)
     if name.lower().endswith(".pdf"):
         text, diagnostics = parse.parse_pdf_with_diagnostics(data)
+        c = classify_document(text, path)
+        if c.kind == 'technical_book':
+            text, ocr_diagnostics = parse.parse_technical_figures(data, text)
+            diagnostics = {**(diagnostics or {}), 'technical_figure_ocr': ocr_diagnostics}
     else:
         text, diagnostics = parse.parse_bytes(name, data), None
     return path, data, text, diagnostics

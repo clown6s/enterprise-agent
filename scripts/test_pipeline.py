@@ -77,10 +77,11 @@ def test_chunk_long_para_sentence_break():
     chunks, _ = P.chunk_text(sentence, max_chars=100, overlap=10)
     check("长段拆多块", len(chunks) > 1)
     check("拆块不超 max_chars 太多", all(len(c) <= 120 for c in chunks))
-    # overlap：后一块开头应含前一块尾部
+    # 新切分器按完整句边界切分，不复制字符尾部；重复由检索层处理，
+    # 避免相邻 chunk 出现“半句重复”的假丢文。
     if len(chunks) >= 2:
-        tail = chunks[0][-10:]
-        check("overlap 续接", chunks[1].startswith(tail), f"tail={tail!r} head={chunks[1][:12]!r}")
+        check("默认不复制字符 overlap", not chunks[1].startswith(chunks[0][-10:]),
+              f"tail={chunks[0][-10:]!r} head={chunks[1][:12]!r}")
 
 
 def test_chunk_empty():
@@ -89,7 +90,69 @@ def test_chunk_empty():
     check("空文本不崩", chunks == [] and pages == [])
 
 
-# ---------------- _archive_original：留底（临时目录） ----------------
+
+
+def test_technical_book_toc_filtered():
+    """技术书目录页不入检索块，正文页及正文中的“目录”仍保留。"""
+    from app.ingestion.structured_chunking import chunk_technical_book
+    text = ("[[page:1]]\n前言正文。\n"
+            "[[page:2]]\n目录\n第一章 引言........9\n"
+            "[[page:8]]\n第二章 实践........20\n"
+            "[[page:9]]\n## 第一章 引言\n正文说明目录结构，但这是正文。\n"
+            "def demo():\n    return '目录'\n")
+    units = chunk_technical_book(text, max_chars=120)
+    check("技术书目录不产出 toc", not any(u.get("kind") == "toc" for u in units))
+    check("目录条目不进入正文块", not any("第一章 引言........9" in u["text"] for u in units))
+    check("第1页正文保留", any(u.get("page") == 1 and "前言正文" in u["text"] for u in units))
+    check("第9页正文保留", any(u.get("page") == 9 and "正文说明目录结构" in u["text"] for u in units))
+    check("正文代码保留", any(u.get("kind") == "code" and "return '目录'" in u["text"] for u in units))
+    check("目录过滤后长度合规", all(len(u["text"]) <= 120 for u in units))
+
+
+def test_technical_book_pdf_whitespace():
+    """PDF 视觉空格不应拆散正文术语，英文词间空格仍保留。"""
+    from app.ingestion.structured_chunking import chunk_technical_book
+    text = "[[page:9]]\n第二章（上下文工程）是关键。提示工程（Prompt        Engineering，包括流程化设计、工 具描述、业务规则细化）。"
+    body = "\n".join(u["text"] for u in chunk_technical_book(text, max_chars=120))
+    check("中文词内空格恢复", "工具描述" in body)
+    check("英文术语空格保留", "Prompt Engineering" in body)
+
+
+def test_technical_book_code_continuity():
+    """代码按结构连续聚合，嵌套 JSON/括号尾行不能成为孤立块。"""
+    from app.ingestion.structured_chunking import chunk_technical_book
+    text = ("[[page:42]]\n"
+            "from openai import OpenAI\nclient = OpenAI()\n"
+            "tools = [{\n  \\\"type\\\": \\\"function\\\",\n  \\\"function\\\": {\n"
+            "    \\\"name\\\": \\\"get_weather\\\",\n    \\\"parameters\\\": {\n"
+            "      \\\"properties\\\": {\\\"city\\\": {\\\"type\\\": \\\"string\\\"}}\n"
+            "    }\n  }\n}]\n"
+            "def execute_tool(name, arguments):\n    return arguments\n"
+            "正文从这里开始。")
+    units = chunk_technical_book(text, max_chars=1000)
+    codes = [u for u in units if u.get("kind") == "code"]
+    body = "\n".join(u["text"] for u in codes)
+    check("代码起始行保留", "from openai import OpenAI" in body and "client = OpenAI()" in body)
+    check("嵌套结构连续", '"properties"' in body and "}]" in body)
+    check("函数定义连续", "def execute_tool" in body and "return arguments" in body)
+    check("无孤立结构尾块", not any(u["text"].strip() in {"]", "}", "},", ")]"} for u in codes))
+    check("正文与代码分离", any(u.get("kind") == "prose" and "正文从这里开始" in u["text"] for u in units))
+
+def test_build_vector_rows_preserves_unit_metadata():
+    units = [{
+        "text": "正文", "page": 2, "kind": "legal", "page_end": 3,
+        "continuation": True, "continuation_of": "article-1",
+        "continuation_index": 1, "section_path": ["第一章"],
+    }]
+    rows = P._build_vector_rows(units, [[0.1, 0.2]], "doc-1", "标题")
+    row = rows[0]
+    check("vector row保留基础字段", row["text"] == "正文" and row["page"] == 2
+          and row["document_id"] == "doc-1")
+    check("vector row保留全部unit元数据",
+          all(row.get(k) == units[0][k] for k in (
+              "kind", "page_end", "continuation", "continuation_of",
+              "continuation_index", "section_path")))
+
 
 def test_archive_original():
     tmp = tempfile.mkdtemp()
@@ -229,6 +292,10 @@ if __name__ == "__main__":
     test_chunk_aggregation()
     test_chunk_long_para_sentence_break()
     test_chunk_empty()
+    test_technical_book_toc_filtered()
+    test_technical_book_pdf_whitespace()
+    test_technical_book_code_continuity()
+    test_build_vector_rows_preserves_unit_metadata()
     test_archive_original()
     test_find_duplicate()
     test_ingest_end_to_end()

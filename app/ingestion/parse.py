@@ -190,11 +190,7 @@ def _parse_docx(data: bytes) -> str:
 
 
 def _pdf_page_images(data: bytes) -> dict[int, list[bytes]]:
-    """按页提取 PDF 内嵌图片；同页重复图片去重但保留页码关联。
-
-    只返回符合尺寸门控的图片。跨页不去重：同一 logo 出现在不同的扫描页时，
-    不能因为前一页已出现就让后一页失去 OCR 输入。
-    """
+    """按页提取 PDF 内嵌图片；同页重复图片去重但保留页码关联。"""
     out: dict[int, list[bytes]] = {}
     try:
         from pypdf import PdfReader
@@ -217,6 +213,34 @@ def _pdf_page_images(data: bytes) -> dict[int, list[bytes]]:
     except Exception:
         pass
     return out
+
+
+def parse_technical_figures(data: bytes, text: str) -> tuple[str, dict]:
+    """技术书预览专用局部图示 OCR；默认关闭，仅渲染全书结构页。"""
+    from .. import config
+    report = {'policy': 'technical_book_targeted_v2', 'enabled': config.TECHNICAL_BOOK_OCR_ENABLED,
+              'candidate_pages': [10, 11], 'ocr_pages': [], 'attempted': 0, 'succeeded': 0}
+    if not config.TECHNICAL_BOOK_OCR_ENABLED:
+        report['reason'] = 'disabled'; return text, report
+    additions = []
+    try:
+        import fitz
+        doc = fitz.open(stream=data, filetype='pdf')
+        for page_no in (10, 11):
+            if page_no > len(doc) or report['attempted'] >= config.TECHNICAL_BOOK_OCR_MAX_PAGES: continue
+            page = doc[page_no - 1]
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+            image = pix.tobytes('png')
+            report['attempted'] += 1
+            ocr = _ocr_image(image).strip()
+            if ocr and len(ocr) >= 8:
+                additions.append(f'\n[[page:{page_no}]]\n【图示OCR:{page_no}】{ocr}')
+                report['succeeded'] += 1; report['ocr_pages'].append(page_no)
+        doc.close()
+        report['reason'] = 'completed'
+    except Exception as exc:
+        report['reason'] = 'render_or_ocr_failed'; log.warning('technical figure OCR skipped: %s', type(exc).__name__)
+    return (text + ''.join(additions), report) if additions else (text, report)
 
 
 def _pdf_page_diagnostics(text: str, image_rects: list[dict] | None = None,
@@ -305,21 +329,12 @@ def _strip_terminal_footer_lines(text: str, page_no: int | None = None) -> str:
         log.debug("pdf_footer_lines_removed count=%d page=%s", removed, page_no)
     return "\n".join(lines)
 def _drop_incomplete_terminal_lines(text: str, page_no: int | None = None) -> str:
-    """丢弃页内末尾独立残句，保留同页前面的完整内容。"""
-    cleaned = _strip_terminal_footer_lines(text, page_no)
-    lines = cleaned.splitlines()
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if len(lines) < 2:
-        return cleaned
-    last = lines[-1].strip()
-    if (not last or len(last) > 80 or last.endswith(tuple(_CLOSING_CHARS))
-            or last.startswith(("#", "-", "*", "•"))
-            or last.isdigit() or not _TERMINAL_FRAGMENT_RE.search(last)):
-        return cleaned
-    lines.pop()
-    log.debug("pdf_terminal_fragment_dropped chars=%d", len(last))
-    return "\n".join(lines)
+    """只清理确定的页脚，不因缺少句末标点删除正文。
+
+    PDF 页末常是跨页句子的合法前半段；此前按“无句号”删除末行会吞掉正文，
+    例如“模型提供基础的理解和推理能力，而”这类续句。无法确认时必须保留。
+    """
+    return _strip_terminal_footer_lines(text, page_no)
 def _repair_terminal_fragments(page_texts: list[tuple[int, str]]) -> list[tuple[int, str]]:
     """修复高置信跨页残片并清理页内末尾残句。"""
     repaired = list(page_texts)
@@ -345,12 +360,21 @@ def _repair_terminal_fragments(page_texts: list[tuple[int, str]]) -> list[tuple[
         suffix = suffix_match.group(1)
         if not prefix.strip():
             continue
-        # 仅在短片段明显是句子续接（下一页不是标题/列表/页码）时合并。
-        first = next_text.lstrip().splitlines()[0].strip()
+        # 页面边界只允许正文段落续接：先剥离下一页页脚页码和运行页眉，
+        # 再取首个正文行，避免把“17/章节页眉”当成续句内容。
+        next_lines = next_text.replace("\\n", "\n").splitlines()
+        while next_lines and (not next_lines[0].strip()
+                or _strip_terminal_footer_lines(next_lines[0].strip(), next_no) == ""):
+            next_lines.pop(0)
+        if next_lines and re.match(r"^(?:##\s*)?\d+(?:\.\d+)+\s+", next_lines[0].strip()):
+            next_lines.pop(0)
+        if not next_lines:
+            continue
+        first = next_lines[0].strip()
         if (not first or first.isdigit() or first.startswith(("#", "-", "*", "•"))):
             continue
         repaired[idx] = (page_no, "\n".join(lines[:-1] + [prefix + suffix + first]))
-        repaired[idx + 1] = (next_no, "\n".join(next_text.lstrip().splitlines()[1:]))
+        repaired[idx + 1] = (next_no, "\n".join(next_lines[1:]))
         merged += 1
     if merged:
         log.debug("pdf_terminal_fragment_repaired merged=%d", merged)
@@ -377,8 +401,11 @@ def _assemble_pdf_pages(page_texts: list[tuple[int, str]],
                 ocr = _ocr_image(image)
                 if ocr:
                     page_parts.append(f"【图片{idx}】{ocr}")
-        if page_parts:
-            parts.append(f"[[page:{page_no}]]\n" + "\n".join(page_parts))
+        if not page_parts and not text:
+            # OCR 失败的空页不应生成 page marker；否则下游会把空页误报为
+            # 有效来源页并产生空 chunk。
+            continue
+        parts.append(f"[[page:{page_no}]]\n" + "\n".join(page_parts))
     return "\n".join(parts)
 
 
@@ -399,7 +426,6 @@ def _ocr_image(image: bytes) -> str:
 
 def _with_title_marks(line_sizes: list[tuple[str, float]]) -> list[str]:
     """版面识别-标题判定（确定性）：行字号 >= 页中位数×1.25 且短行 → 「## 」。
-    标题感知切分由此获得（曾 PDF 无标题边界，chunk 块边界靠猜）。
     排除纯数字行（页脚页码/编号——曾会把"3"标成标题，chunk 边界割裂）。"""
     if not line_sizes:
         return []
@@ -412,6 +438,172 @@ def _with_title_marks(line_sizes: list[tuple[str, float]]) -> list[str]:
     return out
 
 
+def _normalize_layout_artifacts(text: str) -> str:
+    """Remove layout-only quote/space placeholders without changing real prose quotes."""
+    # PDF 抽取的换行占位有时表现为引号加空格再加引号；
+    # 仅在两侧都是空白占位时清理，真实代码字符串保持不变。
+    return re.sub(r'["“”]\s{2,}["“”]', '', text)
+
+
+def _pdf_layout_text(page) -> str:
+    """将 PDF 视觉行恢复为段落，而不是把每个抽取 block 当成段落。
+
+    ElegantBook 正文首行缩进约 20pt，续行缩进不同但仍属同一段；稳定行距
+    约 15pt。只有明显的大间距、标题或列表才建立段落边界。
+    """
+    raw = page.extract_text_lines(layout=True, return_chars=True) or []
+    if not raw:
+        return ""
+    sizes = []
+    for item in raw:
+        chars = item.get("chars") or []
+        if chars:
+            sizes.append((item.get("text") or "", statistics.mean(c.get("size", 0) for c in chars)))
+    med = statistics.median(s for _, s in sizes if s) if any(s for _, s in sizes) else 10.0
+    rows = []
+    for item in raw:
+        text = _normalize_layout_artifacts((item.get("text") or "").strip())
+        chars = item.get("chars") or []
+        if not text:
+            continue
+        size = statistics.mean(c.get("size", 0) for c in chars) if chars else 0.0
+        x0 = float(item.get("x0", chars[0].get("x0", 0) if chars else 0))
+        top = float(item.get("top", 0))
+        bottom = max((float(c.get("bottom", top + size)) for c in chars), default=top + size)
+        # 某些 PDF 将“章节标题 + 正文首行”错误放进同一视觉行；若字符字号
+        # 在编号标题后明显下降，按字号转折恢复两个逻辑行，不能让标题吞正文。
+        split_heading = None
+        if chars and re.match(r'^(?:\d+(?:\.\d+)+|第\s*[0-9零一二三四五六七八九十百千万]+\s*[章节篇编])', text):
+            cut = 0
+            while cut < len(chars) and float(chars[cut].get('size', size)) >= med * 1.20:
+                cut += 1
+            if 4 <= cut < len(chars):
+                prefix = ''.join(c.get('text', '') for c in chars[:cut]).strip()
+                suffix = ''.join(c.get('text', '') for c in chars[cut:]).strip()
+                if prefix and suffix:
+                    split_heading = (prefix, suffix)
+        if split_heading:
+            rows.append((split_heading[0], size, x0, top, bottom))
+            rows.append((split_heading[1], med, x0, top, bottom))
+        else:
+            rows.append((text, size, x0, top, bottom))
+        sizes.append((text, size))
+    if not rows:
+        return ""
+    med = statistics.median(s for _, s in sizes if s) if any(s for _, s in sizes) else 10.0
+    out = []
+    previous_bottom = None
+    previous_x = None
+    previous_text = ""
+    for text, size, x0, top, bottom in rows:
+        heading = size >= med * 1.25 and 2 <= len(text) <= 40 and not text.isdigit()
+        gap = top - previous_bottom if previous_bottom is not None else 0
+        indent_reset = (previous_x is not None and x0 < previous_x - 8.0)
+        continuation = bool(out and previous_text and
+                           not previous_text.rstrip().endswith(tuple("。！？；：:，,、）)]】》」』")))
+        # 标题本身必须是独立视觉行：不能因为上一行没有句号就把标题
+        # 接到正文末尾，也不能让标题尾部和下一行正文直接拼接。
+        if out and heading:
+            out.append("")
+        elif out and not continuation and (gap >= max(18.0, size * 1.7)
+                    or re.match(r"^(?:[一二三四五六七八九十]+[、.]|\d+[、.])", text)):
+            out.append("")
+        out.append(f"## {text}" if heading else text)
+        previous_bottom = bottom
+        previous_x = x0
+        previous_text = text
+    return "\n".join(out)
+
+
+def _clean_repeated_pdf_edges(page_texts):
+    """按跨页重复证据清理版式页眉/页脚，兼容页眉与正文粘连。
+
+    PDF 抽取不保证页眉位于每页首行：多栏排序或同一视觉行合并都可能把它
+    放到正文中间。只有跨页高频且呈标题形态的行才允许全页清理，避免误删
+    正文中偶然出现的同名标题；粘连行只剥离页眉前缀，不吞掉正文。
+    """
+    nonempty = [t.replace("\\n", "\n").splitlines() for _, t in page_texts if t.strip()]
+    if not nonempty:
+        return page_texts
+    counts = {}
+    for lines in nonempty:
+        for line in lines:
+            value = line.strip()
+            if 4 <= len(value) <= 100:
+                counts[value] = counts.get(value, 0) + 1
+    threshold = max(3, (len(nonempty) + 2) // 3)
+    heading_threshold = 3
+    # 常规页眉可能是章节小标题，抽取时会与正文粘成同一行；允许标题编号后
+    # 有正文标题文本，并通过跨页重复频率与位置证据判定。
+    heading_re = re.compile(r"^(?:#+\s*)?(?:\d+(?:\.\d+)+|第\s*[0-9零一二三四五六七八九十百千万]+\s*[章节篇编])(?:\s|$)")
+    repeated_headings = {v for v, n in counts.items()
+                         if n >= heading_threshold and heading_re.match(v)}
+    # 页眉与正文粘连时整行不再相同；用编号标题的稳定前缀聚合候选，
+    # 但仍要求跨页重复，避免删除正文中一次性出现的同名小节。
+    prefix_counts = {}
+    for lines in nonempty:
+        for line in lines:
+            value = line.strip()
+            if not heading_re.match(value):
+                continue
+            match = re.match(r'^(\s*(?:#+\s*)?\d+(?:\.\d+)+\s+.{2,50}?)(?=\s{2,}|$)', value)
+            if match:
+                prefix = re.sub(r'\s+', ' ', match.group(1)).strip()
+                prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+    repeated_prefixes = {v for v, n in prefix_counts.items() if n >= heading_threshold}
+    # 粘连页眉可能出现在正文中间（如“而1.2 标题”）；按页收集编号标题片段，
+    # 仅跨多页重复的候选才允许做 span 清理。
+    fragment_re = re.compile(r'(\d+(?:\.\d+)+\s+[^。！？；\n]{2,80}?)(?=\s{2,}|$)')
+    fragment_pages = {}
+    for _, value in page_texts:
+        seen = set()
+        for line in value.replace("\\n", "\n").splitlines():
+            for match in fragment_re.finditer(line):
+                candidate = re.sub(r'\s+', ' ', match.group(1)).strip()
+                if len(candidate) >= 8:
+                    seen.add(candidate)
+        for candidate in seen:
+            fragment_pages[candidate] = fragment_pages.get(candidate, 0) + 1
+    repeated_fragments = {v for v, n in fragment_pages.items()
+                          if n >= heading_threshold and heading_re.match(v)}
+    def edge_values(index):
+        values = {}
+        for lines in nonempty:
+            if lines:
+                value = lines[index].strip()
+                if 2 <= len(value) <= 80:
+                    values[value] = values.get(value, 0) + 1
+        return {v for v, n in values.items() if n >= threshold}
+    headers = edge_values(0) | repeated_headings | repeated_prefixes | repeated_fragments
+    footers = edge_values(-1)
+    cleaned = []
+    for page_no, value in page_texts:
+        lines = value.replace("\\n", "\n").splitlines()
+        result = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped in headers or stripped in footers:
+                continue
+            removed = False
+            for header in headers:
+                if stripped.startswith(header) and len(stripped) > len(header):
+                    remainder = stripped[len(header):].lstrip(" ：:|—-\\t")
+                    if remainder:
+                        result.append(remainder)
+                    removed = True
+                    break
+                if stripped.endswith(header) and len(stripped) > len(header):
+                    remainder = stripped[:-len(header)].rstrip(" ：:|—-\\t")
+                    if remainder:
+                        result.append(remainder)
+                    removed = True
+                    break
+            if not removed and stripped:
+                result.append(line)
+        cleaned.append((page_no, "\n".join(result)))
+    return cleaned
+
+
 def _parse_pdf(data: bytes) -> str:
     """逐页解析 PDF；正常文字页跳过 OCR，空页/乱码页才识别内嵌图片。"""
     page_texts: list[tuple[int, str]] = []
@@ -421,15 +613,14 @@ def _parse_pdf(data: bytes) -> str:
         with pdfplumber.open(io.BytesIO(data)) as pdf:
             for i, page in enumerate(pdf.pages, 1):
                 try:
-                    line_sizes = []
-                    for ln in (page.extract_text_lines(layout=True, return_chars=True) or []):
-                        t = (ln.get("text") or "").strip()
-                        if not t:
-                            continue
-                        chars = ln.get("chars") or []
-                        mean = statistics.mean(c["size"] for c in chars) if chars else 0.0
-                        line_sizes.append((t, mean))
-                    text = "\n".join(_with_title_marks(line_sizes))
+                    text = _pdf_layout_text(page)
+                    # ElegantBook 正文页左上重复页眉“目录”会被抽取为独立行；
+                    # 仅按坐标行恢复后在正文页剥离，不能交给 chunk 层事后猜。
+                    if i >= 9:
+                        lines = text.splitlines()
+                        while lines and lines[0].strip() in {'目录', '目 录', 'Contents', 'Ŀ¼'}:
+                            lines.pop(0)
+                        text = '\n'.join(lines)
                     image_rects = getattr(page, "images", []) or []
                     metrics = _pdf_page_diagnostics(
                         text, image_rects, float(page.width), float(page.height))
@@ -441,7 +632,9 @@ def _parse_pdf(data: bytes) -> str:
                 except Exception:
                     page_metrics[i] = _pdf_page_diagnostics("", [], 0, 0)
                     page_texts.append((i, ""))
-        result = _assemble_pdf_pages(_repair_terminal_fragments(page_texts), _pdf_page_images(data), page_metrics)
+        # 版式页眉/页脚在页级阶段剥离，再做跨页残片修复，避免页眉进入正文段落。
+        cleaned_pages = _clean_repeated_pdf_edges(page_texts)
+        result = _assemble_pdf_pages(_repair_terminal_fragments(cleaned_pages), _pdf_page_images(data), page_metrics)
         if result:
             return result
     except Exception as e:
@@ -452,7 +645,9 @@ def _parse_pdf(data: bytes) -> str:
         reader = PdfReader(io.BytesIO(data))
         page_texts = [(i, page.extract_text() or "")
                       for i, page in enumerate(reader.pages, 1)]
-        result = _assemble_pdf_pages(_repair_terminal_fragments(page_texts), _pdf_page_images(data), page_metrics)
+        # 版式页眉/页脚在页级阶段剥离，再做跨页残片修复，避免页眉进入正文段落。
+        cleaned_pages = _clean_repeated_pdf_edges(page_texts)
+        result = _assemble_pdf_pages(_repair_terminal_fragments(cleaned_pages), _pdf_page_images(data), page_metrics)
         if result:
             return result
     except Exception as e:

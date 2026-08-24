@@ -10,25 +10,10 @@ if __name__ == '__main__':
     path, data, text, diagnostics = parsed()
     c = classify_document(text, path)
     chunks = chunk_document(text, path, 600)
+    # 上传阶段只观察切分器产出的 unit；不再凭 profile 推断或补写元数据。
     normalized = []
     for unit in chunks:
-        row = {"text": unit.get("text", ""), "page": unit.get("page", 1)}
-        if unit.get("section_path"):
-            row["section_path"] = unit["section_path"]
-        kind = unit.get("kind") or ("qa" if c.kind == "qa" else c.kind)
-        if kind:
-            row["kind"] = kind
-        if c.kind == "qa":
-            import re
-            m = re.match(r"\s*(\d+)", row["text"])
-            row["question_number"] = int(m.group(1)) if m else None
-            row["qa_status"] = "paired" if re.search(r"答\s*[:：]", row["text"]) else "unknown"
-        elif c.kind == "legal" and "article" in unit:
-            row["article"] = unit["article"]
-        for key in ("title", "category", "term", "definition", "definition_part", "continuation", "continuation_of", "continuation_index", "quality_flag", "page_end", "entry_number"):
-            if key in unit:
-                row[key] = unit[key]
-        normalized.append(row)
+        normalized.append(dict(unit))
     result = {
         'stage': 'chunk',
         'file': path,

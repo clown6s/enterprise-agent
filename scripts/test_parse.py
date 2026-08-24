@@ -136,7 +136,31 @@ def test_parse_docx_invalid():
     check("非法 docx 返空", parse._parse_docx(b"not a docx") == "")
 
 
+
 def test_pdf_terminal_fragment_repair():
+    out = parse._repair_terminal_fragments(
+        [(1, "正文内容进行"), (2, "合理调整。\n下一段")])
+    check("同行后缀残片合并", "正文内容进行合理调整。" in out[0][1]
+          and "合理调整" not in out[1][1])
+    out = parse._repair_terminal_fragments([(1, "**标题**\n进行。"), (2, "列表开始")])
+    check("模糊短行保留", "进行" in out[0][1])
+    out = parse._repair_terminal_fragments([(1, "正文\n标题"), (2, "**下一节**")])
+
+def test_repeated_header_page_association():
+    """重复页眉只移除页眉片段，正文、表格和真实标题保留。"""
+    pages = [(1, "1.2 运行标题\n正文首段。"),
+             (2, "正文尾部而1.2 运行标题"),
+             (3, "最新的一波1.2 运行标题\n后续正文。")]
+    out = parse._clean_repeated_pdf_edges(pages)
+    joined = "\n".join(text for _, text in out)
+    check("重复页眉清理", "1.2 运行标题" not in joined, joined)
+    check("粘连正文保留", "正文尾部而" in joined and "最新的一波" in joined, joined)
+
+
+def test_header_candidate_low_frequency_preserved():
+    pages = [(1, "1.2 一次性正文标题\n正文。"), (2, "另一页正文。")]
+    out = parse._clean_repeated_pdf_edges(pages)
+    check("低频标题保留", "一次性正文标题" in "\n".join(x for _, x in out))
     out = parse._repair_terminal_fragments(
         [(1, "正文内容进行"), (2, "合理调整。\n下一段")])
     check("同行后缀残片合并", "正文内容进行合理调整。" in out[0][1]
@@ -165,7 +189,8 @@ def test_pdf_footer_lines():
 def test_pdf_terminal_fragment_drop():
     out = parse._drop_incomplete_terminal_lines(
         "完整原则。\n如出现不一致，可根据严重程度进行").strip()
-    check("页内末尾残句删除", out == "完整原则。", repr(out))
+    check("页内末尾残句保留", "如出现不一致，可根据严重程度进行" in out,
+          repr(out))
     check("完整短句保留", parse._drop_incomplete_terminal_lines("完整原则。\n注意事项。") == "完整原则。\n注意事项。")
     check("短标题保留", parse._drop_incomplete_terminal_lines("正文。\n用药原则") == "正文。\n用药原则")
 
@@ -209,6 +234,8 @@ if __name__ == "__main__":
     test_parse_docx_invalid()
     test_pdf_page_diagnostics()
     test_pdf_terminal_fragment_repair()
+    test_repeated_header_page_association()
+    test_header_candidate_low_frequency_preserved()
     test_pdf_terminal_fragment_drop()
     test_pdf_footer_lines()
     test_pdf_page_ocr_gate()

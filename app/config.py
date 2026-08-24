@@ -30,7 +30,10 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default).strip()
 
 
-# ---------------- 飞书原生审批（默认关闭） ----------------
+TECHNICAL_BOOK_OCR_ENABLED = _env("TECHNICAL_BOOK_OCR_ENABLED", "false").lower() in ("1", "true", "yes")
+TECHNICAL_BOOK_OCR_MAX_PAGES = int(_env("TECHNICAL_BOOK_OCR_MAX_PAGES", "3") or 3)
+TECHNICAL_BOOK_OCR_MAX_IMAGES = int(_env("TECHNICAL_BOOK_OCR_MAX_IMAGES", "6") or 6)
+
 FEISHU_APPROVAL_ENABLED = _env("FEISHU_APPROVAL_ENABLED", "false").lower() in ("1", "true", "yes")
 FEISHU_APP_ID = _env("FEISHU_APP_ID")
 FEISHU_APP_SECRET = _env("FEISHU_APP_SECRET")

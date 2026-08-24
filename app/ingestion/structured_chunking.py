@@ -46,10 +46,103 @@ def is_legal_confident(text):
     return articles >= 5 and (levels >= 1 or articles >= 10)
 
 
+def segment_text(text, max_chars=600, *, overlap=0):
+    """统一的段落/句子感知切分器。
+
+    换行只是 PDF 的视觉换行，不能直接当作句子边界；先按显式空行、标题
+    和页标记组织段落，再按完整句子装箱。只有单个句子本身超过上限才硬切，
+    且默认不复制字符 overlap，避免相邻块出现“半句重复”的假丢文。
+    """
+    marks = set('。！？!?；;')
+    paragraphs = []
+    current = []
+    page = 1
+    def join_visual_lines(lines):
+        out = ''
+        for part in lines:
+            part = part.strip()
+            if not out:
+                out = part
+            elif re.search(r'[A-Za-z0-9]$', out) and re.match(r'^[A-Za-z0-9]', part):
+                out += ' ' + part
+            else:
+                out += part
+        return out
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        marker = re.fullmatch(r'\[\[page:(\d+)\]\]', line)
+        if marker:
+            if current: paragraphs.append((' '.join(current), page)); current = []
+            page = int(marker.group(1)); continue
+        if not line:
+            if current: paragraphs.append((' '.join(current), page)); current = []
+            continue
+        if line.startswith('## '):
+            if current: paragraphs.append((' '.join(current), page)); current = []
+            title = line[3:].strip()
+            if title in {'目录', '目 录', 'Contents'} and page >= 9:
+                continue
+            current.append(line); continue
+        # pdfplumber 可能把页眉和正文合成同一行：目录 + 正文。
+        # 只剥离行首页眉，不删除正文中间正常出现的“目录”。
+        if page >= 9:
+            line = re.sub(r'^(?:目录|目\s*录|Contents|Ŀ¼)\s+', '', line).strip()
+            if line in {'目录', '目 录', 'Contents', 'Ŀ¼'}:
+                continue
+            if not line:
+                continue
+        # PDF 视觉行不代表段落；仅在解析器明确留下空行时断段。
+        current.append(line)
+    if current: paragraphs.append((' '.join(current), page))
+
+    def sentence_parts(value):
+        out, start = [], 0
+        for i, char in enumerate(value):
+            if char not in marks: continue
+            # 小数、版本号和英文缩写中的点不在 marks 中；中文句末不需猜测。
+            if char == '.' and ((i and value[i - 1].isdigit()) or
+                                (i + 1 < len(value) and value[i + 1].isdigit())):
+                continue
+            out.append(value[start:i + 1].strip()); start = i + 1
+        tail = value[start:].strip()
+        if tail: out.append(tail)
+        return [x for x in out if x]
+
+    chunks = []
+    for value, page_no in paragraphs:
+        units = [value] if value.startswith('## ') and len(value) <= max_chars else sentence_parts(value)
+        buf = ''
+        for unit in units:
+            if len(unit) > max_chars:
+                if buf: chunks.append({'text': buf, 'page': page_no, 'section_path': []}); buf = ''
+                rest = unit
+                while len(rest) > max_chars:
+                    # 句子可能跨越 max_chars；向后找本句真正结束位置，不能在
+                    # “我和团队/打造了 Pine”这种视觉换行处硬切。
+                    ends = [rest.find(mark, max_chars) for mark in marks]
+                    ends = [n for n in ends if n >= 0]
+                    cut = min(ends) + 1 if ends else max_chars
+                    chunks.append({'text': rest[:cut].strip(), 'page': page_no,
+                                   'section_path': [], 'continuation': bool(ends)})
+                    rest = rest[cut:].strip()
+                buf = rest
+            elif not buf:
+                buf = unit
+            elif len(buf) + 1 + len(unit) <= max_chars:
+                buf += '\n' + unit
+            else:
+                # 完整句子是装箱原子：放不下就整句移到下一块，不能留下
+                # “我和团队”在上一块、“打造了 Pine”在下一块的半句边界。
+                chunks.append({'text': buf, 'page': page_no, 'section_path': []})
+                buf = unit
+        if buf:
+            chunks.append({'text': buf, 'page': page_no, 'section_path': []})
+            buf = ''
+    return chunks
+
+
 def _generic(text, max_chars=600):
-    from .pipeline import chunk_text
-    chunks, pages = chunk_text(text, max_chars=max_chars, overlap=0)
-    return [{'text': x, 'page': y, 'section_path': []} for x, y in zip(chunks, pages)]
+    return segment_text(text, max_chars=max_chars)
 
 
 def _split_inline_articles(line):
@@ -278,28 +371,256 @@ def chunk_medical_mixed(text, max_chars=600):
     flush(); return _split_units(units, max_chars)
 
 
-def chunk_technical_book(text, max_chars=600):
-    units = []; prose = []; code = []; page = 1; section = []; in_code = False
-    def flush_prose():
-        if prose:
-            units.append({'text': '\n'.join(prose), 'page': page, 'section_path': list(section), 'kind': 'prose'}); prose.clear()
+def _hard_split_structured(value, max_chars):
+    """结构块的保真拆分：优先行边界，其次句末，最后才硬切。"""
+    parts = []
+    rest = value.strip()
+    if not rest:
+        return parts
+    while len(rest) > max_chars:
+        # 优先行边界
+        cut = rest.rfind('\n', 0, max_chars)
+        # 如果行边界太靠前，找句末
+        if cut < max_chars // 2:
+            cut = max((rest.rfind(mark, 0, max_chars) for mark in '。！？!?；;'), default=-1)
+        # 如果句末也靠前，才硬切
+        if cut < max_chars // 2:
+            cut = max_chars
+        else:
+            cut = cut + 1
+        parts.append(rest[:cut].strip())
+        rest = rest[cut:].strip()
+    if rest:
+        parts.append(rest)
+    return parts
+
+
+@dataclass
+class CodeState:
+    """代码识别状态；只用语法边界决定代码块的连续性。"""
+    depth: int = 0
+    quote: str | None = None
+    started: bool = False
+
+
+def _code_like(line):
+    return (line.startswith(('from ', 'import ', 'def ', 'class ', 'async def ',
+                             'const ', 'let ', 'function ', '#')) or line[:1] in '{}])' or
+            re.match(r'^\w+\s*[:=]', line) is not None or
+            line.startswith(('return ', 'raise ', 'yield ', 'if ', 'for ', 'while ',
+                             'try:', 'except ', 'with ')))
+
+
+def _scan_technical_blocks(text):
+    """扫描技术书文本，先识别结构块，再进行切分。"""
+    text = re.sub(r'(?<=[㐀-䶿一-鿿])[ \t]+(?=[㐀-䶿一-鿿])', '', text or '')
+    text = re.sub(r'(?<=[㐀-䶿一-鿿])[ \t]+(?=[A-Za-z])', '', text)
+    text = re.sub(r'(?<=[A-Za-z])[ \t]+(?=[㐀-䶿一-鿿])', '', text)
+    text = re.sub(r'(?<=[A-Za-z])[ \t]{2,}(?=[A-Za-z])', ' ', text)
+    # 转义引号是抽取 JSON 代码时常见的版面残留。
+    text = text.replace('\\"', '"')
+    blocks, para, code = [], [], []
+    page = para_page = code_page = 1
+    para_page_end = code_page_end = 1
+    state = CodeState(); fenced = False; toc = False
+
+    def flush_para():
+        nonlocal para, para_page, para_page_end
+        if para:
+            blocks.append((para_page, para_page_end, 'para', ' '.join(para)))
+            para = []
+        para_page = para_page_end = page
     def flush_code():
+        nonlocal code, code_page, code_page_end
         if code:
-            units.append({'text': '\n'.join(code), 'page': page, 'section_path': list(section), 'kind': 'code'}); code.clear()
+            blocks.append((code_page, code_page_end, 'code', '\n'.join(code)))
+            code = []
+        code_page = code_page_end = page
+        state.depth = 0; state.quote = None; state.started = False
+    def add_code(line):
+        nonlocal code_page, code_page_end
+        if not code: code_page = code_page_end = page
+        else: code_page_end = page
+        code.append(line); state.started = True
+        escaped = False; quote = None
+        for ch in line:
+            if quote:
+                if escaped: escaped = False
+                elif ch == '\\': escaped = True
+                elif ch == quote: quote = None
+            elif ch in ('"', "'"): quote = ch
+            elif ch in '([{': state.depth += 1
+            elif ch in ')]}': state.depth = max(0, state.depth - 1)
+        state.quote = quote
+
     for raw in (text or '').splitlines():
-        line = raw.rstrip(); stripped = line.strip()
-        if re.fullmatch(r'\[\[page:\d+\]\]', stripped):
-            (flush_code if in_code else flush_prose)(); page = int(re.search(r'\d+', stripped).group()); continue
-        if stripped.startswith('```'):
-            if not in_code: flush_prose(); in_code = True
-            code.append(line)
-            if stripped == '```' and len(code) > 1: in_code = False; flush_code()
+        line, stripped = raw.rstrip(), raw.strip()
+        marker = re.fullmatch(r'\[\[page:(\d+)\]\]', stripped)
+        if marker:
+            new_page = int(marker.group(1)); entering = 2 <= new_page <= 8
+            if entering or (toc and not entering): flush_para(); flush_code()
+            page = new_page
+            if para: para_page_end = page
+            if code: code_page_end = page
+            para_page = page if not para else para_page
+            toc = entering; continue
+        if not stripped: flush_para(); continue
+        if toc: continue
+        if stripped.startswith('## '):
+            flush_para()
+            blocks.append((page, page, 'heading', stripped[3:].strip()))
             continue
-        if in_code: code.append(line); continue
-        if stripped.startswith('#'): flush_prose(); section = [stripped.lstrip('#').strip()]; continue
-        prose.append(line)
-    if in_code: flush_code()
-    flush_prose(); return _split_units(units, max_chars)
+        if para and not code and stripped.startswith(('正文', '前言')):
+            flush_para()
+        if stripped.startswith('```'):
+            flush_para()
+            if fenced: fenced = False; flush_code()
+            else: fenced = True; code = [stripped]; code_page = page
+            continue
+        if fenced: add_code(line); continue
+        # 明确的正文标记会结束前面的代码，即使抽取代码的标点不完整。
+        if code and stripped.startswith(('正文', '本文', '说明')):
+            flush_code()
+            para.append(stripped)
+            para_page = page
+            continue
+        # 某些 PDF 抽取器会把正文标记和代码末行合并。
+        embedded = re.search(r'(正文|本文|说明)', stripped) if code else None
+        if embedded and embedded.start() > 0:
+            add_code(stripped[:embedded.start()].rstrip())
+            flush_code()
+            para.append(stripped[embedded.start():].strip())
+            para_page = page
+            continue
+        code_like = _code_like(stripped)
+        # 容器结构未闭合时，即使 JSON/对象行不像赋值，也继续视为代码，
+        # 例如带引号的属性名行。
+        if code and state.depth > 0:
+            flush_para(); add_code(line); continue
+        if code and state.depth == 0 and not state.quote and not code_like and re.match(r'^[一-龥]', stripped):
+            flush_code()
+        if code_like:
+            flush_para(); add_code(line); continue
+        if stripped.count('|') >= 2:
+            flush_para(); blocks.append((page, page, 'table', stripped)); continue
+        para.append(stripped); para_page_end = page
+    flush_para(); flush_code()
+    return blocks
+
+
+def _add_chunk_metadata(row, *, block_id, index, page_start, page_end):
+    row['continuation_of'] = block_id
+    row['continuation_index'] = index
+    if page_end is not None and page_end != page_start:
+        row['page_end'] = page_end
+    return row
+
+
+def _split_block_parts(value, max_chars, kind):
+    if len(value) <= max_chars:
+        return [value]
+    return _hard_split_structured(value, max_chars)
+
+
+def _safe_prose_parts(value, max_chars, marks):
+    """Split prose at semantic boundaries and enforce the hard length limit."""
+    parts = []
+    rest = value.strip()
+    while len(rest) > max_chars:
+        cut = max((rest.rfind(mark, 0, max_chars) for mark in marks), default=-1)
+        if cut <= max_chars // 2:
+            cut = rest.rfind('\n', 0, max_chars)
+        if cut <= max_chars // 2:
+            cut = max_chars
+        else:
+            cut += 1
+        parts.append(rest[:cut].strip())
+        rest = rest[cut:].strip()
+    if rest:
+        parts.append(rest)
+    return parts
+
+
+def chunk_technical_book(text, max_chars=600):
+    """技术书结构化切分：扫描结构块，再按既有规则切分。"""
+
+
+    marks = set('。！？!?；;')
+    blocks = _scan_technical_blocks(text)
+
+    def sentence_parts(value):
+        out, start = [], 0
+        for i, char in enumerate(value):
+            if char not in marks:
+                continue
+            if char == '.' and ((i and value[i - 1].isdigit()) or
+                                (i + 1 < len(value) and value[i + 1].isdigit())):
+                continue
+            out.append(value[start:i + 1].strip()); start = i + 1
+        tail = value[start:].strip()
+        if tail:
+            out.append(tail)
+        return [x for x in out if x]
+
+    chunks = []
+    block_id = 0
+    for page_start, page_end, kind, value in blocks:
+        block_id += 1
+        block_key = f"{kind}:{block_id}"
+        if kind == 'toc':
+            continue
+        if kind == 'heading':
+            heading_text = value
+            parts = [heading_text] if len(heading_text) <= max_chars else _hard_split_structured(heading_text, max_chars)
+            for n, part in enumerate(parts):
+                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': [], 'kind': 'heading'}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
+                if n: row['continuation'] = True
+                chunks.append(row)
+            continue
+        if kind in ('code', 'table'):
+            # 结构类型保持独立，但超长结构按行/句拆分，不能突破 max_chars。
+            parts = _hard_split_structured(value, max_chars)
+            for n, part in enumerate(parts):
+                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': [], 'kind': kind}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
+                if n: row['continuation'] = True
+                chunks.append(row)
+            continue
+        if kind != 'para':
+            continue
+        units = sentence_parts(value)
+        buf = ''
+        for unit in units:
+            if len(unit) > max_chars:
+                if buf:
+                    chunks.append(_add_chunk_metadata({'text': buf, 'page': page_start, 'section_path': [], 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end)); buf = ''
+                rest = unit
+                while len(rest) > max_chars:
+                    # PDF 抽取的长段落可能在 max_chars 中间截断一句话；优先向后
+                    # 找最近的句末（最多放宽 120 字），避免“进入”/“了工程落地”
+                    # 这种把完整陈述拆成两个残句的 chunk。找不到时才回退到前方断点。
+                    # 硬上限优先：句末只在 max_chars 之前才可作为断点，
+                    # 不为完整句向后放宽，否则会产生 600+ 的超长 chunk。
+                    backward = max((rest.rfind(mark, 0, max_chars) for mark in marks), default=-1)
+                    cut = backward + 1 if backward > max_chars // 2 else max_chars
+                    chunks.append(_add_chunk_metadata({'text': rest[:cut].strip(), 'page': page_start, 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end))
+                    rest = rest[cut:].strip()
+                buf = rest
+            elif not buf:
+                buf = unit
+            elif len(buf) + 1 + len(unit) <= max_chars:
+                buf += '\n' + unit
+            else:
+                row = _add_chunk_metadata({'text': buf, 'page': page_start, 'section_path': [], 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end)
+                if not buf.endswith(tuple(marks)):
+                    row['continuation'] = True
+                chunks.append(row)
+                buf = unit
+        if buf:
+            row = _add_chunk_metadata({'text': buf, 'page': page_start, 'section_path': [], 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end)
+            if not buf.endswith(tuple(marks)):
+                row['continuation'] = True
+            chunks.append(row)
+    return chunks
 
 
 def _detect_legal(t, f=''): return Classification('legal', .9 if is_legal_confident(t) else 0, ('article_structure',))

@@ -35,56 +35,44 @@ OVERLAP = 90          # 断点重叠（15%），语义不割裂
 _PAGE_MARK = re.compile(r"^\[\[page:(\d+)\]\]$")
 
 
+def chunk_units(text: str, filename: str = "", max_chars: int = MAX_CHARS) -> list[dict]:
+    """切分为带完整来源元数据的 unit 字典。
+
+    这是摄入管线的内部规范接口；``chunk_text`` 仅保留旧调用方需要的
+    ``(chunks, pages)`` 形状，避免旧 HTTP/脚本协议被悄然改变。
+    """
+    from .structured_chunking import chunk_document, classify_document, segment_text
+    profile = classify_document(text, filename)
+    if profile.kind == 'technical_book':
+        return chunk_document(text, filename, max_chars=max_chars)
+    # 普通文本继续走通用切分，避免 profile 误判时专用切分器丢内容。
+    return segment_text(text, max_chars=max_chars, overlap=0)
+
+
 def chunk_text(text: str, max_chars: int = MAX_CHARS,
                overlap: int = 90) -> tuple[list[str], list[int]]:
-    """
-    段落感知切分：短段落聚合、长段落按句号断，断点带 15% 重叠（90 字，
-    语义不割裂）。「## 标题」行作为块边界：先 flush 当前块，标题作为下一块
-    的开头。[[page:N]] 标记逐页追踪页码——返回 (chunks, pages)。
-    """
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-    chunks: list[str] = []
-    pages: list[int] = []
-    buf = ""
-    buf_page = 1
+    """兼容旧接口；overlap 保留但由结构化切分器统一决定。"""
+    units = chunk_units(text, max_chars=max_chars)
+    return [u['text'] for u in units], [u.get('page', 1) for u in units]
 
-    def flush():
-        nonlocal buf
-        if buf:
-            # 页码碎片过滤：PDF 页脚页码被单独切块（"212"——dense 相似度
-            # 0.43 污染检索的实况）；纯数字短块丢弃（标题/正常短块保留）
-            text = buf.strip()
-            if len(text) >= 4 or not text.isdigit():
-                chunks.append(buf)
-                pages.append(buf_page)
-            buf = ""
 
-    for p in paragraphs:
-        m = _PAGE_MARK.match(p)
-        if m:
-            flush()
-            buf_page = int(m.group(1))
-            continue
-        if p.startswith("## "):
-            flush()
-            buf = p            # 标题成为新块的开头
-            continue
-        if len(buf) + len(p) + 1 <= max_chars:
-            buf = f"{buf}\n{p}" if buf else p
-            continue
-        flush()
-        while len(p) > max_chars:
-            cut = p.rfind("。", 0, max_chars)
-            cut = cut if cut > max_chars // 2 else max_chars
-            piece = p[: cut + 1]
-            chunks.append(piece)
-            pages.append(buf_page)
-            # 重叠续接：下一段从上一块尾部带 overlap 字开始，断点语义不割裂
-            tail = piece[-overlap:] if overlap and len(piece) > overlap else ""
-            p = (tail + p[cut + 1:]).strip()
-        buf = p
-    flush()
-    return chunks, pages
+def _build_vector_rows(units: list[dict], vectors: list[list[float]],
+                       doc_id: str, doc_title: str) -> list[dict]:
+    """Build Milvus rows while carrying chunk-unit metadata through unchanged."""
+    metadata_keys = ('kind', 'page_end', 'continuation', 'continuation_of',
+                     'continuation_index', 'section_path')
+    rows = []
+    for i, unit in enumerate(units):
+        row = {
+            'text': unit.get('text', ''), 'dense': vectors[i],
+            'document_id': doc_id, 'title': doc_title, 'source': doc_title,
+            'page': unit.get('page', 1),
+        }
+        for key in metadata_keys:
+            if key in unit:
+                row[key] = unit[key]
+        rows.append(row)
+    return rows
 
 
 def _embed_with_retry(text: str, retries: int = 2) -> list[float]:
@@ -212,21 +200,14 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         reason = parse.explain_parse_failure(filename, data)
         _log("parse_failed", file=filename, size=len(data), reason=reason)
         return {"error": f"未从《{filename}》中解析出文本：{reason}"}
-    chunks, pages = chunk_text(text, max_chars=MAX_CHARS, overlap=OVERLAP)
-    if not chunks:
+    units = chunk_units(text, filename=filename, max_chars=MAX_CHARS)
+    if not units:
         return {"error": f"《{filename}》切分后无内容。"}
     doc_id = uuid.uuid4().hex
     doc_title = (title or filename).strip() or "未命名文档"
     try:
-        vecs = _embed_batch_with_retry(chunks)
-        rows = [{
-            "text": c,
-            "dense": vecs[i],
-            "document_id": doc_id,
-            "title": doc_title,
-            "source": doc_title,
-            "page": pages[i],
-        } for i, c in enumerate(chunks)]
+        vecs = _embed_batch_with_retry([u['text'] for u in units])
+        rows = _build_vector_rows(units, vecs, doc_id, doc_title)
     except Exception as e:
         _log("embed_failed", file=filename, error=str(e)[:200])
         return {"error": f"《{filename}》向量化失败（嵌入服务异常），请稍后重试。"}
@@ -234,14 +215,15 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
     # 图谱构建转后台线程（曾同步阻塞上传响应——大文档图谱提取多次 LLM 调用，
     # 上传要等数分钟；软依赖不变：失败只记日志）
     if ok:
-        threading.Thread(target=_graph_build_bg, args=(chunks, doc_id, filename),
+        threading.Thread(target=_graph_build_bg,
+                         args=([u['text'] for u in units], doc_id, filename),
                          daemon=True).start()
-    _log("ingested", file=filename, doc_id=doc_id, chunks=len(chunks), ok=ok)
+    _log("ingested", file=filename, doc_id=doc_id, chunks=len(units), ok=ok)
     if not ok:
         return {"error": f"《{filename}》向量库写入失败。"}
-    _record_ingested(sha, doc_id, filename, doc_title, len(chunks))
+    _record_ingested(sha, doc_id, filename, doc_title, len(units))
     _archive_original(sha, filename, data)
-    result = {"documentId": doc_id, "fileName": filename, "chunks": len(chunks)}
+    result = {"documentId": doc_id, "fileName": filename, "chunks": len(units)}
     if diagnostics is not None:
         result["diagnostics"] = diagnostics
         if diagnostics.get("reasons"):
