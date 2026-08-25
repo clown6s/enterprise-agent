@@ -129,6 +129,10 @@ MYSQL_HOST = _env("MYSQL_HOST", "10.211.55.5")
 MYSQL_PORT = int(_env("MYSQL_PORT", "3306"))
 MYSQL_PASSWORD = _env("MYSQL_ROOT_PASSWORD")
 MYSQL_DB = "rag_service"
+MYSQL_POOL_MIN = int(_env("MYSQL_POOL_MIN", "2") or 2)
+MYSQL_POOL_MAX = int(_env("MYSQL_POOL_MAX", "10") or 10)
+MYSQL_POOL_TIMEOUT = float(_env("MYSQL_POOL_TIMEOUT", "3") or 3)
+MYSQL_POOL_RECYCLE = int(_env("MYSQL_POOL_RECYCLE", "1800") or 1800)
 NEO4J_PASSWORD = _env("NEO4J_PASSWORD")
 
 # ---------------- OA 业务系统（2026-08-19 退役：OA 7000 停用，审批直连本库） ----------------
