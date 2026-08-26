@@ -76,6 +76,27 @@ class PaddleOCRVLTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ocr_paddle.analyze_document(b"", "scan.pdf")
 
+    def test_parse_result_markdown_extracts_pages(self):
+        """parse_result_markdown 从顶层 dict 提取 pages[].markdown（真实百度返回结构）。"""
+        payload = {
+            "file_name": "x.pdf",
+            "pages": [
+                {"page_num": 0, "markdown": "# 第一章\n正文一"},
+                {"page_num": 1, "markdown": "# 第二章\n正文二"},
+                {"page_num": 2},  # 缺 markdown 的页应跳过，不报错
+            ],
+        }
+        out = ocr_paddle.parse_result_markdown(payload)
+        self.assertIn("# 第一章", out)
+        self.assertIn("正文二", out)
+
+    def test_parse_result_markdown_rejects_bad_payload(self):
+        """非 dict 或 pages 非数组应显式抛错，而不是静默拼接键名。"""
+        with self.assertRaises(TypeError):
+            ocr_paddle.parse_result_markdown(["result"])
+        with self.assertRaises(TypeError):
+            ocr_paddle.parse_result_markdown({"pages": "nope"})
+
     def test_assemble_keeps_blocks(self):
         """assemble_text 按顺序拼接块，不丢内容。"""
         blocks = [

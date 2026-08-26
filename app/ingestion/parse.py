@@ -13,6 +13,7 @@
 """
 import hashlib
 import io
+import json
 import re
 import statistics
 import logging
@@ -58,11 +59,16 @@ def parse_pdf_with_diagnostics(data: bytes) -> tuple[str, dict]:
                   "replacement_count": 0, "replacement_ratio": 0.0, "terminal_fragment_count": 0}
 
 
-def parse_document_with_vl(filename: str, data: bytes) -> tuple[str, list[dict]]:
-    """技术二进制文档唯一解析入口：整份输入交给百度云 PaddleOCR-VL。"""
-    from .ocr_paddle import analyze_document, assemble_text
-    blocks = analyze_document(data, filename)
-    return assemble_text(blocks), [block.to_dict() for block in blocks]
+def parse_document_with_vl(filename: str, data: bytes) -> str:
+    """技术二进制文档解析：只取数据库 parse_result 的 pages[].markdown。"""
+    from . import ocr_paddle
+    db = ocr_paddle._db_task(data)
+    if not db or not db.get("parse_result"):
+        raise RuntimeError("OCR parse_result 尚未保存")
+    result = db["parse_result"]
+    if isinstance(result, str):
+        result = json.loads(result)
+    return ocr_paddle.parse_result_markdown(result)
 
 
 def parse_local_bytes(filename: str, data: bytes) -> str:

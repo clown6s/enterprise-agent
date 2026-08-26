@@ -11,31 +11,12 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import dataclass, field
-from typing import Any
 
 import httpx
 
 log = logging.getLogger(__name__)
 _ENDPOINT = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task"
 _QUERY_ENDPOINT = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task/query"
-
-
-@dataclass
-class VLBlock:
-    kind: str
-    text: str = ""
-    markdown: str = ""
-    page: int = 1
-    bbox: list = field(default_factory=list)
-    confidence: float = 0.0
-    source: str = "baidu_paddleocr_vl"
-    raw: Any = None
-
-    def to_dict(self) -> dict:
-        return {"kind": self.kind, "text": self.text, "markdown": self.markdown,
-                "page": self.page, "bbox": self.bbox, "confidence": self.confidence,
-                "source": self.source}
 
 
 
@@ -166,41 +147,23 @@ def _query_task(task_id: str, token: str) -> dict:
     return payload.get("result") or payload
 
 
-def _layout_kind(layout_type: str) -> str:
-    if layout_type == "table": return "table"
-    if layout_type in {"image", "chart", "figure_title", "header_image", "footer_image"}: return "figure"
-    if layout_type in {"display_formula", "inline_formula", "formula_number"}: return "formula"
-    if layout_type == "paragraph_title": return "heading"
-    if layout_type == "content": return "toc"
-    return "region"
+def parse_result_markdown(payload: dict) -> str:
+    """只提取每页原始 Markdown，作为技术文档结构解析的唯一文本来源。"""
+    # 百度返回的是顶层 dict，正文位于 pages[].markdown；直接 join(payload)
+    # 只会拼接字典键名，导致入库后解析结果为空（真实 PDF 触发）。
+    if not isinstance(payload, dict):
+        raise TypeError("PaddleOCR-VL parse_result 必须是 JSON 对象")
+    pages = payload.get("pages") or []
+    if isinstance(pages, dict):
+        pages = [pages]
+    if not isinstance(pages, list):
+        raise TypeError("PaddleOCR-VL parse_result.pages 必须是数组")
+    return "\n".join(
+        page.get("markdown", "")
+        for page in pages
+        if isinstance(page, dict) and isinstance(page.get("markdown", ""), str)
+    )
 
-
-def _normalize(payload: dict) -> list[VLBlock]:
-    blocks: list[VLBlock] = []
-    # 先收集哪些页有目录 layout，整页跳过
-    toc_pages = set()
-    for page in payload.get("pages", []):
-        if any(l.get("type") == "content" for l in page.get("layouts", [])):
-            toc_pages.add(int(page.get("page_num", 0)))
-    for page in payload.get("pages", []):
-        page_no = int(page.get("page_num", 1) or 1)
-        if page_no in toc_pages:
-            continue
-        tables = {x.get("layout_id"): x for x in page.get("tables", [])}
-        images = {x.get("layout_id"): x for x in page.get("images", [])}
-        for layout in page.get("layouts", []):
-            layout_id = layout.get("layout_id")
-            kind = _layout_kind(str(layout.get("type", "text")))
-            detail = tables.get(layout_id) or images.get(layout_id) or {}
-            markdown = str(detail.get("markdown") or "").strip()
-            description = str(detail.get("image_description") or "").strip()
-            text = str(layout.get("text") or markdown or description).strip()
-            blocks.append(VLBlock(kind=kind, text=text, markdown=markdown or description,
-                                   page=page_no, bbox=layout.get("position") or detail.get("position") or [],
-                                   raw={"page": page, "layout": layout, "detail": detail}))
-        if page.get("text") and not page.get("layouts"):
-            blocks.append(VLBlock(kind="region", text=str(page["text"]), page=page_no, raw=page))
-    return blocks
 
 
 def create_document_task(data: bytes, filename: str = "") -> dict:
@@ -222,31 +185,6 @@ def create_document_task(data: bytes, filename: str = "") -> dict:
         log.warning("OCR 任务数据库写入失败: %s", type(exc).__name__)
     return {"status": "pending", "task_id": task_id, "created": True}
 
-
-def request_document_debug(data: bytes, filename: str = "") -> dict:
-    """兼容旧调试入口，改为只创建任务。"""
-    result = create_document_task(data, filename)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return result
-
-
-def analyze_document(data: bytes, filename: str = "") -> list[VLBlock]:
-    """优先使用数据库/本地完整结果；没有结果才不应直接重复提交。"""
-    db = _db_task(data)
-    if db and db.get("parse_result"):
-        result = db["parse_result"]
-        if isinstance(result, str):
-            result = json.loads(result)
-        return _normalize(result)
-    raise RuntimeError("OCR 任务尚未完成，请先调用 query_document_task")
-
-
-def assemble_text(blocks: list[VLBlock]) -> str:
-    return "\n".join((b.markdown or b.text).strip() for b in blocks if (b.markdown or b.text).strip())
-
-
-def recognize_image(image: bytes, page: int = 1) -> str:
-    return assemble_text(analyze_document(image, ".png"))
 
 
 def query_task_by_id(task_id: str) -> dict:

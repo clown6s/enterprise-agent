@@ -53,7 +53,7 @@ def main() -> int:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         print("[6/8] parse_result 解析开始", flush=True)
-        content, _ = parse.parse_document_with_vl(name, data)
+        content = parse.parse_document_with_vl(name, data)
         print(f"[6/8] parse_result 解析完成 chars={len(content)}", flush=True)
     else:
         content = local_text

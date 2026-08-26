@@ -547,6 +547,21 @@ def _safe_prose_parts(value, max_chars, marks):
     return parts
 
 
+def _heading_depth(title):
+    """结构标题的层级深度：第一章/1.2.3 → 数字层数；无编号正文式标题 → 0。
+
+    VL 返回的 Markdown 标题层级不可靠：真正的章节都带结构化编号（第X章、
+    1.2.3），而大量 ## 是正文式导语/实验要求/机制名（“## MetaGPT…。”、
+    “## 实验要求：”），不能据此重置章节路径。按编号层数定位，而非 # 数量。
+    """
+    if re.match(r'^第\s*[一二三四五六七八九十百千万\d]+\s*[章篇节]\b', title):
+        return 1
+    m = re.match(r'^(\d+(?:\.\d+)*)', title)
+    if m:
+        return m.group(1).count('.') + 1
+    return 0
+
+
 def chunk_technical_book(text, max_chars=600):
     """技术书统一 Markdown 结构切分入口。"""
     heading = re.compile(r'^(#{2,6})\s+(.+?)\s*$')
@@ -578,11 +593,25 @@ def chunk_technical_book(text, max_chars=600):
         if not stripped: flush(); index += 1; continue
         matched = heading.match(stripped)
         if matched and not list_heading.match(matched.group(2)):
-            flush(); level, title = len(matched.group(1)) - 1, matched.group(2)
-            if columns.match(title): kind = 'experiment'; current = [title]
-            elif level == 1 or re.match(r'^(?:第\\s*[一二三四五六七八九十百千万\\d]+\\s*[章节篇]|\\d+(?:\\.\\d+)+)', title):
-                path = path[:level - 1] + [title]; kind = 'heading'; current = [title]
-            else: kind = 'subheading'; current = [title]
+            flush(); title = matched.group(2)
+            depth = _heading_depth(title)
+            if columns.match(title):
+                kind = 'experiment'; current = [title]
+            elif depth:
+                # 只按结构化编号定位层级，忽略不可靠的 # 数量；同级标题覆盖本级，
+                # 更深的编号只挂在其直接父级之下。VL 有时漏掉中间章节（先见
+                # 10.4.5、后见 10.5），此时不能把旧的深标题继续当根路径。
+                number = re.match(r'^(\d+(?:\.\d+)*)', title)
+                previous = re.match(r'^(\d+(?:\.\d+)*)', path[-1]) if path else None
+                if number and previous and previous.group(1).count('.') + 1 >= depth:
+                    old_prefix = previous.group(1).split('.')[:depth]
+                    new_prefix = number.group(1).split('.')[:depth]
+                    if old_prefix != new_prefix:
+                        path = []
+                path = path[:depth - 1] + [title]
+                kind = 'heading'; current = [title]
+            else:
+                kind = 'subheading'; current = [title]
             flush(); index += 1; continue
         if code_start.match(stripped) and not stripped.startswith('#'):
             flush(); kind = 'code'; current = [line]; index += 1
@@ -598,99 +627,6 @@ def chunk_technical_book(text, max_chars=600):
         current.append(line); index += 1
     flush()
     return units
-
-    marks = set('。！？!?；;')
-    blocks = _scan_technical_blocks(text)
-
-    def sentence_parts(value):
-        out, start = [], 0
-        for i, char in enumerate(value):
-            if char not in marks:
-                continue
-            if char == '.' and ((i and value[i - 1].isdigit()) or
-                                (i + 1 < len(value) and value[i + 1].isdigit())):
-                continue
-            out.append(value[start:i + 1].strip()); start = i + 1
-        tail = value[start:].strip()
-        if tail:
-            out.append(tail)
-        return [x for x in out if x]
-
-    chunks = []
-    block_id = 0
-    current_path = []
-    for page_start, page_end, kind, value in blocks:
-        block_id += 1
-        block_key = f"{kind}:{block_id}"
-        if kind == 'toc':
-            continue
-        if kind == 'heading':
-            heading_text = value
-            current_path = [heading_text]
-            parts = [heading_text] if len(heading_text) <= max_chars else _hard_split_structured(heading_text, max_chars)
-            for n, part in enumerate(parts):
-                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': [part], 'kind': 'heading'}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
-                if n: row['continuation'] = True
-                chunks.append(row)
-            continue
-        if kind in ('code', 'table'):
-            # 结构类型保持独立，但超长结构按行/句拆分，不能突破 max_chars。
-            parts = _hard_split_structured(value, max_chars)
-            for n, part in enumerate(parts):
-                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': list(current_path), 'kind': kind}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
-                if n: row['continuation'] = True
-                chunks.append(row)
-            continue
-        if kind != 'para':
-            continue
-        units = sentence_parts(value)
-        buf = ''
-        for unit in units:
-            if len(unit) > max_chars:
-                if buf:
-                    chunks.append(_add_chunk_metadata({'text': buf, 'page': page_start, 'section_path': [], 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end)); buf = ''
-                rest = unit
-                while len(rest) > max_chars:
-                    # PDF 抽取的长段落可能在 max_chars 中间截断一句话；优先向后
-                    # 找最近的句末（最多放宽 120 字），避免“进入”/“了工程落地”
-                    # 这种把完整陈述拆成两个残句的 chunk。找不到时才回退到前方断点。
-                    # 硬上限优先：句末只在 max_chars 之前才可作为断点，
-                    # 不为完整句向后放宽，否则会产生 600+ 的超长 chunk。
-                    backward = max((rest.rfind(mark, 0, max_chars) for mark in marks), default=-1)
-                    cut = backward + 1 if backward > max_chars // 2 else max_chars
-                    chunks.append(_add_chunk_metadata({'text': rest[:cut].strip(), 'page': page_start, 'section_path': list(current_path), 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end))
-                    rest = rest[cut:].strip()
-                buf = rest
-            elif not buf:
-                buf = unit
-            elif len(buf) + 1 + len(unit) <= max_chars:
-                buf += '\n' + unit
-            else:
-                row = _add_chunk_metadata({'text': buf, 'page': page_start, 'section_path': [], 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end)
-                if not buf.endswith(tuple(marks)):
-                    row['continuation'] = True
-                chunks.append(row)
-                buf = unit
-        if buf:
-            row = _add_chunk_metadata({'text': buf, 'page': page_start, 'section_path': [], 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end)
-            if not buf.endswith(tuple(marks)):
-                row['continuation'] = True
-            chunks.append(row)
-    # 标题孤立块不参与检索：只按当前块的 text 与 section_path 前两级精确比较，
-    # 不按具体文档标题或固定页码做特判。
-    chunks = [row for row in chunks
-              if not (row.get('kind') == 'heading'
-                      and row.get('text', '').strip() in row.get('section_path', [])[:2])]
-    # 最终向量 chunk 协议：补齐连续分片字段，并移除页码元数据。
-    for index, row in enumerate(chunks):
-        row.pop('page', None)
-        row.pop('page_end', None)
-        row.setdefault('kind', 'prose')
-        row.setdefault('section_path', list(current_path))
-        row.setdefault('continuation', False)
-        row.setdefault('continuation_of', f"{row['kind']}:{index}")
-        row.setdefault('continuation_index', 0)
-    return chunks
 
 
 def _detect_legal(t, f=''): return Classification('legal', .9 if is_legal_confident(t) else 0, ('article_structure',))

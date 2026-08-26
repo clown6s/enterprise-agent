@@ -109,6 +109,48 @@ def test_technical_book_toc_filtered():
     check("目录过滤后长度合规", all(len(u["text"]) <= 120 for u in units))
 
 
+def test_technical_book_section_path_inherited():
+    """章节标题建立层级路径，正文、代码、表格和续块均继承当前路径。"""
+    from app.ingestion.structured_chunking import chunk_technical_book
+    long_body = "较长正文内容，" * 120 + "结束。\n"
+    text = ("[[page:9]]\n## 第一章 Agent 基础\n"
+            "### 1.1 核心概念\n正文内容。\n"
+            "#### 1.1.1 详细说明\n"
+            "from demo import run\nrun()\n"
+            "| 字段 | 说明 |\n| a | b |\n" + long_body)
+    units = chunk_technical_book(text, max_chars=120)
+    chapter_path = ["第一章 Agent 基础", "1.1 核心概念", "1.1.1 详细说明"]
+    check("章节正文有路径", any("正文内容" in u["text"] and u.get("section_path") ==
+          ["第一章 Agent 基础", "1.1 核心概念"] for u in units))
+    check("代码继承三级路径", any(u.get("kind") == "code" and u.get("section_path") ==
+          chapter_path for u in units))
+    # 当前技术书切分器将 Markdown 表格作为正文保留，不能误断为独立结构块。
+    check("表格内容继承章节路径", any("字段" in u["text"] and u.get("section_path") ==
+          chapter_path for u in units))
+    check("续块保留章节路径", any(u.get("continuation") and u.get("section_path") ==
+          chapter_path for u in units))
+
+
+def test_technical_book_non_numbered_heading_not_root():
+    """VL 返回的正文式 ## 标题（“## MetaGPT…。”、“## 实验要求：”）
+    不重置章节路径，真正的数字章节仍为根。"""
+    from app.ingestion.structured_chunking import chunk_technical_book
+    text = ("#### 10.4.5 去中心化模式：对等移交\n"
+            "## MetaGPT：SOP 驱动的软件公司模拟（从流水线到解耦通信的过渡案例）。\n"
+            "案例正文内容。\n"
+            "### 10.5 多 Agent 协作的失败模式\n"
+            "#### 10.5.2 失败模式二：错误的级联放大\n"
+            "过早终止有一个对称的反面：循环失控。\n")
+    units = chunk_technical_book(text, max_chars=120)
+    case = [u for u in units if "案例正文" in u["text"]]
+    check("正文 ## 标题不重置路径", any(u.get("section_path") ==
+          ["10.4.5 去中心化模式：对等移交"] for u in case))
+    target = [u for u in units if "循环失控" in u["text"]]
+    check("深编号挂正确父级", any(u.get("section_path") ==
+          ["10.5 多 Agent 协作的失败模式", "10.5.2 失败模式二：错误的级联放大"]
+          for u in target))
+
+
 def test_technical_book_pdf_whitespace():
     """PDF 视觉空格不应拆散正文术语，英文词间空格仍保留。"""
     from app.ingestion.structured_chunking import chunk_technical_book
