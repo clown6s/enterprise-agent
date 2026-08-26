@@ -13,7 +13,7 @@ import logging
 import os
 from datetime import datetime
 
-from .. import config
+from .. import config, mysql_store
 
 log = logging.getLogger(__name__)
 
@@ -31,31 +31,26 @@ _TRANSITIONS = {
 
 
 def _conn():
-    import pymysql
-    return pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                           user="root", password=config.MYSQL_PASSWORD,
-                           database=config.MYSQL_DB, charset="utf8mb4",
-                           connect_timeout=3)
+    return mysql_store.connection()
 
 
 def _ensure_table() -> None:
     """幂等建事件表（不改现有表结构）"""
     try:
-        conn = _conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS approval_status_event ("
-                "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
-                "apply_no VARCHAR(32) NOT NULL,"
-                "from_status TINYINT,"
-                "to_status TINYINT NOT NULL,"
-                "action VARCHAR(32) NOT NULL,"
-                "actor_id BIGINT,"
-                "comment TEXT,"
-                "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
-                "KEY idx_apply (apply_no, id))")
-        conn.commit()
-        conn.close()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS approval_status_event ("
+                    "id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+                    "apply_no VARCHAR(32) NOT NULL,"
+                    "from_status TINYINT,"
+                    "to_status TINYINT NOT NULL,"
+                    "action VARCHAR(32) NOT NULL,"
+                    "actor_id BIGINT,"
+                    "comment TEXT,"
+                    "created_at DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                    "KEY idx_apply (apply_no, id))")
+            conn.commit()
     except Exception as e:
         log.warning(f"状态事件表建表失败: {e!r}")
 
@@ -73,15 +68,14 @@ def record(apply_no: str, from_status: int, to_status: int,
         log.warning(f"非法状态转移 {from_status}→{to_status}（apply_no={apply_no}）")
     try:
         _ensure_table()
-        conn = _conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO approval_status_event "
-                "(apply_no, from_status, to_status, action, actor_id, comment) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (apply_no, from_status, to_status, action, actor_id, comment))
-        conn.commit()
-        conn.close()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO approval_status_event "
+                    "(apply_no, from_status, to_status, action, actor_id, comment) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (apply_no, from_status, to_status, action, actor_id, comment))
+            conn.commit()
         return True
     except Exception as e:
         log.warning(f"状态事件记录失败: {e!r}")
@@ -92,13 +86,12 @@ def replay(apply_no: str) -> list[dict]:
     """完整回放：返回该申请单的全部状态事件（时间线），按时间正序。"""
     try:
         _ensure_table()
-        conn = _conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT from_status, to_status, action, actor_id, comment, created_at "
-                "FROM approval_status_event WHERE apply_no=%s ORDER BY id", (apply_no,))
-            rows = cur.fetchall()
-        conn.close()
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT from_status, to_status, action, actor_id, comment, created_at "
+                    "FROM approval_status_event WHERE apply_no=%s ORDER BY id", (apply_no,))
+                rows = cur.fetchall()
         return [{"from": r[0], "to": r[1], "action": r[2],
                  "actor_id": r[3], "comment": r[4], "ts": str(r[5])}
                 for r in rows]

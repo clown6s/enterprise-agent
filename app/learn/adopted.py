@@ -12,7 +12,7 @@
 import threading
 import time
 
-from .. import config
+from .. import config, mysql_store
 
 _TTL = 60
 
@@ -31,12 +31,9 @@ def _norm(q: str) -> str:
 def _ensure_columns() -> None:
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
-        with conn.cursor() as cur:
-            cur.execute("SHOW COLUMNS FROM feedback_adopt LIKE 'query_norm'")
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW COLUMNS FROM feedback_adopt LIKE 'query_norm'")
             if not cur.fetchone():
                 cur.execute("ALTER TABLE feedback_adopt ADD COLUMN query_norm "
                             "VARCHAR(128) DEFAULT ''")
@@ -52,7 +49,7 @@ def _ensure_columns() -> None:
                 cur.execute("UPDATE feedback_adopt SET query_norm=%s WHERE id=%s",
                             (_norm(q), rid))
         conn.commit()
-        conn.close()
+
     except Exception:
         pass
 
@@ -62,15 +59,12 @@ def _load() -> dict[str, dict]:
     try:
         _ensure_columns()
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute("SELECT query_norm, answer, source FROM feedback_adopt "
                         "WHERE status=1 AND query_norm<>''")
             rows = {r[0]: {"answer": r[1], "source": r[2] or ""} for r in cur.fetchall()}
-        conn.close()
+
         return rows
     except Exception:
         return {}
@@ -97,16 +91,13 @@ def penalize(query: str) -> None:
         return
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute("UPDATE feedback_adopt SET penalties=penalties+1, "
                         "status=IF(penalties+1>=2, 0, 1) WHERE query_norm=%s AND status=1",
                         (norm,))
         conn.commit()
-        conn.close()
+
         with _lock:
             _cache["ts"] = 0.0
     except Exception:

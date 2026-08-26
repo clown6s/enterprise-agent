@@ -156,14 +156,10 @@ class FeishuChannel:
         if not users:
             return 0
         try:
-            import pymysql
-            from .. import config
-            conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                                   user="root", password=config.MYSQL_PASSWORD,
-                                   database=config.MYSQL_DB, charset="utf8mb4",
-                                   connect_timeout=3)
-            with conn.cursor() as cur:
-                cur.execute(
+            from ..mysql_store import transaction
+            with transaction() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
                     "CREATE TABLE IF NOT EXISTS feishu_employee ("
                     "open_id VARCHAR(64) PRIMARY KEY,"
                     "name VARCHAR(64) DEFAULT '',"
@@ -182,8 +178,6 @@ class FeishuChannel:
                         "job_title=VALUES(job_title), dept_ids=VALUES(dept_ids), "
                         "synced_at=NOW()",
                         (u["open_id"], u["name"], u["job_title"], u["dept_ids"]))
-            conn.commit()
-            conn.close()
         except Exception as e:
             log.warning(f"通讯录落库失败: {e!r}")
             return 0
@@ -220,19 +214,14 @@ class FeishuChannel:
                 return False
             # 持久化层：INSERT 失败（主键冲突）= 已处理
             try:
-                from .. import config
-                import pymysql
-                conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                                       user="root", password=config.MYSQL_PASSWORD,
-                                       database=config.MYSQL_DB, charset="utf8mb4",
-                                       connect_timeout=2)
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT IGNORE INTO feishu_event_seen (message_id) VALUES (%s)",
-                        (message_id,))
-                conn.commit()
-                conn.close()
-                if cur.rowcount == 0:
+                from ..mysql_store import transaction
+                with transaction() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "INSERT IGNORE INTO feishu_event_seen (message_id) VALUES (%s)",
+                            (message_id,))
+                        inserted = cur.rowcount
+                if inserted == 0:
                     return False   # 主键冲突 → 已处理过
             except Exception:
                 pass   # DB 不可用时回退到仅内存去重（不阻断消息）

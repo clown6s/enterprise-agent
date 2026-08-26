@@ -18,7 +18,7 @@ from datetime import datetime
 
 import pymysql
 
-from .. import config, embeddings, milvus_store
+from .. import mysql_store, embeddings, milvus_store
 from ..time_context import now as business_now
 import logging
 log = logging.getLogger(__name__)
@@ -28,14 +28,6 @@ _EVAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path
 
 _PENDING_FILE = os.path.join(_EVAL_DIR, "pending_cases.jsonl")
 _REGRESSION_FILE = os.path.join(_EVAL_DIR, "regression_cases.json")
-
-
-def _conn() -> pymysql.connections.Connection:
-    return pymysql.connect(
-        host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-        password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-        charset="utf8mb4", connect_timeout=5,
-    )
 
 
 def _hash_query(query: str) -> str:
@@ -110,20 +102,17 @@ def enqueue_review(query: str, answer: str, sources: str = "") -> bool:
     同问法已有 PENDING 记录则跳过（曾重复入队——同一问法每次被拒插一条，
     队列被同一问题刷爆）。"""
     try:
-        conn = _conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM answer_review WHERE query=%s AND status='PENDING' LIMIT 1",
-                (query[:500],))
-            if cur.fetchone():
-                conn.close()
-                return False
-            cur.execute(
-                "INSERT INTO answer_review (query, answer, sources, employee_id, user, status) "
-                "VALUES (%s, %s, %s, 0, 'system', 'PENDING')",
-                (query[:500], answer[:2000], sources[:1000]))
-        conn.commit()
-        conn.close()
+        with mysql_store.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM answer_review WHERE query=%s AND status='PENDING' LIMIT 1",
+                    (query[:500],))
+                if cur.fetchone():
+                    return False
+                cur.execute(
+                    "INSERT INTO answer_review (query, answer, sources, employee_id, user, status) "
+                    "VALUES (%s, %s, %s, 0, 'system', 'PENDING')",
+                    (query[:500], answer[:2000], sources[:1000]))
         return True
     except Exception as e:
         log.warning(f"审核入队失败: {e!r}")
@@ -155,16 +144,14 @@ def adopt(query: str, answer: str, source: str = "", user: str = "admin") -> dic
     if not answer.strip():
         return {"query": query, "error": "回答内容为空，已拒绝采纳"}
     try:
-        conn = _conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO feedback_adopt (query_hash, query, answer, source, adopted_by, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (qh, query, answer, source or "", user, business_now()),
-            )
-        conn.commit()
-        conn.close()
-    except pymysql.MySQLError:
+        with mysql_store.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO feedback_adopt (query_hash, query, answer, source, adopted_by, created_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (qh, query, answer, source or "", user, business_now()),
+                )
+    except Exception:
         pass   # 软依赖：MySQL 挂了只影响留痕，不影响入库
 
     # Milvus 入库：Q&A 拼成一个 chunk（标题用问句本身，可读溯源——

@@ -11,9 +11,7 @@ import hashlib
 import json
 import logging
 import os
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -21,9 +19,6 @@ import httpx
 log = logging.getLogger(__name__)
 _ENDPOINT = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task"
 _QUERY_ENDPOINT = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task/query"
-_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "vl_cache"
-_POLL_SECONDS = 2
-_MAX_POLLS = 150
 
 
 @dataclass
@@ -43,34 +38,88 @@ class VLBlock:
                 "source": self.source}
 
 
-def _cache_path(data: bytes) -> Path:
-    return _CACHE_DIR / f"{hashlib.sha256(data).hexdigest()}.json"
-
-
-def _load_cache(data: bytes) -> dict | None:
-    path = _cache_path(data)
-    if not path.is_file():
-        return None
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning("VL 缓存读取失败: %s", type(exc).__name__)
-        return None
-
-
-def _save_cache(data: bytes, payload: dict) -> None:
-    try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        with open(_cache_path(data), "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-    except OSError as exc:
-        log.warning("VL 缓存写入失败: %s", type(exc).__name__)
 
 
 def _token() -> str:
     from ..config import BAIDU_OCR_ACCESS_TOKEN as token
     return token
+
+
+def _ensure_task_table() -> None:
+    from ..mysql_store import transaction
+    with transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS document_ocr_task (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                document_sha256 CHAR(64) NOT NULL,
+                file_name VARCHAR(512) NOT NULL,
+                provider VARCHAR(64) NOT NULL DEFAULT 'baidu_paddleocr_vl',
+                task_id VARCHAR(128) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                create_response JSON NULL,
+                query_response JSON NULL,
+                parse_result JSON NULL,
+                parse_result_url TEXT NULL,
+                error_message TEXT NULL,
+                query_count INT UNSIGNED NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                completed_at DATETIME NULL,
+                PRIMARY KEY (id), UNIQUE KEY uk_document_sha256 (document_sha256),
+                UNIQUE KEY uk_task_id (task_id), KEY idx_status_updated (status, updated_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+
+def _db_task(data: bytes) -> dict | None:
+    try:
+        _ensure_task_table()
+        from ..mysql_store import connection
+        with connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT task_id,status,parse_result,parse_result_url FROM document_ocr_task WHERE document_sha256=%s", (hashlib.sha256(data).hexdigest(),))
+                row = cur.fetchone()
+        return ({"task_id": row[0], "status": row[1], "parse_result": row[2], "parse_result_url": row[3]} if row else None)
+    except Exception as exc:
+        log.warning("OCR 任务数据库查询失败: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def _db_create(data: bytes, filename: str, payload: dict, task_id: str) -> None:
+    sha = hashlib.sha256(data).hexdigest()
+    from ..mysql_store import transaction
+    with transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO document_ocr_task
+                (document_sha256,file_name,provider,task_id,status,create_response)
+                VALUES (%s,%s,'baidu_paddleocr_vl',%s,'pending',%s)
+                ON DUPLICATE KEY UPDATE task_id=VALUES(task_id),
+                create_response=VALUES(create_response),status='pending',updated_at=CURRENT_TIMESTAMP""",
+                (sha, os.path.basename(filename), task_id, json.dumps(payload, ensure_ascii=False)))
+
+
+def _db_status(value: str) -> str:
+    value = str(value or "").lower()
+    if value in {"success", "succeeded", "done", "completed", "complete"}:
+        return "success"
+    if value in {"failed", "failure", "error"}:
+        return "failed"
+    if value in {"processing", "running", "in_progress"}:
+        return "processing"
+    return "pending"
+
+
+def _db_update_query(data: bytes, payload: dict, result_url: str = "", result: dict | None = None) -> None:
+    from ..mysql_store import transaction
+    with transaction() as conn:
+        status = _db_status(payload.get("status", "pending"))
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE document_ocr_task SET status=%s,query_response=%s,
+                parse_result_url=COALESCE(NULLIF(%s,''),parse_result_url),
+                parse_result=COALESCE(%s,parse_result),query_count=query_count+1,
+                error_message=%s,completed_at=IF(%s='success',CURRENT_TIMESTAMP,completed_at)
+                WHERE document_sha256=%s""", (status, json.dumps(payload, ensure_ascii=False), result_url,
+                json.dumps(result, ensure_ascii=False) if result is not None else None,
+                payload.get("task_error"), status, hashlib.sha256(data).hexdigest()))
 
 
 def _request_task(data: bytes, filename: str, token: str) -> dict:
@@ -117,33 +166,6 @@ def _query_task(task_id: str, token: str) -> dict:
     return payload.get("result") or payload
 
 
-def _parse_result(task: dict, token: str) -> dict:
-    current = task.get("result") or task
-    status = str(current.get("status", ""))
-    if status == "success":
-        result_url = current.get("parse_result_url")
-        if not result_url:
-            raise RuntimeError("PaddleOCR-VL 成功但缺少 parse_result_url")
-        return _download_result(result_url)
-    if status == "failed":
-        raise RuntimeError(str(current.get("task_error") or "PaddleOCR-VL 任务失败"))
-    task_id = current.get("task_id")
-    if not task_id:
-        raise RuntimeError("PaddleOCR-VL 未返回 task_id")
-    for _ in range(_MAX_POLLS):
-        time.sleep(_POLL_SECONDS)
-        current = _query_task(task_id, token)
-        status = str(current.get("status", ""))
-        if status == "success":
-            result_url = current.get("parse_result_url")
-            if not result_url:
-                raise RuntimeError("PaddleOCR-VL 成功但缺少 parse_result_url")
-            return _download_result(result_url)
-        if status == "failed":
-            raise RuntimeError(str(current.get("task_error") or "PaddleOCR-VL 任务失败"))
-    raise TimeoutError("PaddleOCR-VL 任务轮询超时")
-
-
 def _layout_kind(layout_type: str) -> str:
     if layout_type == "table": return "table"
     if layout_type in {"image", "chart", "figure_title", "header_image", "footer_image"}: return "figure"
@@ -181,33 +203,42 @@ def _normalize(payload: dict) -> list[VLBlock]:
     return blocks
 
 
-def request_document_debug(data: bytes, filename: str = "") -> dict:
-    """首次联调用：提交一次文件并保存创建任务响应。"""
+def create_document_task(data: bytes, filename: str = "") -> dict:
+    """只创建异步任务并持久化 task_id，不轮询、不下载结果。"""
+    db = _db_task(data)
+    if db and db.get("task_id"):
+        return {"status": db.get("status", "pending"), "task_id": db["task_id"], "reused": True}
     token = _token()
     if not token:
         raise RuntimeError("缺少 BAIDU_OCR_ACCESS_TOKEN")
     payload = _request_task(data, filename, token)
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    debug_path = _CACHE_DIR / f"{hashlib.sha256(data).hexdigest()}.task.json"
-    with open(debug_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    print(f"\n原始任务响应已保存: {debug_path}")
-    return payload
+    task = payload.get("result") or payload
+    task_id = str(task.get("task_id") or "")
+    if not task_id:
+        raise RuntimeError("PaddleOCR-VL 创建任务未返回 task_id")
+    try:
+        _db_create(data, filename, payload, task_id)
+    except Exception as exc:
+        log.warning("OCR 任务数据库写入失败: %s", type(exc).__name__)
+    return {"status": "pending", "task_id": task_id, "created": True}
+
+
+def request_document_debug(data: bytes, filename: str = "") -> dict:
+    """兼容旧调试入口，改为只创建任务。"""
+    result = create_document_task(data, filename)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
 
 
 def analyze_document(data: bytes, filename: str = "") -> list[VLBlock]:
-    """整份文件 HTTP 提交百度 PaddleOCR-VL，并缓存完整 parse result JSON。"""
-    cached = _load_cache(data)
-    if cached is not None:
-        return _normalize(cached)
-    token = _token()
-    if not token:
-        raise RuntimeError("缺少 BAIDU_OCR_ACCESS_TOKEN")
-    task = _request_task(data, filename, token)
-    result = _parse_result(task.get("result") or task, token)
-    _save_cache(data, result)
-    return _normalize(result)
+    """优先使用数据库/本地完整结果；没有结果才不应直接重复提交。"""
+    db = _db_task(data)
+    if db and db.get("parse_result"):
+        result = db["parse_result"]
+        if isinstance(result, str):
+            result = json.loads(result)
+        return _normalize(result)
+    raise RuntimeError("OCR 任务尚未完成，请先调用 query_document_task")
 
 
 def assemble_text(blocks: list[VLBlock]) -> str:
@@ -218,33 +249,52 @@ def recognize_image(image: bytes, page: int = 1) -> str:
     return assemble_text(analyze_document(image, ".png"))
 
 
-def load_blocks_from_file(filepath: str) -> list[VLBlock]:
-    with open(filepath, encoding="utf-8") as f:
-        return _normalize(json.load(f))
-
-
-def query_document_debug(data: bytes) -> dict:
-    """后续联调用：只查询已保存 task_id；成功即下载并缓存完整结果。"""
-    task_path = _cache_path(data).with_suffix(".task.json")
-    if not task_path.is_file():
-        raise RuntimeError(f"没有已保存的任务响应：{task_path}；请先执行一次首次提交")
-    with open(task_path, encoding="utf-8") as f:
-        created = json.load(f)
-    task = created.get("result") or created
-    task_id = task.get("task_id")
-    if not task_id:
-        raise RuntimeError(f"任务响应缺少 task_id：{task_path}")
+def query_task_by_id(task_id: str) -> dict:
+    """按 task_id 查询并持久化状态，供独立接口使用。"""
+    from ..mysql_store import transaction
     token = _token()
     if not token:
         raise RuntimeError("缺少 BAIDU_OCR_ACCESS_TOKEN")
     payload = _query_task(task_id, token)
-    query_path = task_path.with_suffix(".query.json")
-    with open(query_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    print(f"\n任务查询响应已保存: {query_path}")
-    if str(payload.get("status")) == "success" and payload.get("parse_result_url"):
+    status = _db_status(payload.get("status", "pending"))
+    result = None
+    if status == "success" and payload.get("parse_result_url"):
         result = _download_result(payload["parse_result_url"])
-        _save_cache(data, result)
-        print(f"解析结果已缓存: {_cache_path(data)}")
-    return payload
+    with transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""UPDATE document_ocr_task SET status=%s, query_response=%s,
+                parse_result_url=COALESCE(NULLIF(%s,''),parse_result_url),
+                parse_result=COALESCE(%s,parse_result), query_count=query_count+1,
+                error_message=%s, completed_at=IF(%s='success',CURRENT_TIMESTAMP,completed_at)
+                WHERE task_id=%s""", (status, json.dumps(payload, ensure_ascii=False),
+                payload.get("parse_result_url", ""),
+                json.dumps(result, ensure_ascii=False) if result is not None else None,
+                payload.get("task_error"), status, task_id))
+    return {"status": status, "task_id": task_id, "cached": result is not None}
+
+
+def query_document_task(data: bytes) -> dict:
+    """只查询数据库中的 task_id；成功后把完整结果写回 parse_result。"""
+    db = _db_task(data)
+    if not db:
+        raise RuntimeError("数据库中没有 OCR 任务，请先创建任务")
+    if db.get("parse_result"):
+        return {"status": "success", "task_id": db.get("task_id"), "cached": True}
+    task_id = db.get("task_id")
+    token = _token()
+    if not task_id or not token:
+        raise RuntimeError("数据库任务或 BAIDU_OCR_ACCESS_TOKEN 缺失")
+    payload = _query_task(task_id, token)
+    raw_status = str(payload.get("status", "pending"))
+    status = _db_status(raw_status)
+    result = None
+    if status == "success" and payload.get("parse_result_url"):
+        result = _download_result(payload["parse_result_url"])
+    _db_update_query(data, payload, payload.get("parse_result_url", ""), result)
+    return {"status": status, "task_id": task_id, "cached": result is not None}
+
+
+def query_document_debug(data: bytes) -> dict:
+    result = query_document_task(data)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result

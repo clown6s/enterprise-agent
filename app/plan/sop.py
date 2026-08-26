@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 from ..time_context import now as business_now
-from .. import config, llm
+from .. import config, mysql_store, llm
 import logging
 log = logging.getLogger(__name__)
 
@@ -94,13 +94,11 @@ def is_enabled(code: str = "") -> bool:
         return _enabled_cache["val"][code]
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-                               password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-                               charset="utf8mb4", connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute("SELECT enabled FROM sop WHERE code=%s", (code,))
             row = cur.fetchone()
-        conn.close()
+
         val = row is None or bool(row[0])
     except Exception:
         val = True
@@ -139,9 +137,7 @@ _CANCEL_WORDS = {"取消", "算了", "不用了", "不请了"}
 
 def _pending_conn():
     import pymysql
-    return pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-                           password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-                           charset="utf8mb4", connect_timeout=3)
+    return mysql_store.connection()
 
 
 def save_pending(chat_id: str, params: dict, emp: dict, sop_code: str = "leave_action") -> bool:
@@ -181,7 +177,7 @@ def save_pending(chat_id: str, params: dict, emp: dict, sop_code: str = "leave_a
                 (chat_id, json.dumps(params, ensure_ascii=False),
                  json.dumps(emp, ensure_ascii=False), sop_code))
         conn.commit()
-        conn.close()
+
         return True
     except Exception as e:
         log.warning(f"待确认单保存失败（降级直接提交）: {e!r}")
@@ -195,7 +191,7 @@ def load_pending(chat_id: str) -> dict | None:
             cur.execute("SELECT params, emp, sop_code, created_at FROM sop_pending "
                         "WHERE chat_id=%s", (chat_id,))
             row = cur.fetchone()
-        conn.close()
+
         if not row:
             return None
         # 过期清理：24 小时未确认的待确认单自动作废（曾无过期，僵尸单堆积）
@@ -214,7 +210,7 @@ def clear_pending(chat_id: str) -> None:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM sop_pending WHERE chat_id=%s", (chat_id,))
         conn.commit()
-        conn.close()
+
     except Exception:
         pass
 
@@ -250,14 +246,11 @@ def _load_employees_db() -> list[dict]:
     dept_id 经迁移回填（migrate_identity 脚本）；库不可用返回 []。"""
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute("SELECT id, name, dept_id FROM employee WHERE status=1 ORDER BY id")
             rows = [{"id": r[0], "realName": r[1], "deptId": r[2]} for r in cur.fetchall()]
-        conn.close()
+
         return rows
     except Exception:
         return []
@@ -276,10 +269,7 @@ def _resolve_approver(business_type: str, emp: dict) -> int | None:
     无配置/无绑定返回 None（单子 status=1 停着，等审批入口接人）"""
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT approver_dept_leader, approver_role_key FROM oa_approval_flow "
@@ -307,7 +297,7 @@ def _resolve_approver(business_type: str, emp: dict) -> int | None:
                 r2 = cur.fetchone()
                 if r2:
                     return r2[0]
-        conn.close()
+
     except Exception:
         pass
     return None

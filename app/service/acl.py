@@ -38,21 +38,18 @@ def _ensure_columns() -> None:
     - feishu_employee.employee_id：飞书 open_id → 数字员工绑定"""
     try:
         import pymysql
-        from .. import config
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
-        with conn.cursor() as cur:
-            for table, cols in (("sys_user", ["employee_id", "mobile"]),
-                                ("feishu_employee", ["employee_id"])):
-                for col in cols:
-                    cur.execute(f"SHOW COLUMNS FROM {table} LIKE '{col}'")
-                    if not cur.fetchone():
-                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} "
-                                    f"{'VARCHAR(32)' if col == 'mobile' else 'INT'} NULL")
-        conn.commit()
-        conn.close()
+        from .. import config, mysql_store
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                for table, cols in (("sys_user", ["employee_id", "mobile"]),
+                                    ("feishu_employee", ["employee_id"])):
+                    for col in cols:
+                        cur.execute(f"SHOW COLUMNS FROM {table} LIKE '{col}'")
+                        if not cur.fetchone():
+                            cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} "
+                                        f"{'VARCHAR(32)' if col == 'mobile' else 'INT'} NULL")
+            conn.commit()
+
     except Exception:
         pass
 
@@ -61,18 +58,13 @@ def _emp_by_column(table: str, column: str, value: str) -> int | None:
     """{table}.{column}=value → employee_id（NULL 视为未绑定）"""
     import pymysql
     from .. import config
-    conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                           user="root", password=config.MYSQL_PASSWORD,
-                           database=config.MYSQL_DB, charset="utf8mb4",
-                           connect_timeout=3)
-    try:
+    with mysql_store.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"SELECT employee_id FROM {table} "
                         f"WHERE {column}=%s AND employee_id IS NOT NULL LIMIT 1", (value,))
             row = cur.fetchone()
-        return int(row[0]) if row else None
-    finally:
-        conn.close()
+    return int(row[0]) if row else None
+
 
 
 def resolve_employee(user: str) -> int | None:
@@ -130,18 +122,15 @@ def _parse_grants(grants: str) -> set[int]:
 def _load_state() -> dict:
     """{restricted: {doc_id: {emp_id...}}, all_docs: [doc_id...]}"""
     import pymysql
-    from .. import config, milvus_store
-    conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-                           password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-                           charset="utf8mb4", connect_timeout=3)
-    restricted: dict[str, set] = {}
-    with conn.cursor() as cur:
-        cur.execute("SELECT doc_id, grants FROM doc_acl")
-        for doc_id, grants in cur.fetchall():
-            ids = _parse_grants(grants)
-            if ids:
-                restricted[doc_id] = ids
-    conn.close()
+    from .. import config, mysql_store, milvus_store
+    with mysql_store.connection() as conn:
+        restricted: dict[str, set] = {}
+        with conn.cursor() as cur:
+            cur.execute("SELECT doc_id, grants FROM doc_acl")
+            for doc_id, grants in cur.fetchall():
+                ids = _parse_grants(grants)
+                if ids:
+                    restricted[doc_id] = ids
     docs = [d["docId"] for d in milvus_store.list_documents()]
     return {"restricted": restricted, "all_docs": docs}
 
@@ -153,24 +142,21 @@ def field_visible(table: str, column: str, user: str) -> bool:
     try:
         import pymysql
         from .. import config
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
-        with conn.cursor() as cur:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS field_acl ("
-                "id INT AUTO_INCREMENT PRIMARY KEY,"
-                "table_name VARCHAR(64) NOT NULL,"
-                "column_name VARCHAR(64) NOT NULL,"
-                "grants TEXT,"
-                "status TINYINT DEFAULT 1,"
-                "UNIQUE KEY uq_tc (table_name, column_name))")
-            cur.execute("SELECT grants FROM field_acl "
-                        "WHERE table_name=%s AND column_name=%s AND status=1",
-                        (table, column))
-            row = cur.fetchone()
-        conn.close()
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS field_acl ("
+                    "id INT AUTO_INCREMENT PRIMARY KEY,"
+                    "table_name VARCHAR(64) NOT NULL,"
+                    "column_name VARCHAR(64) NOT NULL,"
+                    "grants TEXT,"
+                    "status TINYINT DEFAULT 1,"
+                    "UNIQUE KEY uq_tc (table_name, column_name))")
+                cur.execute("SELECT grants FROM field_acl "
+                            "WHERE table_name=%s AND column_name=%s AND status=1",
+                            (table, column))
+                row = cur.fetchone()
+
         if not row:
             return True
         emp = resolve_employee(user)
@@ -187,26 +173,23 @@ def save_field_acl(table: str, column: str, grants: str, status: int = 1) -> Non
     try:
         import pymysql
         from .. import config
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
-        with conn.cursor() as cur:
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS field_acl ("
-                "id INT AUTO_INCREMENT PRIMARY KEY,"
-                "table_name VARCHAR(64) NOT NULL,"
-                "column_name VARCHAR(64) NOT NULL,"
-                "grants TEXT,"
-                "status TINYINT DEFAULT 1,"
-                "UNIQUE KEY uq_tc (table_name, column_name))")
-            cur.execute(
-                "INSERT INTO field_acl (table_name, column_name, grants, status) "
-                "VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
-                "grants=VALUES(grants), status=VALUES(status)",
-                (table, column, grants or "", status))
-        conn.commit()
-        conn.close()
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS field_acl ("
+                    "id INT AUTO_INCREMENT PRIMARY KEY,"
+                    "table_name VARCHAR(64) NOT NULL,"
+                    "column_name VARCHAR(64) NOT NULL,"
+                    "grants TEXT,"
+                    "status TINYINT DEFAULT 1,"
+                    "UNIQUE KEY uq_tc (table_name, column_name))")
+                cur.execute(
+                    "INSERT INTO field_acl (table_name, column_name, grants, status) "
+                    "VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                    "grants=VALUES(grants), status=VALUES(status)",
+                    (table, column, grants or "", status))
+            conn.commit()
+
     except Exception:
         pass
 

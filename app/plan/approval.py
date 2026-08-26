@@ -9,7 +9,7 @@ import json
 import time
 from datetime import datetime
 
-from .. import config
+from .. import config, mysql_store
 from . import registry
 
 STATUS_PENDING, STATUS_IN_FLOW, STATUS_APPROVED, STATUS_REJECTED = 1, 2, 3, 4
@@ -17,10 +17,7 @@ ACT_APPROVE, ACT_REJECT = 1, 2
 
 
 def _conn():
-    import pymysql
-    return pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-                           password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-                           charset="utf8mb4", connect_timeout=3)
+    return mysql_store.connection()
 
 
 def _load_apply(business_type: str, apply_id: int) -> dict | None:

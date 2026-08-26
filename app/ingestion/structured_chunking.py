@@ -502,7 +502,13 @@ def _scan_technical_blocks(text):
         if code_like:
             flush_para(); add_code(line); continue
         if stripped.count('|') >= 2:
-            flush_para(); blocks.append((page, page, 'table', stripped)); continue
+            flush_para()
+            if blocks and blocks[-1][2] == 'table' and blocks[-1][1] == page:
+                start, end, _, previous = blocks[-1]
+                blocks[-1] = (start, page, 'table', previous + '\n' + stripped)
+            else:
+                blocks.append((page, page, 'table', stripped))
+            continue
         para.append(stripped); para_page_end = page
     flush_para(); flush_code()
     return blocks
@@ -542,8 +548,56 @@ def _safe_prose_parts(value, max_chars, marks):
 
 
 def chunk_technical_book(text, max_chars=600):
-    """技术书结构化切分：扫描结构块，再按既有规则切分。"""
+    """技术书统一 Markdown 结构切分入口。"""
+    heading = re.compile(r'^(#{2,6})\s+(.+?)\s*$')
+    columns = re.compile(r'^(?:实验|思考题|深度思考|练习题|小结|本章小结|附录|参考|注释)\s*', re.I)
+    list_heading = re.compile(r'^(?:第一|第二|第三)[、，,.]')
+    code_start = re.compile(r'^(?:from\s+\w|import\s+\w|def\s+\w|class\s+\w|\w+\s*=|if\s+|for\s+|while\s+)')
+    units, path, current, kind, block = [], [], [], 'prose', 0
 
+    def flush():
+        nonlocal current, kind, block
+        value = '\n'.join(current).strip()
+        if not value: return
+        block += 1
+        parts = []
+        while len(value) > max_chars:
+            cut = max(value.rfind(x, 0, max_chars) for x in '。！？!?；;\n')
+            cut = max_chars if cut < max_chars // 2 else cut + 1
+            parts.append(value[:cut].strip()); value = value[cut:].strip()
+        if value: parts.append(value)
+        for index, part in enumerate(parts):
+            units.append({'text': part, 'kind': kind, 'section_path': list(path),
+                          'continuation': index > 0, 'continuation_of': f'{kind}:{block}',
+                          'continuation_index': index})
+        current = []; kind = 'prose'
+
+    lines, index = (text or '').splitlines(), 0
+    while index < len(lines):
+        line, stripped = lines[index], lines[index].strip()
+        if not stripped: flush(); index += 1; continue
+        matched = heading.match(stripped)
+        if matched and not list_heading.match(matched.group(2)):
+            flush(); level, title = len(matched.group(1)) - 1, matched.group(2)
+            if columns.match(title): kind = 'experiment'; current = [title]
+            elif level == 1 or re.match(r'^(?:第\\s*[一二三四五六七八九十百千万\\d]+\\s*[章节篇]|\\d+(?:\\.\\d+)+)', title):
+                path = path[:level - 1] + [title]; kind = 'heading'; current = [title]
+            else: kind = 'subheading'; current = [title]
+            flush(); index += 1; continue
+        if code_start.match(stripped) and not stripped.startswith('#'):
+            flush(); kind = 'code'; current = [line]; index += 1
+            while index < len(lines) and (not lines[index].strip() or lines[index].startswith((' ', '\\t')) or lines[index].strip().startswith(('#', '{', '}', '[', ']'))):
+                current.append(lines[index]); index += 1
+            flush(); continue
+        if stripped.startswith('<table'):
+            flush(); kind = 'table'; current = [line]; index += 1
+            while index < len(lines):
+                current.append(lines[index]); done = '</table>' in lines[index].lower(); index += 1
+                if done: break
+            flush(); continue
+        current.append(line); index += 1
+    flush()
+    return units
 
     marks = set('。！？!?；;')
     blocks = _scan_technical_blocks(text)
@@ -564,6 +618,7 @@ def chunk_technical_book(text, max_chars=600):
 
     chunks = []
     block_id = 0
+    current_path = []
     for page_start, page_end, kind, value in blocks:
         block_id += 1
         block_key = f"{kind}:{block_id}"
@@ -571,9 +626,10 @@ def chunk_technical_book(text, max_chars=600):
             continue
         if kind == 'heading':
             heading_text = value
+            current_path = [heading_text]
             parts = [heading_text] if len(heading_text) <= max_chars else _hard_split_structured(heading_text, max_chars)
             for n, part in enumerate(parts):
-                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': [], 'kind': 'heading'}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
+                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': [part], 'kind': 'heading'}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
                 if n: row['continuation'] = True
                 chunks.append(row)
             continue
@@ -581,7 +637,7 @@ def chunk_technical_book(text, max_chars=600):
             # 结构类型保持独立，但超长结构按行/句拆分，不能突破 max_chars。
             parts = _hard_split_structured(value, max_chars)
             for n, part in enumerate(parts):
-                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': [], 'kind': kind}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
+                row = _add_chunk_metadata({'text': part, 'page': page_start, 'section_path': list(current_path), 'kind': kind}, block_id=block_key, index=n, page_start=page_start, page_end=page_end)
                 if n: row['continuation'] = True
                 chunks.append(row)
             continue
@@ -602,7 +658,7 @@ def chunk_technical_book(text, max_chars=600):
                     # 不为完整句向后放宽，否则会产生 600+ 的超长 chunk。
                     backward = max((rest.rfind(mark, 0, max_chars) for mark in marks), default=-1)
                     cut = backward + 1 if backward > max_chars // 2 else max_chars
-                    chunks.append(_add_chunk_metadata({'text': rest[:cut].strip(), 'page': page_start, 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end))
+                    chunks.append(_add_chunk_metadata({'text': rest[:cut].strip(), 'page': page_start, 'section_path': list(current_path), 'kind': 'prose'}, block_id=block_key, index=0, page_start=page_start, page_end=page_end))
                     rest = rest[cut:].strip()
                 buf = rest
             elif not buf:
@@ -620,6 +676,20 @@ def chunk_technical_book(text, max_chars=600):
             if not buf.endswith(tuple(marks)):
                 row['continuation'] = True
             chunks.append(row)
+    # 标题孤立块不参与检索：只按当前块的 text 与 section_path 前两级精确比较，
+    # 不按具体文档标题或固定页码做特判。
+    chunks = [row for row in chunks
+              if not (row.get('kind') == 'heading'
+                      and row.get('text', '').strip() in row.get('section_path', [])[:2])]
+    # 最终向量 chunk 协议：补齐连续分片字段，并移除页码元数据。
+    for index, row in enumerate(chunks):
+        row.pop('page', None)
+        row.pop('page_end', None)
+        row.setdefault('kind', 'prose')
+        row.setdefault('section_path', list(current_path))
+        row.setdefault('continuation', False)
+        row.setdefault('continuation_of', f"{row['kind']}:{index}")
+        row.setdefault('continuation_index', 0)
     return chunks
 
 

@@ -41,10 +41,11 @@ class MySQLPool:
             conn, born = self._items.get(timeout=config.MYSQL_POOL_TIMEOUT)
         except queue.Empty:
             with self._lock:
-                if self._created < max(1, config.MYSQL_POOL_MAX):
-                    conn, born = self._new()
-                else:
-                    raise TimeoutError("MySQL connection pool exhausted")
+                can_create = self._created < max(1, config.MYSQL_POOL_MAX)
+            if can_create:
+                conn, born = self._new()
+            else:
+                raise TimeoutError("MySQL connection pool exhausted")
         if conn is None:
             raise RuntimeError("MySQL pool failed to lease a connection")
         try:

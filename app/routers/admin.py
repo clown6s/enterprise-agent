@@ -46,32 +46,22 @@ def _ok(data):
     return {"success": True, "message": None, "data": data}
 
 
-def _db():
-    return pymysql.connect(
-        host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-        password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-        charset="utf8mb4", connect_timeout=5,
-    )
-
-
 def _query(sql: str, args: tuple = ()) -> list:
     try:
-        conn = _db()
-        with conn.cursor() as cur:
-            cur.execute(sql, args)
-            return cur.fetchall()
-        conn.close()
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, args)
+                return cur.fetchall()
     except pymysql.MySQLError:
         return []
 
 
 def _exec(sql: str, args: tuple = ()) -> None:
     try:
-        conn = _db()
-        with conn.cursor() as cur:
-            cur.execute(sql, args)
-        conn.commit()
-        conn.close()
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, args)
+            conn.commit()
     except pymysql.MySQLError as e:
         # 管理操作失败必须可见（曾静默吞错——前端看到成功但实际没执行）
         log.error(f"写操作失败: {e!r} | {sql[:60]}")

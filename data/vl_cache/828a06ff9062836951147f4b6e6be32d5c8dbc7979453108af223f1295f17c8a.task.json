@@ -1,8 +1,22 @@
 {
-  "error_code": 0,
-  "error_msg": "success",
-  "log_id": "25379805241058761445905934165208",
-  "result": {
-    "task_id": "task-z39UAd8Xj0287HRCjtbncH7STU1hCetH"
-  }
+  "task_id": "task-bKbwzIffhthlniSg8ksD6S47mPB94U6G",
+  "filename": "AI-Agents-in-Depth-zh-CN.pdf",
+  "response": {
+    "error_code": 0,
+    "error_msg": "success",
+    "log_id": "91285969974267773197597027611761",
+    "result": {
+      "task_id": "task-bKbwzIffhthlniSg8ksD6S47mPB94U6G"
+    }
+  },
+  "status": "success",
+  "raw_status": "success",
+  "last_query": {
+    "task_id": "task-bKbwzIffhthlniSg8ksD6S47mPB94U6G",
+    "status": "success",
+    "task_error": null,
+    "parse_result_url": "https://xmind-parser.bj.bcebos.com/vlm_cloud/parseResult/task-bKbwzIffhthlniSg8ksD6S47mPB94U6G/file-qtbPMPb9Y90YlNBOcCWHluaH4T3kXcsR.json?authorization=bce-auth-v1%2FALTAK7IDj758EUbA1igu04rHAh%2F2026-08-25T18%3A41%3A37Z%2F259200%2F%2Fdaabb7a879d1b7b3b2c8053283d26830b69042ba0c34af373edb877615aa3261",
+    "markdown_url": "https://xmind-parser.bj.bcebos.com/vlm_cloud/parseResult/task-bKbwzIffhthlniSg8ksD6S47mPB94U6G/file-qtbPMPb9Y90YlNBOcCWHluaH4T3kXcsR.md?authorization=bce-auth-v1%2FALTAK7IDj758EUbA1igu04rHAh%2F2026-08-25T18%3A41%3A37Z%2F259200%2F%2Fd7e13531a1f9a92119e729c1730cc49d03b01a9e82b841dd2c62ec5f02363495"
+  },
+  "result_cached": true
 }

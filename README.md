@@ -27,6 +27,40 @@ python run.py            # http://localhost:8080（加 --reload 热重载）
 | 自我优化 | 反馈回流 / 缺口聚类 / 用量追踪 / 参数自适应（只接受不劣化变更）/ 校验熔断                                                                                                                 |
 | 管理后台 | 仪表盘/审计/评测/数字员工/技能/SOP/审核/权限/用量等 API                                                                                                                                   |
 
+## 文档向量化最终格式
+
+技术文档经过百度 PaddleOCR-VL 的 Markdown 结构解析后，最终送入嵌入和 Milvus 的每个 chunk 使用统一 JSON 字段：
+
+```json
+{
+  "text": "正文或结构内容",
+  "kind": "prose",
+  "section_path": ["第2章 上下文工程", "2.2 Agent 如何调用大模型"],
+  "continuation": false,
+  "continuation_of": "prose:12",
+  "continuation_index": 0
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `text` | string | 实际用于嵌入、检索和 LLM 上下文的内容。正文保持 Markdown 语义；表格使用 Markdown；代码、流程、图题保持各自完整内容。 |
+| `kind` | string | 内容类型：`prose` 普通正文、`heading` 正式章节、`subheading` 章节内小标题、`experiment` 实验/思考题/小结栏目、`code` 代码、`table` 表格、`procedure` 流程、`figure` 图片或图示。 |
+| `section_path` | string[] | 当前内容所属的正式章节路径。Markdown 的 `##` 是章节第一级，`###` 是第二级；`#` 文档标题不进入路径；实验、思考题、流程步骤等栏目只继承路径，不新增路径层级。 |
+| `continuation` | boolean | 当前 chunk 是否为一个较长结构的后续分片。首片或未拆分内容为 `false`，后续分片为 `true`。 |
+| `continuation_of` | string | 原始结构块 ID。同一段正文、代码、表格或流程被拆成多个 chunk 时保持不变，例如 `prose:12`。 |
+| `continuation_index` | integer | 当前结构块内的分片序号，从 `0` 开始递增，用于恢复原始顺序。 |
+
+明确不进入最终向量 chunk 的字段：
+
+- `page` / `page_end`：不保存页码，不把页边界写入正文，也不使用页码切断跨页语义；
+- `table_html` / `cells` / `matrix`：属于 OCR 原始解析和展示/结构旁路数据，不直接替代 `text`；
+- OCR 的 `task_id`、`parse_result_url`、原始 `parse_result`：保存在 OCR 任务数据库/原始缓存，不进入向量文本。
+
+核心规则：`text` 用于检索，`kind` 和 `section_path` 用于结构归属，`continuation_*` 用于长内容顺序恢复；最终嵌入只对 `text` 生成向量。
+
 ## 评测
 
 ```bash

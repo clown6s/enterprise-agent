@@ -16,7 +16,7 @@ NL2SQL 查询层：问句 → 已注册表 → 生成 SQL → 五关校验 → �
 import json
 import re
 
-from .. import config, llm
+from .. import config, mysql_store, llm
 from ..time_context import now as business_now
 from . import acl
 import logging
@@ -95,10 +95,7 @@ def _ensure_tables() -> None:
     演示数据由 scripts 或管理后台登记"""
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS query_schema ("
@@ -110,7 +107,7 @@ def _ensure_tables() -> None:
                 "status TINYINT DEFAULT 1,"
                 "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)")
         conn.commit()
-        conn.close()
+
     except Exception:
         pass
 
@@ -122,10 +119,7 @@ def register_table(table_name: str, description: str,
     _ensure_tables()
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO query_schema (table_name, description, columns_json, grants) "
@@ -135,7 +129,7 @@ def register_table(table_name: str, description: str,
                 (table_name, description,
                  json.dumps(columns, ensure_ascii=False), grants or ""))
         conn.commit()
-        conn.close()
+
     except Exception:
         pass
 
@@ -146,15 +140,12 @@ def _visible_tables(user: str) -> list[dict]:
     _ensure_tables()
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute("SELECT table_name, description, columns_json, grants "
                         "FROM query_schema WHERE status=1")
             rows = cur.fetchall()
-        conn.close()
+
     except Exception:
         return []
     emp = acl.resolve_employee(user)
@@ -198,15 +189,12 @@ def _raw_columns(table_name: str) -> list[dict]:
         return [{"name": n} for n in _TABLE_COLS_RAW[table_name]]
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             cur.execute("SELECT columns_json FROM query_schema "
                         "WHERE table_name=%s AND status=1", (table_name,))
             row = cur.fetchone()
-        conn.close()
+
         if row:
             cols = json.loads(row[0])
             _TABLE_COLS_RAW[table_name] = [c["name"] for c in cols]
@@ -372,10 +360,7 @@ def try_answer_result(query: str, user: str = "") -> dict | None:
 
     try:
         import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             typed_params = [_cast_param(p) for p in params]
             try:
@@ -404,7 +389,7 @@ def try_answer_result(query: str, user: str = "") -> dict | None:
                         "event": "nlsql_duplicate_rows_collapsed",
                         "fields": {"before": len(rows), "after": len(unique_rows)}})
                     rows = unique_rows
-        conn.close()
+
     except Exception as e:
         log.error("nlsql_execute_failed", extra={"event": "nlsql_execute_failed", "fields": {
             "error_type": type(e).__name__, "sql_len": len(final_sql)}})

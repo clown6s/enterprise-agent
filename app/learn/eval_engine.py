@@ -16,6 +16,7 @@ import time
 from typing import Any
 
 from ..service import agent, retrieval
+from .. import mysql_store
 
 _EVAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "eval")
 
@@ -30,17 +31,11 @@ def _verify_sql(ext: dict) -> tuple[bool, str]:
     if not sql or not sql.lower().startswith("select"):
         return False, "verify_sql 必须是以 SELECT 开头的只读查询"
     try:
-        import pymysql
-        from .. import config
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
-        with conn.cursor() as cur:
-            cur.execute(sql)
-            rows = cur.fetchall()
-            cols = [d[0] for d in cur.description]
-        conn.close()
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+                cols = [d[0] for d in cur.description]
     except Exception as e:
         return False, f"verify_sql 执行失败: {e!r}"
     if "expect_rows" in ext and len(rows) != ext["expect_rows"]:

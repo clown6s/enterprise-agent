@@ -55,16 +55,12 @@ TOOLS: list[Tool] = _init_tools()
 def _load_enabled_from_db() -> set[str]:
     """skill 表 → 启用工具集；表空=全部启用；库/表不可用=全部启用（软依赖）"""
     try:
-        import pymysql
-        from . import config
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-                               password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-                               charset="utf8mb4", connect_timeout=3)
+        from . import mysql_store
         rows = []
-        with conn.cursor() as cur:
-            cur.execute("SELECT tool_names, status FROM skill")
-            rows = cur.fetchall()
-        conn.close()
+        with mysql_store.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT tool_names, status FROM skill")
+                rows = cur.fetchall()
         if not rows:
             return {t.code for t in TOOLS}
         enabled = set()

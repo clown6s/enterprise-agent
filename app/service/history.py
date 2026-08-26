@@ -10,6 +10,7 @@
 兜底句式/GUARD 拦截的轮次不落库（无信息量且注入文本不可回流）。
 """
 from .. import config
+from ..mysql_store import connection
 import logging
 log = logging.getLogger(__name__)
 
@@ -26,10 +27,7 @@ def is_test_conversation(conversation_id: str) -> bool:
 
 
 def _conn():
-    import pymysql
-    return pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT, user="root",
-                           password=config.MYSQL_PASSWORD, database=config.MYSQL_DB,
-                           charset="utf8mb4", connect_timeout=3)
+    return connection()
 
 
 def _ensure_table() -> None:

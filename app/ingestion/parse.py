@@ -65,6 +65,20 @@ def parse_document_with_vl(filename: str, data: bytes) -> tuple[str, list[dict]]
     return assemble_text(blocks), [block.to_dict() for block in blocks]
 
 
+def parse_local_bytes(filename: str, data: bytes) -> str:
+    """只做本地文件解析，供分类阶段使用；绝不触发 OCR 或数据库任务。"""
+    ext = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
+    if ext in ("txt", "md", ""):
+        return _decode(data)
+    if ext == "csv":
+        return _parse_csv(data)
+    if ext == "docx":
+        return _parse_docx(data)
+    if ext == "pdf":
+        return _parse_pdf(data)
+    return ""
+
+
 def parse_bytes(filename: str, data: bytes) -> str:
     ext = (filename or "").lower().rsplit(".", 1)[-1] if "." in (filename or "") else ""
     if ext in ("txt", "md", ""):

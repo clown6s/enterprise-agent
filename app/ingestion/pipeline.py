@@ -42,11 +42,10 @@ def chunk_units(text: str, filename: str = "", max_chars: int = MAX_CHARS) -> li
     这是摄入管线的内部规范接口；``chunk_text`` 仅保留旧调用方需要的
     ``(chunks, pages)`` 形状，避免旧 HTTP/脚本协议被悄然改变。
     """
-    from .structured_chunking import chunk_document, classify_document, segment_text
+    from .structured_chunking import classify_document, segment_text, chunk_technical_book
     profile = classify_document(text, filename)
     if profile.kind == 'technical_book':
-        return chunk_document(text, filename, max_chars=max_chars)
-    # 普通文本继续走通用切分，避免 profile 误判时专用切分器丢内容。
+        return chunk_technical_book(text, max_chars=max_chars)
     return segment_text(text, max_chars=max_chars, overlap=0)
 
 
@@ -189,8 +188,17 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         local_text, diagnostics = parse.parse_pdf_with_diagnostics(data)
         profile = classify_document(local_text, filename)
         if profile.kind == "technical_book":
-            # 只有技术书 PDF 才整份交给 VL，普通文档继续走本地解析。
+            # 技术书先创建异步任务；下一次同文件上传才 query，不在本次请求内轮询。
+            from . import ocr_paddle
             try:
+                task = ocr_paddle.create_document_task(data, filename)
+                if task.get("status") != "success":
+                    if task.get("reused"):
+                        task = ocr_paddle.query_document_task(data)
+                    if task.get("status") != "success":
+                        return {"fileName": filename, "pending": True,
+                                "ocr_status": task.get("status", "pending"),
+                                "task_id": task.get("task_id", "")}
                 text, layout_blocks = parse.parse_document_with_vl(filename, data)
             except Exception as exc:
                 _log("paddleocr_vl_failed", file=filename, error=type(exc).__name__)
@@ -199,6 +207,26 @@ def ingest(filename: str, data: bytes, title: str = "", tags: str = "") -> dict:
         else:
             text = local_text
             diagnostics = {**(diagnostics or {}), "vl_skipped": True, "profile": profile.kind}
+    elif ext == "docx":
+        local_text = parse.parse_bytes(filename, data)
+        profile = classify_document(local_text, filename)
+        if profile.kind == "technical_book":
+            from . import ocr_paddle
+            try:
+                task = ocr_paddle.create_document_task(data, filename)
+                if task.get("status") != "success" and task.get("reused"):
+                    task = ocr_paddle.query_document_task(data)
+                if task.get("status") != "success":
+                    return {"fileName": filename, "pending": True,
+                            "ocr_status": task.get("status", "pending"),
+                            "task_id": task.get("task_id", "")}
+                text, layout_blocks = parse.parse_document_with_vl(filename, data)
+            except Exception as exc:
+                _log("paddleocr_vl_failed", file=filename, error=type(exc).__name__)
+                return {"error": f"《{filename}》PaddleOCR-VL 解析失败，请检查模型和输入文件。"}
+        else:
+            text = local_text
+            diagnostics = {"vl_skipped": True, "profile": profile.kind}
     else:
         text = parse.parse_bytes(filename, data)
     if not text or not text.strip():

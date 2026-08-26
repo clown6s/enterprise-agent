@@ -57,20 +57,14 @@ def run_all(context: str = "") -> int:
 def _alert(name: str, detail: str) -> None:
     """失败写 alert_event（rule_code=f'invariant:{name}'，一规则一行重触发原地更新）"""
     try:
-        from . import config
-        import pymysql
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO alert_event (rule_code, level, title, detail, status, "
-                "first_at, last_at, count) VALUES (%s,'CRITICAL',%s,%s,'OPEN',NOW(),NOW(),1) "
-                "ON DUPLICATE KEY UPDATE last_at=NOW(), count=count+1",
-                (f"invariant:{name}", f"运行时不变量失败：{name}", detail[:500]))
-        conn.commit()
-        conn.close()
+        from . import mysql_store
+        with mysql_store.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO alert_event (rule_code, level, title, detail, status, "
+                    "first_at, last_at, count) VALUES (%s,'CRITICAL',%s,%s,'OPEN',NOW(),NOW(),1) "
+                    "ON DUPLICATE KEY UPDATE last_at=NOW(), count=count+1",
+                    (f"invariant:{name}", f"运行时不变量失败：{name}", detail[:500]))
     except Exception:
         pass
 

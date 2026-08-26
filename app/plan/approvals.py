@@ -239,18 +239,15 @@ def _do_insert(d: ApprovalDef, params: dict, emp: dict) -> dict:
     t0 = time.time()
     try:
         import pymysql
-        from .. import config
-        conn = pymysql.connect(host=config.MYSQL_HOST, port=config.MYSQL_PORT,
-                               user="root", password=config.MYSQL_PASSWORD,
-                               database=config.MYSQL_DB, charset="utf8mb4",
-                               connect_timeout=3)
+        from .. import config, mysql_store
+        conn = mysql_store.connection()
         with conn.cursor() as cur:
             sql = (f"INSERT INTO {d.table} ({', '.join(columns)}, status, "
                    "current_approver_id, create_time) VALUES ("
                    + ",".join(["%s"] * len(values)) + ",1,%s,NOW())")
             cur.execute(sql, [str(v) for v in values] + [approver])
         conn.commit()
-        conn.close()
+
     except Exception as e:
         _sop._audit(d.code, "insert", params, f"DB 失败: {e!r}", time.time() - t0)
         return {"answer": f"{d.name}提交失败：服务未受理，请稍后再试。", "route": "SOP"}
